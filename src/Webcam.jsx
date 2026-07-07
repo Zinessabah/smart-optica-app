@@ -1,26 +1,22 @@
 import { useRef, useState, useCallback } from 'react'
+import { Camera, RefreshCw, X } from 'lucide-react'
 
 export default function Webcam({ onCapture, onCancel }) {
   const videoRef = useRef(null)
   const streamRef = useRef(null)
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState(null)
-  const [facingMode, setFacingMode] = useState('environment') // default: rear camera
+  const [facingMode, setFacingMode] = useState('environment')
 
   const startCamera = useCallback(async (mode) => {
     try {
-      // Stop any existing stream
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(t => t.stop())
       }
       setError(null)
       const targetMode = mode || facingMode
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: targetMode,
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        },
+        video: { facingMode: targetMode, width: { ideal: 1920 }, height: { ideal: 1080 } },
       })
       videoRef.current.srcObject = stream
       streamRef.current = stream
@@ -52,7 +48,6 @@ export default function Webcam({ onCapture, onCancel }) {
     canvas.width = video.videoWidth
     canvas.height = video.videoHeight
     const ctx = canvas.getContext('2d')
-    // Rear camera: no mirror. Front camera: mirror for natural selfie.
     if (facingMode === 'user') {
       ctx.translate(canvas.width, 0)
       ctx.scale(-1, 1)
@@ -66,9 +61,8 @@ export default function Webcam({ onCapture, onCancel }) {
   const isRear = facingMode === 'environment'
 
   return (
-    <div className="rounded-2xl overflow-hidden shadow-lg" style={{ background: '#fff' }}>
-      {/* Video / Placeholder */}
-      <div className="relative aspect-[4/3]" style={{ background: '#1a1a1a' }}>
+    <div className="rounded-2xl border overflow-hidden animate-fade-in" style={{ background: 'var(--color-card)', borderColor: 'var(--color-border)' }}>
+      <div className="relative aspect-[4/3]" style={{ background: '#08080a' }}>
         <video
           ref={videoRef}
           autoPlay
@@ -82,70 +76,61 @@ export default function Webcam({ onCapture, onCancel }) {
         />
         {!streaming && (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-white gap-4">
-            <svg className="w-16 h-16 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
-                d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z" />
-            </svg>
-            <p className="text-sm opacity-60">Appuyez pour activer la caméra arrière</p>
+            <Camera size={48} className="opacity-20" />
+            <p className="text-sm opacity-40">Activez la caméra pour commencer</p>
           </div>
         )}
-        {/* Face guide overlay */}
         {streaming && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className="w-48 h-48 rounded-full border-2 border-dashed opacity-40"
-              style={{ borderColor: '#c9975a' }} />
+            <div className="w-48 h-48 rounded-full border-2 border-dashed opacity-30" style={{ borderColor: 'var(--color-gold)' }} />
           </div>
         )}
-
-        {/* Camera mode badge */}
         {streaming && (
-          <div className="absolute top-3 right-3 px-2 py-1 rounded-full text-[10px] font-medium"
-            style={{ background: 'rgba(0,0,0,0.5)', color: '#fff' }}>
-            {isRear ? '📷 Arrière' : '🤳 Selfie'}
+          <div className="absolute top-3 right-3 px-2.5 py-1 rounded-full text-[10px] font-medium"
+            style={{ background: 'rgba(0,0,0,0.7)', color: 'var(--color-text-muted)', border: '1px solid var(--color-border)' }}>
+            {isRear ? 'Arrière' : 'Selfie'}
           </div>
         )}
       </div>
 
       {error && (
-        <div className="px-4 py-3 text-sm text-red-600 bg-red-50 border-t border-red-100">
+        <div className="px-4 py-3 text-sm border-t" style={{ color: 'var(--color-red)', background: 'var(--color-red-bg)', borderColor: 'var(--color-border)' }}>
           {error}
         </div>
       )}
 
-      {/* Controls */}
       <div className="px-4 py-3 flex justify-center gap-3">
         {!streaming ? (
           <button
             onClick={() => startCamera()}
-            className="px-6 py-2.5 rounded-full text-white font-medium text-sm transition-all hover:opacity-90"
-            style={{ background: '#c9975a' }}
+            className="flex items-center gap-2 px-6 py-2.5 rounded-full font-medium text-sm transition-all hover:opacity-90"
+            style={{ background: 'var(--color-gold)', color: 'var(--color-bg)' }}
           >
-            Activer la caméra arrière
+            <Camera size={16} /> Activer la caméra
           </button>
         ) : (
           <>
             <button
               onClick={toggleCamera}
-              className="px-4 py-2.5 rounded-full font-medium text-sm transition-all hover:opacity-80"
-              style={{ background: '#f0ede7', color: '#666' }}
-              title={isRear ? 'Passer en selfie' : 'Passer en caméra arrière'}
+              className="flex items-center gap-1.5 px-4 py-2.5 rounded-full font-medium text-sm transition-all hover:opacity-80"
+              style={{ background: 'var(--color-border)', color: 'var(--color-text-muted)' }}
             >
-              🔄 {isRear ? 'Selfie' : 'Arrière'}
+              <RefreshCw size={14} /> {isRear ? 'Selfie' : 'Arrière'}
             </button>
             <button
               onClick={capture}
-              className="px-8 py-2.5 rounded-full text-white font-medium text-sm transition-all hover:opacity-90"
-              style={{ background: '#c9975a' }}
+              className="flex items-center gap-1.5 px-8 py-2.5 rounded-full font-medium text-sm transition-all hover:opacity-90"
+              style={{ background: 'var(--color-gold)', color: 'var(--color-bg)' }}
             >
-              📸 Capturer
+              <Camera size={16} /> Capturer
             </button>
             {onCancel && (
               <button
                 onClick={() => { stopCamera(); onCancel() }}
-                className="px-4 py-2.5 rounded-full font-medium text-sm transition-all hover:opacity-80"
-                style={{ background: '#f5e5e5', color: '#c44' }}
+                className="flex items-center gap-1.5 px-4 py-2.5 rounded-full font-medium text-sm transition-all hover:opacity-80"
+                style={{ background: 'var(--color-red-bg)', color: 'var(--color-red)' }}
               >
-                ✕ Annuler
+                <X size={14} /> Annuler
               </button>
             )}
           </>
