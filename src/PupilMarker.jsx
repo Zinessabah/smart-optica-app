@@ -94,52 +94,20 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     return () => { cancelled = true }
   }, [imageUrl, imageSize])
 
-  // --- Auto-équilibrage : vérifier symétrie OG/OD par rapport au pont ---
+  // --- Auto-duplication boxOD depuis boxOG (one-shot, quand OG est créé) ---
+  const boxODDuplicated = useRef(false)
   useEffect(() => {
-    if (bridgeL && bridgeR && leftEye && rightEye) {
-      const bc = { x: (bridgeL.x + bridgeR.x) / 2, y: (bridgeL.y + bridgeR.y) / 2 }
-      const dOG = Math.hypot(leftEye.x - bc.x, leftEye.y - bc.y)
-      const dOD = Math.hypot(rightEye.x - bc.x, rightEye.y - bc.y)
-      const ratio = Math.max(dOG, dOD) / Math.min(dOG, dOD)
-
-      // Si asymétrie > 10%, on corrige
-      if (ratio > 1.10) {
-        const avgDist = (dOG + dOD) / 2
-        // Recalculer positions symétriques
-        const angleOG = Math.atan2(leftEye.y - bc.y, leftEye.x - bc.x)
-        const angleOD = Math.atan2(rightEye.y - bc.y, rightEye.x - bc.x)
-        // Prendre le côté le plus fiable (celui avec l'angle le plus proche de l'horizontale)
-        const absAngleOG = Math.abs(angleOG % Math.PI - Math.PI / 2)
-        const absAngleOD = Math.abs(angleOD % Math.PI - Math.PI / 2)
-        const refAngle = absAngleOG < absAngleOD ? angleOG : Math.PI - angleOD
-        const mirrorX = (a) => -Math.cos(a) * avgDist + bc.x
-        const mirrorY = (a) => Math.sin(a) * avgDist + bc.y
-
-        const correctedEye = {
-          x: mirrorX(refAngle),
-          y: mirrorY(refAngle)
-        }
-        // Déterminer quel œil corriger
-        if (dOG > dOD * 1.10) {
-          setLeftEye(correctedEye)
-        } else if (dOD > dOG * 1.10) {
-          setRightEye(correctedEye)
-        }
-      }
-    }
-  }, [bridgeL, bridgeR, leftEye, rightEye])
-
-  // Auto-duplication boxOD depuis boxOG
-  useEffect(() => {
-    if (activeMarker === 'boxOD' && boxOG && !boxOD) {
-      const bridgeCenterX = (bridgeL && bridgeR) ? (bridgeL.x + bridgeR.x) / 2 : boxOG.x
+    if (boxOG && !boxOD && !boxODDuplicated.current && bridgeL && bridgeR) {
+      boxODDuplicated.current = true
+      const bridgeCenterX = (bridgeL.x + bridgeR.x) / 2
       const ogCenterOffset = boxOG.x - bridgeCenterX
       const mirrorX = bridgeCenterX - ogCenterOffset
       const centerY = boxOG.y
       setBoxOD({ x: mirrorX, y: centerY, width: boxOG.width, height: boxOG.height })
       setRightEye({ x: mirrorX, y: centerY })
     }
-  }, [activeMarker, boxOG, boxOD, bridgeL, bridgeR])
+    if (!boxOG) boxODDuplicated.current = false
+  }, [boxOG, boxOD, bridgeL, bridgeR])
 
   const getImageDisplayRect = useCallback(() => {
     if (!containerRef.current || !imageSize) return null
@@ -273,20 +241,55 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   // ── Drag state for markers ──
   const [dragMarker, setDragMarker] = useState(null)
   const currentPosRef = useRef({ bridgeL: null, bridgeR: null, leftEye: null, rightEye: null })
+  const activeMarkerRef = useRef('bridgeL')
 
-  // Keep ref in sync with state for the drag handler
-  useEffect(() => { currentPosRef.current = { bridgeL, bridgeR, leftEye, rightEye } }, [bridgeL, bridgeR, leftEye, rightEye])
+  // Keep refs in sync with state (for use inside window event listeners)
+  useEffect(() => {
+    currentPosRef.current = { bridgeL, bridgeR, leftEye, rightEye }
+  }, [bridgeL, bridgeR, leftEye, rightEye])
+  useEffect(() => {
+    activeMarkerRef.current = activeMarker
+  }, [activeMarker])
 
-  // Single pointer handler on the container: detect target and drag
+  // Attach window-level listeners during drag so we never lose the pointer
+  useEffect(() => {
+    if (!dragMarker) return
+
+    const onMove = (e) => {
+      // Loupe
+      if (containerRef.current) {
+        const r = containerRef.current.getBoundingClientRect()
+        setLoupePos({ x: e.clientX - r.left, y: e.clientY - r.top })
+      }
+      // Compute delta
+      const startImg = toImageCoords(dragMarker.startClient.x, dragMarker.startClient.y)
+      const currImg = toImageCoords(e.clientX, e.clientY)
+      if (!startImg || !currImg) return
+      const dx = currImg.x - startImg.x
+      const dy = currImg.y - startImg.y
+      const newPos = { x: dragMarker.startPos.x + dx, y: dragMarker.startPos.y + dy }
+      const setters = { bridgeL: setBridgeL, bridgeR: setBridgeR, left: setLeftEye, right: setRightEye }
+      if (setters[dragMarker.markerId]) setters[dragMarker.markerId](newPos)
+    }
+
+    const onUp = () => setDragMarker(null)
+
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+  }, [dragMarker, toImageCoords])
+
+  // ── Container pointer down: detect marker hit or place new marker ──
   const handleContainerPointerDown = useCallback((e) => {
-    // Find which marker was hit (look at the markerId stored as data attribute)
+    // Walk up DOM to find a marker (data-markerid)
     let target = e.target
     while (target && target !== containerRef.current) {
       if (target.dataset?.markerid) {
         const markerId = target.dataset.markerid
-        e.stopPropagation()
         e.preventDefault()
-        target.setPointerCapture(e.pointerId)
         const startPos = currentPosRef.current[markerId]
         if (!startPos) return
         setActiveMarker(markerId)
@@ -295,12 +298,13 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       }
       target = target.parentElement
     }
-    // Otherwise regular click → place marker or create box using handleClick logic
+    // Not on a marker → place new marker
     const coords = toImageCoords(e.clientX, e.clientY)
     if (!coords) return
     const pt = { x: Math.round(coords.x), y: Math.round(coords.y) }
-    // Inline handleClick logic
-    const am = activeMarker
+    const am = activeMarkerRef.current
+    const bl = currentPosRef.current.bridgeL
+    const br = currentPosRef.current.bridgeR
     if (am === 'bridgeL') { setBridgeL(pt) }
     else if (am === 'bridgeR') { setBridgeR(pt) }
     else if (am === 'left') { setLeftEye(pt) }
@@ -308,9 +312,9 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     else if (am === 'boxOG') {
       if (boxOG) return
       const def = getDefaultBoxSize()
-      if (bridgeL) {
-        setBoxOG({ x: bridgeL.x - def.width / 2, y: bridgeL.y, width: def.width, height: def.height })
-        setLeftEye({ x: bridgeL.x - def.width / 2, y: bridgeL.y })
+      if (bl) {
+        setBoxOG({ x: bl.x - def.width / 2, y: bl.y, width: def.width, height: def.height })
+        setLeftEye({ x: bl.x - def.width / 2, y: bl.y })
       } else {
         setBoxOG({ x: pt.x, y: pt.y, width: def.width, height: def.height })
         setLeftEye({ x: pt.x, y: pt.y })
@@ -320,41 +324,16 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       if (boxOD) return
       if (!boxOG) {
         const def = getDefaultBoxSize()
-        if (bridgeR) {
-          setBoxOD({ x: bridgeR.x + def.width / 2, y: bridgeR.y, width: def.width, height: def.height })
-          setRightEye({ x: bridgeR.x + def.width / 2, y: bridgeR.y })
+        if (br) {
+          setBoxOD({ x: br.x + def.width / 2, y: br.y, width: def.width, height: def.height })
+          setRightEye({ x: br.x + def.width / 2, y: br.y })
         } else {
           setBoxOD({ x: pt.x, y: pt.y, width: def.width, height: def.height })
           setRightEye({ x: pt.x, y: pt.y })
         }
       }
     }
-  }, [toImageCoords, activeMarker, bridgeL, bridgeR, boxOG, boxOD, getDefaultBoxSize, getBridgeHalfGapPx])
-
-  const handleContainerPointerMove = useCallback((e) => {
-    // Loupe tracking always
-    if (containerRef.current) {
-      const r = containerRef.current.getBoundingClientRect()
-      setLoupePos({ x: e.clientX - r.left, y: e.clientY - r.top })
-    }
-    // Marker drag
-    if (!dragMarker) return
-    const startImg = toImageCoords(dragMarker.startClient.x, dragMarker.startClient.y)
-    const currImg = toImageCoords(e.clientX, e.clientY)
-    if (!startImg || !currImg) return
-    const dx = currImg.x - startImg.x
-    const dy = currImg.y - startImg.y
-    const newPos = { x: dragMarker.startPos.x + dx, y: dragMarker.startPos.y + dy }
-    const setters = { bridgeL: setBridgeL, bridgeR: setBridgeR, left: setLeftEye, right: setRightEye }
-    if (setters[dragMarker.markerId]) setters[dragMarker.markerId](newPos)
-  }, [dragMarker, toImageCoords])
-
-  const handleContainerPointerUp = useCallback((e) => {
-    if (dragMarker) {
-      if (e.target && e.target.releasePointerCapture) e.target.releasePointerCapture(e.pointerId)
-      setDragMarker(null)
-    }
-  }, [dragMarker])
+  }, [toImageCoords, boxOG, boxOD, getDefaultBoxSize])
 
   const renderCrossMarker = (pos, color, label, isActive, markerId, sz = SZ) => {
     if (!pos || !imageSize || !containerRef.current) return null
@@ -613,10 +592,8 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       {/* Image */}
       <div ref={containerRef}
         className="relative rounded-2xl border overflow-hidden select-none cursor-crosshair"
-        style={{ background: '#08080a', borderColor: 'var(--color-border)', aspectRatio: imageSize ? `${imageSize.width}/${imageSize.height}` : '4/3' }}
+        style={{ background: '#08080a', borderColor: 'var(--color-border)', aspectRatio: imageSize ? `${imageSize.width}/${imageSize.height}` : '4/3', touchAction: 'none' }}
         onPointerDown={handleContainerPointerDown}
-        onPointerMove={handleContainerPointerMove}
-        onPointerUp={handleContainerPointerUp}
         onPointerLeave={handlePointerLeave}>
         {imageUrl && <img src={imageUrl} alt="Centrage" className="w-full h-full block object-contain" draggable={false} />}
 
