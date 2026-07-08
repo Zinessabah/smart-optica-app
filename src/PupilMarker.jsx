@@ -335,88 +335,64 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     }
   }, [toImageCoords, boxOG, boxOD, getDefaultBoxSize])
 
-  const renderCrossMarker = (pos, color, label, isActive, markerId, sz = SZ) => {
-    if (!pos || !imageSize || !containerRef.current) return null
-    const dr = getImageDisplayRect()
-    const cw = containerRef.current.getBoundingClientRect()?.width || 1
-    const ch = containerRef.current.getBoundingClientRect()?.height || 1
-    const l = dr ? ((dr.left + (pos.x / imageSize.width) * dr.width) / cw) * 100 : (pos.x / imageSize.width) * 100
-    const t = dr ? ((dr.top + (pos.y / imageSize.height) * dr.height) / ch) * 100 : (pos.y / imageSize.height) * 100
+  // ── Simplified marker renderers (no letterboxing compensation — overlay handles it) ──
+  const renderCrossMarkerSimple = (pos, color, label, isActive, markerId, sz = SZ) => {
+    if (!pos || !imageSize) return null
+    const l = (pos.x / imageSize.width) * 100
+    const t = (pos.y / imageSize.height) * 100
     const half = sz / 2
-    const gap = 5 // gap in crosshair center
-    const arm = half - 2
+    const gap = 5
     return (
-      <div className="absolute transform -translate-x-1/2 -translate-y-1/2"
-        style={{
-          left: `${l}%`, top: `${t}%`,
-          filter: 'drop-shadow(0 0 4px rgba(0,0,0,0.5))',
-          zIndex: 15,
-          touchAction: 'none',
-          cursor: isActive ? 'grab' : 'pointer',
-          animation: isActive ? 'pulse-smarker 1.5s ease-in-out infinite' : 'none',
-        }}
-        data-markerid={markerId}>
+      <div style={{
+        position: 'absolute',
+        left: `${l}%`, top: `${t}%`,
+        transform: 'translate(-50%, -50%)',
+        filter: 'drop-shadow(0 0 4px rgba(0,0,0,0.5))',
+        zIndex: 15,
+        cursor: isActive ? 'grab' : 'pointer',
+        animation: isActive ? 'pulse-smarker 1.5s ease-in-out infinite' : 'none',
+      }} data-markerid={markerId}>
         <svg width={sz} height={sz} viewBox={`0 0 ${sz} ${sz}`}>
-          {/* Outer glow ring */}
           <circle cx={half} cy={half} r={half - 1.5}
             fill="none" stroke={isActive ? '#fff' : color}
-            strokeWidth={isActive ? 2.5 : 1.5}
-            opacity={isActive ? 1 : 0.6}
-          />
-          {/* Dotted ring for inactive */}
+            strokeWidth={isActive ? 2.5 : 1.5} opacity={isActive ? 1 : 0.6} />
           {!isActive && (
             <circle cx={half} cy={half} r={half - 3}
-              fill="none" stroke={color} strokeWidth="1"
-              strokeDasharray="2 3" opacity="0.3"
-            />
+              fill="none" stroke={color} strokeWidth="1" strokeDasharray="2 3" opacity="0.3" />
           )}
-          {/* Crosshair with gap */}
-          <line x1={gap} y1={half} x2={half - gap} y2={half}
-            stroke={color} strokeWidth="2" strokeLinecap="round" />
-          <line x1={half + gap} y1={half} x2={sz - gap} y2={half}
-            stroke={color} strokeWidth="2" strokeLinecap="round" />
-          <line x1={half} y1={gap} x2={half} y2={half - gap}
-            stroke={color} strokeWidth="2" strokeLinecap="round" />
-          <line x1={half} y1={half + gap} x2={half} y2={sz - gap}
-            stroke={color} strokeWidth="2" strokeLinecap="round" />
-          {/* Center dot */}
+          <line x1={gap} y1={half} x2={half - gap} y2={half} stroke={color} strokeWidth="2" strokeLinecap="round" />
+          <line x1={half + gap} y1={half} x2={sz - gap} y2={half} stroke={color} strokeWidth="2" strokeLinecap="round" />
+          <line x1={half} y1={gap} x2={half} y2={half - gap} stroke={color} strokeWidth="2" strokeLinecap="round" />
+          <line x1={half} y1={half + gap} x2={half} y2={sz - gap} stroke={color} strokeWidth="2" strokeLinecap="round" />
           <circle cx={half} cy={half} r={2.5} fill={color} opacity={isActive ? 1 : 0.7} />
-          {/* Inner glow when active */}
-          {isActive && (
-            <circle cx={half} cy={half} r={5} fill={color} opacity="0.2" />
-          )}
+          {isActive && <circle cx={half} cy={half} r={5} fill={color} opacity="0.2" />}
         </svg>
-        <div className="absolute -bottom-[16px] left-1/2 -translate-x-1/2 text-[9px] font-medium whitespace-nowrap px-1.5 py-0.5 rounded"
-          style={{
-            color: '#fff',
-            background: `${color}cc`,
-            border: '1px solid rgba(255,255,255,0.2)',
-            backdropFilter: 'blur(4px)',
-            boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
-          }}>{label}</div>
+        <div style={{
+          position: 'absolute', bottom: '-16px', left: '50%', transform: 'translateX(-50%)',
+          fontSize: '9px', fontWeight: 500, whiteSpace: 'nowrap',
+          padding: '1px 6px', borderRadius: '4px',
+          color: '#fff', background: `${color}cc`,
+          border: '1px solid rgba(255,255,255,0.2)',
+          backdropFilter: 'blur(4px)', boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+        }}>{label}</div>
       </div>
     )
   }
 
-  const renderBridgeBar = (pos, color, label, isActive, markerId) => {
-    if (!pos || !imageSize || !containerRef.current) return null
-    const dr = getImageDisplayRect()
-    const cw = containerRef.current.getBoundingClientRect()?.width || 1
-    const ch = containerRef.current.getBoundingClientRect()?.height || 1
-    const l = dr ? ((dr.left + (pos.x / imageSize.width) * dr.width) / cw) * 100 : (pos.x / imageSize.width) * 100
-    const t = dr ? ((dr.top + (pos.y / imageSize.height) * dr.height) / ch) * 100 : (pos.y / imageSize.height) * 100
+  const renderBridgeBarSimple = (pos, color, label, isActive, markerId) => {
+    if (!pos || !imageSize) return null
+    const l = (pos.x / imageSize.width) * 100
+    const t = (pos.y / imageSize.height) * 100
     return (
-      <div className="absolute transform -translate-x-1/2 -translate-y-1/2"
-        style={{
-          left: `${l}%`, top: `${t}%`,
-          filter: 'drop-shadow(0 0 4px rgba(0,0,0,0.5))',
-          zIndex: 15,
-          touchAction: 'none',
-          cursor: isActive ? 'grab' : 'pointer',
-          animation: isActive ? 'pulse-smarker 1.5s ease-in-out infinite' : 'none',
-        }}
-        onClick={(e) => { e.stopPropagation(); setActiveMarker(markerId) }}
-        data-markerid={markerId}>
+      <div style={{
+        position: 'absolute',
+        left: `${l}%`, top: `${t}%`,
+        transform: 'translate(-50%, -50%)',
+        filter: 'drop-shadow(0 0 4px rgba(0,0,0,0.5))',
+        zIndex: 15,
+        cursor: isActive ? 'grab' : 'pointer',
+        animation: isActive ? 'pulse-smarker 1.5s ease-in-out infinite' : 'none',
+      }} data-markerid={markerId}>
         <svg width={SZ_BRIDGE} height={SZ_BRIDGE * 1.6} viewBox={`0 0 ${SZ_BRIDGE} ${SZ_BRIDGE * 1.6}`}>
           <defs>
             <linearGradient id={`bg-${markerId}`} x1="0" y1="0" x2="0" y2="1">
@@ -425,27 +401,21 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
               <stop offset="100%" stopColor={isActive ? '#fff' : color} stopOpacity="0.3" />
             </linearGradient>
           </defs>
-          {/* Pill-shaped body */}
           <rect x={SZ_BRIDGE * 0.22} y="2" width={SZ_BRIDGE * 0.56} height={SZ_BRIDGE * 1.6 - 4} rx={SZ_BRIDGE * 0.28}
-            fill={`url(#bg-${markerId})`}
-            stroke={isActive ? '#fff' : color}
-            strokeWidth={isActive ? 2 : 1.5}
-            opacity={isActive ? 1 : 0.7}
-          />
-          {/* Center line */}
+            fill={`url(#bg-${markerId})`} stroke={isActive ? '#fff' : color}
+            strokeWidth={isActive ? 2 : 1.5} opacity={isActive ? 1 : 0.7} />
           <line x1={SZ_BRIDGE / 2} y1={SZ_BRIDGE * 0.35} x2={SZ_BRIDGE / 2} y2={SZ_BRIDGE * 1.25}
             stroke={color} strokeWidth="2" strokeLinecap="round" opacity={isActive ? 1 : 0.5} />
-          {/* Bottom dot */}
           <circle cx={SZ_BRIDGE / 2} cy={SZ_BRIDGE * 1.5 - 2} r="2" fill={color} opacity={isActive ? 1 : 0.4} />
         </svg>
-        <div className="absolute -bottom-[16px] left-1/2 -translate-x-1/2 text-[9px] font-medium whitespace-nowrap px-1.5 py-0.5 rounded"
-          style={{
-            color: '#fff',
-            background: `${color}cc`,
-            border: '1px solid rgba(255,255,255,0.2)',
-            backdropFilter: 'blur(4px)',
-            boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
-          }}>{label}</div>
+        <div style={{
+          position: 'absolute', bottom: '-16px', left: '50%', transform: 'translateX(-50%)',
+          fontSize: '9px', fontWeight: 500, whiteSpace: 'nowrap',
+          padding: '1px 6px', borderRadius: '4px',
+          color: '#fff', background: `${color}cc`,
+          border: '1px solid rgba(255,255,255,0.2)',
+          backdropFilter: 'blur(4px)', boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+        }}>{label}</div>
       </div>
     )
   }
@@ -597,53 +567,72 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
         onPointerLeave={handlePointerLeave}>
         {imageUrl && <img src={imageUrl} alt="Centrage" className="w-full h-full block object-contain" draggable={false} />}
 
-        <BoxingRect rect={boxOG} imageSize={imageSize} toImageCoords={toImageCoords}
-          onChange={setBoxOG} active={activeMarker === 'boxOG'} color={BOX_COLOR} label="Verre OG" containerRef={containerRef} />
-        <BoxingRect rect={boxOD} imageSize={imageSize} toImageCoords={toImageCoords}
-          onChange={setBoxOD} active={activeMarker === 'boxOD'} color={BOX_COLOR} label="Verre OD" containerRef={containerRef} />
+        {/* Image overlay — exact display rect, all markers render inside it with simple % */}
+        {imageSize && getImageDisplayRect() && (() => {
+          const dr = getImageDisplayRect()
+          return (
+            <div style={{
+              position: 'absolute',
+              left: dr.left,
+              top: dr.top,
+              width: dr.width,
+              height: dr.height,
+              overflow: 'visible',
+            }}>
+              {/* Boxing rectangles render via BoxingRect (which handles its own letterboxing) */}
+              <BoxingRect rect={boxOG} imageSize={imageSize} toImageCoords={toImageCoords}
+                onChange={setBoxOG} active={activeMarker === 'boxOG'} color={BOX_COLOR} label="Verre OG" containerRef={containerRef} />
+              <BoxingRect rect={boxOD} imageSize={imageSize} toImageCoords={toImageCoords}
+                onChange={setBoxOD} active={activeMarker === 'boxOD'} color={BOX_COLOR} label="Verre OD" containerRef={containerRef} />
 
-        {/* Vertical pupillary lines */}
-        {boxOG && leftEye && imageSize && (
-          <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 13 }}>
-            <line x1={`${(leftEye.x / imageSize.width) * 100}%`}
-              y1={`${((boxOG.y - boxOG.height / 2) / imageSize.height) * 100}%`}
-              x2={`${(leftEye.x / imageSize.width) * 100}%`}
-              y2={`${((boxOG.y + boxOG.height / 2) / imageSize.height) * 100}%`}
-              stroke="#f59e0b" strokeWidth="1.5" strokeDasharray="5 3" opacity="0.7" />
-            <line x1={`${((leftEye.x - 6) / imageSize.width) * 100}%`}
-              y1={`${(leftEye.y / imageSize.height) * 100}%`}
-              x2={`${((leftEye.x + 6) / imageSize.width) * 100}%`}
-              y2={`${(leftEye.y / imageSize.height) * 100}%`}
-              stroke="#f59e0b" strokeWidth="2" opacity="0.8" />
-          </svg>
-        )}
-        {boxOD && rightEye && imageSize && (
-          <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 13 }}>
-            <line x1={`${(rightEye.x / imageSize.width) * 100}%`}
-              y1={`${((boxOD.y - boxOD.height / 2) / imageSize.height) * 100}%`}
-              x2={`${(rightEye.x / imageSize.width) * 100}%`}
-              y2={`${((boxOD.y + boxOD.height / 2) / imageSize.height) * 100}%`}
-              stroke="#f59e0b" strokeWidth="1.5" strokeDasharray="5 3" opacity="0.7" />
-            <line x1={`${((rightEye.x - 6) / imageSize.width) * 100}%`}
-              y1={`${(rightEye.y / imageSize.height) * 100}%`}
-              x2={`${((rightEye.x + 6) / imageSize.width) * 100}%`}
-              y2={`${(rightEye.y / imageSize.height) * 100}%`}
-              stroke="#f59e0b" strokeWidth="2" opacity="0.8" />
-          </svg>
-        )}
+              {/* Pupillary lines */}
+              {boxOG && leftEye && (
+                <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 13 }}>
+                  <line x1={`${(leftEye.x / imageSize.width) * 100}%`}
+                    y1={`${((boxOG.y - boxOG.height / 2) / imageSize.height) * 100}%`}
+                    x2={`${(leftEye.x / imageSize.width) * 100}%`}
+                    y2={`${((boxOG.y + boxOG.height / 2) / imageSize.height) * 100}%`}
+                    stroke="#f59e0b" strokeWidth="1.5" strokeDasharray="5 3" opacity="0.7" />
+                  <line x1={`${((leftEye.x - 4) / imageSize.width) * 100}%`}
+                    y1={`${(leftEye.y / imageSize.height) * 100}%`}
+                    x2={`${((leftEye.x + 4) / imageSize.width) * 100}%`}
+                    y2={`${(leftEye.y / imageSize.height) * 100}%`}
+                    stroke="#f59e0b" strokeWidth="2" opacity="0.8" />
+                </svg>
+              )}
+              {boxOD && rightEye && (
+                <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 13 }}>
+                  <line x1={`${(rightEye.x / imageSize.width) * 100}%`}
+                    y1={`${((boxOD.y - boxOD.height / 2) / imageSize.height) * 100}%`}
+                    x2={`${(rightEye.x / imageSize.width) * 100}%`}
+                    y2={`${((boxOD.y + boxOD.height / 2) / imageSize.height) * 100}%`}
+                    stroke="#f59e0b" strokeWidth="1.5" strokeDasharray="5 3" opacity="0.7" />
+                  <line x1={`${((rightEye.x - 4) / imageSize.width) * 100}%`}
+                    y1={`${(rightEye.y / imageSize.height) * 100}%`}
+                    x2={`${((rightEye.x + 4) / imageSize.width) * 100}%`}
+                    y2={`${(rightEye.y / imageSize.height) * 100}%`}
+                    stroke="#f59e0b" strokeWidth="2" opacity="0.8" />
+                </svg>
+              )}
 
-        {bridgeL && renderBridgeBar(bridgeL, BRIDGE_COLOR, 'Pont G', activeMarker === 'bridgeL', 'bridgeL')}
-        {bridgeR && renderBridgeBar(bridgeR, BRIDGE_COLOR, 'Pont D', activeMarker === 'bridgeR', 'bridgeR')}
-        {leftEye && renderCrossMarker(leftEye, '#3b82f6', 'OG', activeMarker === 'left', 'left')}
-        {rightEye && renderCrossMarker(rightEye, 'var(--color-gold)', 'OD', activeMarker === 'right', 'right')}
+              {/* Bridge markers */}
+              {bridgeL && renderBridgeBarSimple(bridgeL, BRIDGE_COLOR, 'Pont G', activeMarker === 'bridgeL', 'bridgeL')}
+              {bridgeR && renderBridgeBarSimple(bridgeR, BRIDGE_COLOR, 'Pont D', activeMarker === 'bridgeR', 'bridgeR')}
+              {/* Eye markers */}
+              {leftEye && renderCrossMarkerSimple(leftEye, '#3b82f6', 'OG', activeMarker === 'left', 'left')}
+              {rightEye && renderCrossMarkerSimple(rightEye, 'var(--color-gold)', 'OD', activeMarker === 'right', 'right')}
 
-        {bridgeL && bridgeR && imageSize && (
-          <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 10 }}>
-            <line x1={`${(bridgeL.x / imageSize.width) * 100}%`} y1={`${(bridgeL.y / imageSize.height) * 100}%`}
-              x2={`${(bridgeR.x / imageSize.width) * 100}%`} y2={`${(bridgeR.y / imageSize.height) * 100}%`}
-              stroke={BRIDGE_COLOR} strokeWidth="3" opacity="0.5" />
-          </svg>
-        )}
+              {/* Bridge line */}
+              {bridgeL && bridgeR && (
+                <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 10 }}>
+                  <line x1={`${(bridgeL.x / imageSize.width) * 100}%`} y1={`${(bridgeL.y / imageSize.height) * 100}%`}
+                    x2={`${(bridgeR.x / imageSize.width) * 100}%`} y2={`${(bridgeR.y / imageSize.height) * 100}%`}
+                    stroke={BRIDGE_COLOR} strokeWidth="3" opacity="0.5" />
+                </svg>
+              )}
+            </div>
+          )
+        })()}
 
         <Loupe imageUrl={imageUrl} pos={loupePos} zoom={loupeZoom} size={140}
           displayRect={getImageDisplayRect()} imageSize={imageSize} />
