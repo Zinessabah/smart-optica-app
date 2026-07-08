@@ -309,7 +309,8 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     })
   }
 
-  const SZ = 20
+  const SZ = 24
+  const SZ_BRIDGE = 18
   const BRIDGE_COLOR = '#22c55e'
   const BOX_COLOR = '#8b5cf6'
 
@@ -317,18 +318,56 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     if (!pos || !imageSize) return null
     const l = (pos.x / imageSize.width) * 100
     const t = (pos.y / imageSize.height) * 100
+    const half = sz / 2
+    const gap = 5 // gap in crosshair center
+    const arm = half - 2
     return (
       <div className="absolute transform -translate-x-1/2 -translate-y-1/2 transition-all duration-150"
-        style={{ left: `${l}%`, top: `${t}%`, filter: 'drop-shadow(0 0 3px rgba(0,0,0,0.7))', zIndex: 15 }}
+        style={{
+          left: `${l}%`, top: `${t}%`,
+          filter: 'drop-shadow(0 0 4px rgba(0,0,0,0.5))',
+          zIndex: 15,
+          animation: isActive ? 'pulse-smarker 1.5s ease-in-out infinite' : 'none',
+        }}
         onClick={(e) => { e.stopPropagation(); setActiveMarker(markerId) }}>
         <svg width={sz} height={sz} viewBox={`0 0 ${sz} ${sz}`}>
-          <circle cx={sz/2} cy={sz/2} r={sz/2 - 1} fill="none" stroke={isActive ? '#fff' : color}
-            strokeWidth={isActive ? '2.5' : '1.5'} opacity={isActive ? 1 : 0.7} />
-          <line x1={3} y1={sz/2} x2={sz-3} y2={sz/2} stroke={color} strokeWidth="2" />
-          <line x1={sz/2} y1={3} x2={sz/2} y2={sz-3} stroke={color} strokeWidth="2" />
-          {isActive && <circle cx={sz/2} cy={sz/2} r={4} fill={color} opacity="0.5" />}
+          {/* Outer glow ring */}
+          <circle cx={half} cy={half} r={half - 1.5}
+            fill="none" stroke={isActive ? '#fff' : color}
+            strokeWidth={isActive ? 2.5 : 1.5}
+            opacity={isActive ? 1 : 0.6}
+          />
+          {/* Dotted ring for inactive */}
+          {!isActive && (
+            <circle cx={half} cy={half} r={half - 3}
+              fill="none" stroke={color} strokeWidth="1"
+              strokeDasharray="2 3" opacity="0.3"
+            />
+          )}
+          {/* Crosshair with gap */}
+          <line x1={gap} y1={half} x2={half - gap} y2={half}
+            stroke={color} strokeWidth="2" strokeLinecap="round" />
+          <line x1={half + gap} y1={half} x2={sz - gap} y2={half}
+            stroke={color} strokeWidth="2" strokeLinecap="round" />
+          <line x1={half} y1={gap} x2={half} y2={half - gap}
+            stroke={color} strokeWidth="2" strokeLinecap="round" />
+          <line x1={half} y1={half + gap} x2={half} y2={sz - gap}
+            stroke={color} strokeWidth="2" strokeLinecap="round" />
+          {/* Center dot */}
+          <circle cx={half} cy={half} r={2.5} fill={color} opacity={isActive ? 1 : 0.7} />
+          {/* Inner glow when active */}
+          {isActive && (
+            <circle cx={half} cy={half} r={5} fill={color} opacity="0.2" />
+          )}
         </svg>
-        <div className="absolute -bottom-4 left-1/2 -translate-x-1/2 text-[9px] font-bold whitespace-nowrap" style={{ color }}>{label}</div>
+        <div className="absolute -bottom-[18px] left-1/2 -translate-x-1/2 text-[10px] font-semibold whitespace-nowrap px-1.5 py-0.5 rounded"
+          style={{
+            color: '#fff',
+            background: `${color}cc`,
+            border: '1px solid rgba(255,255,255,0.2)',
+            backdropFilter: 'blur(4px)',
+            boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+          }}>{label}</div>
       </div>
     )
   }
@@ -339,14 +378,42 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     const t = (pos.y / imageSize.height) * 100
     return (
       <div className="absolute transform -translate-x-1/2 -translate-y-1/2 transition-all duration-150"
-        style={{ left: `${l}%`, top: `${t}%`, filter: 'drop-shadow(0 0 3px rgba(0,0,0,0.7))', zIndex: 15 }}
+        style={{
+          left: `${l}%`, top: `${t}%`,
+          filter: 'drop-shadow(0 0 4px rgba(0,0,0,0.5))',
+          zIndex: 15,
+          animation: isActive ? 'pulse-smarker 1.5s ease-in-out infinite' : 'none',
+        }}
         onClick={(e) => { e.stopPropagation(); setActiveMarker(markerId) }}>
-        <svg width={14} height={28} viewBox="0 0 14 28">
-          <rect x="3" y="2" width="8" height="24" rx="2" fill="none" stroke={isActive ? '#fff' : color}
-            strokeWidth={isActive ? '2.5' : '1.5'} opacity={isActive ? 1 : 0.7} />
-          <line x1="7" y1="7" x2="7" y2="21" stroke={color} strokeWidth="2" opacity={isActive ? 1 : 0.6} />
+        <svg width={SZ_BRIDGE} height={SZ_BRIDGE * 1.6} viewBox={`0 0 ${SZ_BRIDGE} ${SZ_BRIDGE * 1.6}`}>
+          <defs>
+            <linearGradient id={`bg-${markerId}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={isActive ? '#fff' : color} stopOpacity="0.3" />
+              <stop offset="50%" stopColor={color} stopOpacity="0.15" />
+              <stop offset="100%" stopColor={isActive ? '#fff' : color} stopOpacity="0.3" />
+            </linearGradient>
+          </defs>
+          {/* Pill-shaped body */}
+          <rect x={SZ_BRIDGE * 0.22} y="2" width={SZ_BRIDGE * 0.56} height={SZ_BRIDGE * 1.6 - 4} rx={SZ_BRIDGE * 0.28}
+            fill={`url(#bg-${markerId})`}
+            stroke={isActive ? '#fff' : color}
+            strokeWidth={isActive ? 2 : 1.5}
+            opacity={isActive ? 1 : 0.7}
+          />
+          {/* Center line */}
+          <line x1={SZ_BRIDGE / 2} y1={SZ_BRIDGE * 0.35} x2={SZ_BRIDGE / 2} y2={SZ_BRIDGE * 1.25}
+            stroke={color} strokeWidth="2" strokeLinecap="round" opacity={isActive ? 1 : 0.5} />
+          {/* Bottom dot */}
+          <circle cx={SZ_BRIDGE / 2} cy={SZ_BRIDGE * 1.5 - 2} r="2" fill={color} opacity={isActive ? 1 : 0.4} />
         </svg>
-        <div className="absolute -bottom-4 left-1/2 -translate-x-1/2 text-[9px] font-bold whitespace-nowrap" style={{ color }}>{label}</div>
+        <div className="absolute -bottom-[18px] left-1/2 -translate-x-1/2 text-[10px] font-semibold whitespace-nowrap px-1.5 py-0.5 rounded"
+          style={{
+            color: '#fff',
+            background: `${color}cc`,
+            border: '1px solid rgba(255,255,255,0.2)',
+            backdropFilter: 'blur(4px)',
+            boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+          }}>{label}</div>
       </div>
     )
   }

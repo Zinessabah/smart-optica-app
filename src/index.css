@@ -68,6 +68,13 @@ body {
   border-radius: 3px;
 }
 
+/* ── Marker pulse animation ── */
+
+@keyframes pulse-smarker {
+  0%, 100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  50% { opacity: 0.8; transform: translate(-50%, -50%) scale(1.08); }
+}
+
 /* ── Selection ── */
 
 ::selection {

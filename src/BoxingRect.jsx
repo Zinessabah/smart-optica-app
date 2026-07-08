@@ -1,9 +1,20 @@
 import { useState, useCallback } from 'react'
 
+/**
+ * Boxing rectangle — resizable with professional optical-style graphics.
+ *
+ * Features:
+ * - Double-outline with corner brackets (optical industry style)
+ * - Semi-transparent overlay outside the box (focus area)
+ * - Diamond resize handles
+ * - Cross-arrows move handle
+ * - Live dimension annotation on active edge
+ */
 export default function BoxingRect({
   rect, imageSize, toImageCoords, onChange, active, color, label, containerRef
 }) {
   const [drag, setDrag] = useState(null)
+  const [hoveredHandle, setHoveredHandle] = useState(null)
 
   const handlePointerDown = useCallback((mode, e) => {
     e.stopPropagation()
@@ -111,6 +122,14 @@ export default function BoxingRect({
   const boxWidthPct = toPctW(rect.width)
   const boxHeightPct = toPctH(rect.height)
 
+  // Corner bracket size (percentage of box)
+  const bracketLen = Math.min(boxWidthPct, boxHeightPct) * 0.25
+  const bracketMax = 8 // % max
+
+  // Half-sides : show thin line along edges, thicker at corners
+  const lineColor = color
+  const cornerColor = color
+
   const handles = {
     nw: { left: boxLeftPct, top: boxTopPct, cursor: 'nw-resize' },
     n:  { left: boxLeftPct + boxWidthPct / 2, top: boxTopPct, cursor: 'n-resize' },
@@ -122,18 +141,91 @@ export default function BoxingRect({
     w:  { left: boxLeftPct, top: boxTopPct + boxHeightPct / 2, cursor: 'w-resize' },
   }
 
+  // Corner bracket SVG: draw corner brackets at each corner
+  const cornerBrackets = []
+  const bk = Math.min(bracketLen, bracketMax)
+  const inset = 0 // bracket starts at edge
+
+  // Top-left
+  cornerBrackets.push(
+    <line key="tl-h" x1={`${boxLeftPct}%`} y1={`${boxTopPct + bk}%`}
+      x2={`${boxLeftPct}%`} y2={`${boxTopPct}%`}
+      stroke={cornerColor} strokeWidth="2.5" opacity="0.9" />,
+    <line key="tl-v" x1={`${boxLeftPct}%`} y1={`${boxTopPct}%`}
+      x2={`${boxLeftPct + bk}%`} y2={`${boxTopPct}%`}
+      stroke={cornerColor} strokeWidth="2.5" opacity="0.9" />
+  )
+  // Top-right
+  cornerBrackets.push(
+    <line key="tr-h" x1={`${boxLeftPct + boxWidthPct}%`} y1={`${boxTopPct + bk}%`}
+      x2={`${boxLeftPct + boxWidthPct}%`} y2={`${boxTopPct}%`}
+      stroke={cornerColor} strokeWidth="2.5" opacity="0.9" />,
+    <line key="tr-v" x1={`${boxLeftPct + boxWidthPct - bk}%`} y1={`${boxTopPct}%`}
+      x2={`${boxLeftPct + boxWidthPct}%`} y2={`${boxTopPct}%`}
+      stroke={cornerColor} strokeWidth="2.5" opacity="0.9" />
+  )
+  // Bottom-left
+  cornerBrackets.push(
+    <line key="bl-h" x1={`${boxLeftPct}%`} y1={`${boxTopPct + boxHeightPct - bk}%`}
+      x2={`${boxLeftPct}%`} y2={`${boxTopPct + boxHeightPct}%`}
+      stroke={cornerColor} strokeWidth="2.5" opacity="0.9" />,
+    <line key="bl-v" x1={`${boxLeftPct}%`} y1={`${boxTopPct + boxHeightPct}%`}
+      x2={`${boxLeftPct + bk}%`} y2={`${boxTopPct + boxHeightPct}%`}
+      stroke={cornerColor} strokeWidth="2.5" opacity="0.9" />
+  )
+  // Bottom-right
+  cornerBrackets.push(
+    <line key="br-h" x1={`${boxLeftPct + boxWidthPct}%`} y1={`${boxTopPct + boxHeightPct - bk}%`}
+      x2={`${boxLeftPct + boxWidthPct}%`} y2={`${boxTopPct + boxHeightPct}%`}
+      stroke={cornerColor} strokeWidth="2.5" opacity="0.9" />,
+    <line key="br-v" x1={`${boxLeftPct + boxWidthPct - bk}%`} y1={`${boxTopPct + boxHeightPct}%`}
+      x2={`${boxLeftPct + boxWidthPct}%`} y2={`${boxTopPct + boxHeightPct}%`}
+      stroke={cornerColor} strokeWidth="2.5" opacity="0.9" />
+  )
+
   return (
     <>
-      {/* Box outline */}
-      <div className="absolute pointer-events-none" style={{
-        left: `${boxLeftPct}%`, top: `${boxTopPct}%`,
-        width: `${boxWidthPct}%`, height: `${boxHeightPct}%`,
-        border: `1.5px dashed ${color}80`,
-        background: 'transparent', zIndex: 12,
-        borderRadius: '1px',
-      }} />
+      {/* Outside dim overlay — highlights the measurement area */}
+      {active && (
+        <div className="absolute pointer-events-none" style={{
+          left: 0, top: 0, width: '100%', height: '100%',
+          zIndex: 11,
+        }}>
+          {/* Top strip */}
+          <div style={{ position: 'absolute', left: 0, top: 0, width: '100%', height: `${boxTopPct}%`, background: 'rgba(0,0,0,0.35)' }} />
+          {/* Bottom strip */}
+          <div style={{ position: 'absolute', left: 0, top: `${boxTopPct + boxHeightPct}%`, width: '100%', height: `${100 - boxTopPct - boxHeightPct}%`, background: 'rgba(0,0,0,0.35)' }} />
+          {/* Left strip */}
+          <div style={{ position: 'absolute', left: 0, top: `${boxTopPct}%`, width: `${boxLeftPct}%`, height: `${boxHeightPct}%`, background: 'rgba(0,0,0,0.35)' }} />
+          {/* Right strip */}
+          <div style={{ position: 'absolute', left: `${boxLeftPct + boxWidthPct}%`, top: `${boxTopPct}%`, width: `${100 - boxLeftPct - boxWidthPct}%`, height: `${boxHeightPct}%`, background: 'rgba(0,0,0,0.35)' }} />
+        </div>
+      )}
 
-      {/* Move handle */}
+      {/* Dotted edge line (midline of each side) */}
+      <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 12 }}>
+        {/* Top edge thin dots */}
+        <line x1={`${boxLeftPct + 2}%`} y1={`${boxTopPct}%`}
+          x2={`${boxLeftPct + boxWidthPct - 2}%`} y2={`${boxTopPct}%`}
+          stroke={`${lineColor}50`} strokeWidth="1" strokeDasharray="3 4" />
+        {/* Bottom edge thin dots */}
+        <line x1={`${boxLeftPct + 2}%`} y1={`${boxTopPct + boxHeightPct}%`}
+          x2={`${boxLeftPct + boxWidthPct - 2}%`} y2={`${boxTopPct + boxHeightPct}%`}
+          stroke={`${lineColor}50`} strokeWidth="1" strokeDasharray="3 4" />
+        {/* Left edge thin dots */}
+        <line x1={`${boxLeftPct}%`} y1={`${boxTopPct + 2}%`}
+          x2={`${boxLeftPct}%`} y2={`${boxTopPct + boxHeightPct - 2}%`}
+          stroke={`${lineColor}50`} strokeWidth="1" strokeDasharray="3 4" />
+        {/* Right edge thin dots */}
+        <line x1={`${boxLeftPct + boxWidthPct}%`} y1={`${boxTopPct + 2}%`}
+          x2={`${boxLeftPct + boxWidthPct}%`} y2={`${boxTopPct + boxHeightPct - 2}%`}
+          stroke={`${lineColor}50`} strokeWidth="1" strokeDasharray="3 4" />
+
+        {/* Corner brackets */}
+        {active && cornerBrackets}
+      </svg>
+
+      {/* Move handle — cross-arrows diamond */}
       {active && (
         <div className="absolute cursor-move" style={{
           left: `${boxLeftPct + boxWidthPct / 2}%`, top: `${boxTopPct + boxHeightPct / 2}%`,
@@ -141,34 +233,61 @@ export default function BoxingRect({
         }}
           onPointerDown={(e) => handlePointerDown('move', e)}
           onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onClick={handleClick}>
-          <div className="flex items-center justify-center w-3.5 h-3.5 rounded-full text-[7px]"
-            style={{ background: `${color}cc`, color: '#fff', boxShadow: '0 0 4px rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.4)' }}>
-            ✥
-          </div>
+          <svg width="20" height="20" viewBox="0 0 20 20">
+            <circle cx="10" cy="10" r="9" fill={`${color}22`} stroke={color} strokeWidth="1.5" />
+            <path d="M10 4 L12 8 L8 8 Z M10 16 L12 12 L8 12 Z M4 10 L8 8 L8 12 Z M16 10 L12 8 L12 12 Z"
+              fill={color} opacity="0.8" />
+            <circle cx="10" cy="10" r="2" fill={color} />
+          </svg>
         </div>
       )}
 
-      {/* Resize handles */}
-      {active && Object.entries(handles).map(([key, h]) => (
-        <div key={key} className="absolute rounded-full" style={{
-          left: `${h.left}%`, top: `${h.top}%`,
-          width: '8px', height: '8px',
-          transform: 'translate(-50%, -50%)',
-          background: `${color}cc`, border: '1px solid rgba(255,255,255,0.5)',
-          cursor: h.cursor, zIndex: 21,
-          boxShadow: '0 0 3px rgba(0,0,0,0.3)',
-        }}
-          onPointerDown={(e) => handlePointerDown(key, e)}
-          onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onClick={handleClick} />
-      ))}
+      {/* Resize handles — diamond shaped */}
+      {active && Object.entries(handles).map(([key, h]) => {
+        const isHovered = hoveredHandle === key
+        return (
+          <div key={key} className="absolute" style={{
+            left: `${h.left}%`, top: `${h.top}%`,
+            transform: 'translate(-50%, -50%)',
+            zIndex: 21,
+            cursor: h.cursor,
+          }}
+            onPointerDown={(e) => handlePointerDown(key, e)}
+            onPointerMove={handlePointerMove} onPointerUp={handlePointerUp}
+            onClick={handleClick}
+            onMouseEnter={() => setHoveredHandle(key)}
+            onMouseLeave={() => setHoveredHandle(null)}>
+            <svg width="14" height="14" viewBox="0 0 14 14"
+              style={{ display: 'block', transition: 'transform 0.15s', transform: isHovered ? 'scale(1.3)' : 'scale(1)' }}>
+              <rect x="2" y="2" width="10" height="10" rx="2" ry="2"
+                fill={isHovered ? color : `${color}cc`}
+                stroke="rgba(255,255,255,0.6)" strokeWidth="1"
+                style={{ transition: 'fill 0.15s' }}
+              />
+              {/* Inner diamond accent */}
+              <rect x="4.5" y="4.5" width="5" height="5" rx="1"
+                fill="rgba(255,255,255,0.25)" />
+            </svg>
+          </div>
+        )
+      })}
 
-      {/* Label */}
+      {/* Label badge */}
       <div className="absolute pointer-events-none" style={{
-        left: `${boxLeftPct + boxWidthPct / 2}%`, top: `${boxTopPct - 2}%`,
-        transform: 'translate(-50%, -100%)', zIndex: 22,
+        left: `${boxLeftPct + boxWidthPct / 2}%`, top: `${boxTopPct}%`,
+        transform: 'translate(-50%, -50%)', zIndex: 22,
       }}>
-        <span className="text-[10px] font-bold whitespace-nowrap px-1.5 py-0.5 rounded"
-          style={{ background: color, color: '#fff' }}>
+        <span className="text-[10px] font-semibold whitespace-nowrap px-2 py-0.5 rounded-full inline-flex items-center gap-1"
+          style={{
+            background: `${color}dd`,
+            color: '#fff',
+            border: '1px solid rgba(255,255,255,0.3)',
+            backdropFilter: 'blur(4px)',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+          }}>
+          <svg width="8" height="8" viewBox="0 0 8 8">
+            <rect x="1" y="1" width="6" height="6" rx="1" fill="none" stroke="#fff" strokeWidth="1" opacity="0.6" />
+          </svg>
           {label}
         </span>
       </div>
