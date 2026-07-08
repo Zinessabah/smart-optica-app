@@ -315,9 +315,12 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   const BOX_COLOR = '#8b5cf6'
 
   const renderCrossMarker = (pos, color, label, isActive, markerId, sz = SZ) => {
-    if (!pos || !imageSize) return null
-    const l = (pos.x / imageSize.width) * 100
-    const t = (pos.y / imageSize.height) * 100
+    if (!pos || !imageSize || !containerRef.current) return null
+    const dr = getImageDisplayRect()
+    const cw = containerRef.current.getBoundingClientRect()?.width || 1
+    const ch = containerRef.current.getBoundingClientRect()?.height || 1
+    const l = dr ? ((dr.left + (pos.x / imageSize.width) * dr.width) / cw) * 100 : (pos.x / imageSize.width) * 100
+    const t = dr ? ((dr.top + (pos.y / imageSize.height) * dr.height) / ch) * 100 : (pos.y / imageSize.height) * 100
     const half = sz / 2
     const gap = 5 // gap in crosshair center
     const arm = half - 2
@@ -373,9 +376,12 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   }
 
   const renderBridgeBar = (pos, color, label, isActive, markerId) => {
-    if (!pos || !imageSize) return null
-    const l = (pos.x / imageSize.width) * 100
-    const t = (pos.y / imageSize.height) * 100
+    if (!pos || !imageSize || !containerRef.current) return null
+    const dr = getImageDisplayRect()
+    const cw = containerRef.current.getBoundingClientRect()?.width || 1
+    const ch = containerRef.current.getBoundingClientRect()?.height || 1
+    const l = dr ? ((dr.left + (pos.x / imageSize.width) * dr.width) / cw) * 100 : (pos.x / imageSize.width) * 100
+    const t = dr ? ((dr.top + (pos.y / imageSize.height) * dr.height) / ch) * 100 : (pos.y / imageSize.height) * 100
     return (
       <div className="absolute transform -translate-x-1/2 -translate-y-1/2 transition-all duration-150"
         style={{
@@ -612,7 +618,8 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
           </svg>
         )}
 
-        <Loupe imageUrl={imageUrl} pos={loupePos} zoom={loupeZoom} size={140} />
+        <Loupe imageUrl={imageUrl} pos={loupePos} zoom={loupeZoom} size={140}
+          displayRect={getImageDisplayRect()} imageSize={imageSize} />
 
         <div className="absolute bottom-3 left-0 right-0 text-center pointer-events-none" style={{ zIndex: 50 }}>
           <span className="inline-block px-3 py-1.5 rounded-full text-xs"

@@ -277,7 +277,8 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
           </div>
         )}
 
-        <Loupe imageUrl={imageUrl} pos={loupePos} zoom={3} size={140} />
+        <Loupe imageUrl={imageUrl} pos={loupePos} zoom={3} size={140}
+          displayRect={getImageDisplayRect()} imageSize={imageSize} />
       </div>
 
       {/* Spacing + reset */}

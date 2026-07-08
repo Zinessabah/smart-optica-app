@@ -1,10 +1,38 @@
-export default function Loupe({ imageUrl, pos, zoom = 3, size = 140 }) {
+/**
+ * Pure magnifying glass (loupe).
+ *
+ * Props:
+ *   imageUrl     - background image
+ *   pos          - { x, y } position over the container (container-relative px), or null
+ *   zoom         - magnification (default 3)
+ *   size         - diameter in px (default 140)
+ *   displayRect  - { left, top, width, height } of actual image display area within container
+ *                  (compensates object-fit:contain letterboxing)
+ *   imageSize    - { width, height } natural image dimensions (needed with displayRect)
+ */
+export default function Loupe({ imageUrl, pos, zoom = 3, size = 140, displayRect, imageSize }) {
   if (!pos || !imageUrl) return null
 
   const half = size / 2
   const bgSize = `${zoom * 100}%`
-  const bgX = -(pos.x * zoom - half)
-  const bgY = -(pos.y * zoom - half)
+
+  // If we have displayRect + imageSize, map pixel-level image coords to screen coords
+  // so the loupe background aligns with the actual image pixels under the cursor
+  let bgX, bgY
+
+  if (displayRect && imageSize) {
+    // Convert screen position (within container) to image pixel coordinates
+    const imgX = ((pos.x - displayRect.left) / displayRect.width) * imageSize.width
+    const imgY = ((pos.y - displayRect.top) / displayRect.height) * imageSize.height
+    // Then convert back: background image fills the entire element at zoom level
+    // backgroundPosition offsets the image so the pixel under cursor is centered
+    bgX = -(imgX * zoom - half)
+    bgY = -(imgY * zoom - half)
+  } else {
+    // Fallback: assume 1:1 mapping (no letterboxing)
+    bgX = -(pos.x * zoom - half)
+    bgY = -(pos.y * zoom - half)
+  }
 
   return (
     <div
