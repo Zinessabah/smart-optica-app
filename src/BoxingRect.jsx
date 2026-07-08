@@ -1,14 +1,8 @@
 import { useState, useCallback } from 'react'
 
 /**
- * Boxing rectangle — resizable with professional optical-style graphics.
- *
- * Features:
- * - Double-outline with corner brackets (optical industry style)
- * - Semi-transparent overlay outside the box (focus area)
- * - Diamond resize handles
- * - Cross-arrows move handle
- * - Live dimension annotation on active edge
+ * Boxing rectangle — 16 handles (2 per side + 4 corners), professional optical style.
+ * Corner brackets + dotted midlines + outside dim overlay.
  */
 export default function BoxingRect({
   rect, imageSize, toImageCoords, onChange, active, color, label, containerRef
@@ -39,6 +33,8 @@ export default function BoxingRect({
     switch (drag.mode) {
       case 'move':
         newRect.x = sr.x + dx; newRect.y = sr.y + dy; break
+
+      // Corners
       case 'nw': {
         const seX = sr.x + sr.width / 2, seY = sr.y + sr.height / 2
         const nwX = sr.x - sr.width / 2 + dx, nwY = sr.y - sr.height / 2 + dy
@@ -63,21 +59,70 @@ export default function BoxingRect({
         newRect.width = Math.max(minSize, seX - nwX); newRect.height = Math.max(minSize, seY - nwY)
         newRect.x = (nwX + seX) / 2; newRect.y = (nwY + seY) / 2; break
       }
-      case 'n': {
+
+      // Top edge: left third, right third
+      case 'nt-l': {
         const bottom = sr.y + sr.height / 2, top = sr.y - sr.height / 2 + dy
-        newRect.height = Math.max(minSize, bottom - top); newRect.y = (top + bottom) / 2; break
+        newRect.height = Math.max(minSize, bottom - top); newRect.y = (top + bottom) / 2
+        // also shift left side
+        const right = sr.x + sr.width / 2, leftC = sr.x - sr.width / 2 + dx * 0.5
+        if (right - leftC >= minSize) { newRect.width = right - leftC; newRect.x = (leftC + right) / 2 }
+        break
       }
-      case 's': {
+      case 'nt-r': {
+        const bottom = sr.y + sr.height / 2, top = sr.y - sr.height / 2 + dy
+        newRect.height = Math.max(minSize, bottom - top); newRect.y = (top + bottom) / 2
+        const leftC = sr.x - sr.width / 2, right = sr.x + sr.width / 2 + dx * 0.5
+        if (right - leftC >= minSize) { newRect.width = right - leftC; newRect.x = (leftC + right) / 2 }
+        break
+      }
+
+      // Bottom edge: left third, right third
+      case 'nb-l': {
         const top = sr.y - sr.height / 2, bottom = sr.y + sr.height / 2 + dy
-        newRect.height = Math.max(minSize, bottom - top); newRect.y = (top + bottom) / 2; break
+        newRect.height = Math.max(minSize, bottom - top); newRect.y = (top + bottom) / 2
+        const right = sr.x + sr.width / 2, leftC = sr.x - sr.width / 2 + dx * 0.5
+        if (right - leftC >= minSize) { newRect.width = right - leftC; newRect.x = (leftC + right) / 2 }
+        break
       }
-      case 'w': {
-        const right = sr.x + sr.width / 2, left = sr.x - sr.width / 2 + dx
-        newRect.width = Math.max(minSize, right - left); newRect.x = (left + right) / 2; break
+      case 'nb-r': {
+        const top = sr.y - sr.height / 2, bottom = sr.y + sr.height / 2 + dy
+        newRect.height = Math.max(minSize, bottom - top); newRect.y = (top + bottom) / 2
+        const leftC = sr.x - sr.width / 2, right = sr.x + sr.width / 2 + dx * 0.5
+        if (right - leftC >= minSize) { newRect.width = right - leftC; newRect.x = (leftC + right) / 2 }
+        break
       }
-      case 'e': {
-        const left = sr.x - sr.width / 2, right = sr.x + sr.width / 2 + dx
-        newRect.width = Math.max(minSize, right - left); newRect.x = (left + right) / 2; break
+
+      // Left edge: top third, bottom third
+      case 'wl-t': {
+        const right = sr.x + sr.width / 2, leftC = sr.x - sr.width / 2 + dx
+        newRect.width = Math.max(minSize, right - leftC); newRect.x = (leftC + right) / 2
+        const bottom = sr.y + sr.height / 2, topC = sr.y - sr.height / 2 + dy * 0.5
+        if (bottom - topC >= minSize) { newRect.height = bottom - topC; newRect.y = (topC + bottom) / 2 }
+        break
+      }
+      case 'wl-b': {
+        const right = sr.x + sr.width / 2, leftC = sr.x - sr.width / 2 + dx
+        newRect.width = Math.max(minSize, right - leftC); newRect.x = (leftC + right) / 2
+        const topC = sr.y - sr.height / 2, bottom = sr.y + sr.height / 2 + dy * 0.5
+        if (bottom - topC >= minSize) { newRect.height = bottom - topC; newRect.y = (topC + bottom) / 2 }
+        break
+      }
+
+      // Right edge: top third, bottom third
+      case 'er-t': {
+        const leftC = sr.x - sr.width / 2, right = sr.x + sr.width / 2 + dx
+        newRect.width = Math.max(minSize, right - leftC); newRect.x = (leftC + right) / 2
+        const bottom = sr.y + sr.height / 2, topC = sr.y - sr.height / 2 + dy * 0.5
+        if (bottom - topC >= minSize) { newRect.height = bottom - topC; newRect.y = (topC + bottom) / 2 }
+        break
+      }
+      case 'er-b': {
+        const leftC = sr.x - sr.width / 2, right = sr.x + sr.width / 2 + dx
+        newRect.width = Math.max(minSize, right - leftC); newRect.x = (leftC + right) / 2
+        const topC = sr.y - sr.height / 2, bottom = sr.y + sr.height / 2 + dy * 0.5
+        if (bottom - topC >= minSize) { newRect.height = bottom - topC; newRect.y = (topC + bottom) / 2 }
+        break
       }
     }
     onChange(newRect)
@@ -122,110 +167,87 @@ export default function BoxingRect({
   const boxWidthPct = toPctW(rect.width)
   const boxHeightPct = toPctH(rect.height)
 
-  // Corner bracket size (percentage of box)
-  const bracketLen = Math.min(boxWidthPct, boxHeightPct) * 0.25
-  const bracketMax = 8 // % max
-
-  // Half-sides : show thin line along edges, thicker at corners
-  const lineColor = color
-  const cornerColor = color
-
-  const handles = {
-    nw: { left: boxLeftPct, top: boxTopPct, cursor: 'nw-resize' },
-    n:  { left: boxLeftPct + boxWidthPct / 2, top: boxTopPct, cursor: 'n-resize' },
-    ne: { left: boxLeftPct + boxWidthPct, top: boxTopPct, cursor: 'ne-resize' },
-    e:  { left: boxLeftPct + boxWidthPct, top: boxTopPct + boxHeightPct / 2, cursor: 'e-resize' },
-    se: { left: boxLeftPct + boxWidthPct, top: boxTopPct + boxHeightPct, cursor: 'se-resize' },
-    s:  { left: boxLeftPct + boxWidthPct / 2, top: boxTopPct + boxHeightPct, cursor: 's-resize' },
-    sw: { left: boxLeftPct, top: boxTopPct + boxHeightPct, cursor: 'sw-resize' },
-    w:  { left: boxLeftPct, top: boxTopPct + boxHeightPct / 2, cursor: 'w-resize' },
+  // 16 handles: 4 corners + 12 edge handles (2 per side, placed at 1/3 and 2/3)
+  const hPos = {
+    nw:  { left: boxLeftPct,            top: boxTopPct,             cursor: 'nw-resize' },
+    nt:  { left: boxLeftPct + boxWidthPct/3,  top: boxTopPct,       cursor: 'n-resize' },
+    n:   { left: boxLeftPct + boxWidthPct*2/3, top: boxTopPct,      cursor: 'n-resize' },
+    ne:  { left: boxLeftPct + boxWidthPct,     top: boxTopPct,      cursor: 'ne-resize' },
+    er:  { left: boxLeftPct + boxWidthPct,     top: boxTopPct + boxHeightPct/3,   cursor: 'e-resize' },
+    e:   { left: boxLeftPct + boxWidthPct,     top: boxTopPct + boxHeightPct*2/3, cursor: 'e-resize' },
+    se:  { left: boxLeftPct + boxWidthPct,     top: boxTopPct + boxHeightPct,     cursor: 'se-resize' },
+    sb:  { left: boxLeftPct + boxWidthPct*2/3, top: boxTopPct + boxHeightPct,     cursor: 's-resize' },
+    s:   { left: boxLeftPct + boxWidthPct/3,   top: boxTopPct + boxHeightPct,     cursor: 's-resize' },
+    sw:  { left: boxLeftPct,            top: boxTopPct + boxHeightPct,     cursor: 'sw-resize' },
+    wl:  { left: boxLeftPct,            top: boxTopPct + boxHeightPct*2/3, cursor: 'w-resize' },
+    w:   { left: boxLeftPct,            top: boxTopPct + boxHeightPct/3,   cursor: 'w-resize' },
+    // Additional mid-edge handles for 2-per-side feel (total 16)
+    nw2: { left: boxLeftPct + boxWidthPct*0.15, top: boxTopPct,              cursor: 'n-resize' },
+    ne2: { left: boxLeftPct + boxWidthPct*0.85, top: boxTopPct,              cursor: 'n-resize' },
+    sw2: { left: boxLeftPct + boxWidthPct*0.15, top: boxTopPct + boxHeightPct, cursor: 's-resize' },
+    se2: { left: boxLeftPct + boxWidthPct*0.85, top: boxTopPct + boxHeightPct, cursor: 's-resize' },
   }
 
-  // Corner bracket SVG: draw corner brackets at each corner
-  const cornerBrackets = []
-  const bk = Math.min(bracketLen, bracketMax)
-  const inset = 0 // bracket starts at edge
+  // Map handle keys → drag mode
+  const handleToMode = {
+    nw: 'nw', nt: 'nt-l', n: 'nt-r', ne: 'ne',
+    er: 'er-t', e: 'er-b', se: 'se',
+    sb: 'nb-r', s: 'nb-l', sw: 'sw',
+    wl: 'wl-b', w: 'wl-t',
+    nw2: 'nt-l', ne2: 'nt-r', sw2: 'nb-l', se2: 'nb-r',
+  }
 
-  // Top-left
-  cornerBrackets.push(
-    <line key="tl-h" x1={`${boxLeftPct}%`} y1={`${boxTopPct + bk}%`}
-      x2={`${boxLeftPct}%`} y2={`${boxTopPct}%`}
-      stroke={cornerColor} strokeWidth="2.5" opacity="0.9" />,
-    <line key="tl-v" x1={`${boxLeftPct}%`} y1={`${boxTopPct}%`}
-      x2={`${boxLeftPct + bk}%`} y2={`${boxTopPct}%`}
-      stroke={cornerColor} strokeWidth="2.5" opacity="0.9" />
-  )
-  // Top-right
-  cornerBrackets.push(
-    <line key="tr-h" x1={`${boxLeftPct + boxWidthPct}%`} y1={`${boxTopPct + bk}%`}
-      x2={`${boxLeftPct + boxWidthPct}%`} y2={`${boxTopPct}%`}
-      stroke={cornerColor} strokeWidth="2.5" opacity="0.9" />,
-    <line key="tr-v" x1={`${boxLeftPct + boxWidthPct - bk}%`} y1={`${boxTopPct}%`}
-      x2={`${boxLeftPct + boxWidthPct}%`} y2={`${boxTopPct}%`}
-      stroke={cornerColor} strokeWidth="2.5" opacity="0.9" />
-  )
-  // Bottom-left
-  cornerBrackets.push(
-    <line key="bl-h" x1={`${boxLeftPct}%`} y1={`${boxTopPct + boxHeightPct - bk}%`}
-      x2={`${boxLeftPct}%`} y2={`${boxTopPct + boxHeightPct}%`}
-      stroke={cornerColor} strokeWidth="2.5" opacity="0.9" />,
-    <line key="bl-v" x1={`${boxLeftPct}%`} y1={`${boxTopPct + boxHeightPct}%`}
-      x2={`${boxLeftPct + bk}%`} y2={`${boxTopPct + boxHeightPct}%`}
-      stroke={cornerColor} strokeWidth="2.5" opacity="0.9" />
-  )
-  // Bottom-right
-  cornerBrackets.push(
-    <line key="br-h" x1={`${boxLeftPct + boxWidthPct}%`} y1={`${boxTopPct + boxHeightPct - bk}%`}
-      x2={`${boxLeftPct + boxWidthPct}%`} y2={`${boxTopPct + boxHeightPct}%`}
-      stroke={cornerColor} strokeWidth="2.5" opacity="0.9" />,
-    <line key="br-v" x1={`${boxLeftPct + boxWidthPct - bk}%`} y1={`${boxTopPct + boxHeightPct}%`}
-      x2={`${boxLeftPct + boxWidthPct}%`} y2={`${boxTopPct + boxHeightPct}%`}
-      stroke={cornerColor} strokeWidth="2.5" opacity="0.9" />
-  )
+  // Corner brackets
+  const cornerBrackets = []
+  const bk = Math.min(Math.min(boxWidthPct, boxHeightPct) * 0.25, 8)
+
+  const addBracket = (x1, y1, x2, y2) => {
+    cornerBrackets.push(
+      <line key={`cb-${cornerBrackets.length}`} x1={`${x1}%`} y1={`${y1}%`}
+        x2={`${x2}%`} y2={`${y2}%`}
+        stroke={color} strokeWidth="2.5" opacity="0.9" />
+    )
+  }
+
+  addBracket(boxLeftPct, boxTopPct + bk, boxLeftPct, boxTopPct)
+  addBracket(boxLeftPct, boxTopPct, boxLeftPct + bk, boxTopPct)
+  addBracket(boxLeftPct + boxWidthPct, boxTopPct + bk, boxLeftPct + boxWidthPct, boxTopPct)
+  addBracket(boxLeftPct + boxWidthPct - bk, boxTopPct, boxLeftPct + boxWidthPct, boxTopPct)
+  addBracket(boxLeftPct, boxTopPct + boxHeightPct - bk, boxLeftPct, boxTopPct + boxHeightPct)
+  addBracket(boxLeftPct, boxTopPct + boxHeightPct, boxLeftPct + bk, boxTopPct + boxHeightPct)
+  addBracket(boxLeftPct + boxWidthPct, boxTopPct + boxHeightPct - bk, boxLeftPct + boxWidthPct, boxTopPct + boxHeightPct)
+  addBracket(boxLeftPct + boxWidthPct - bk, boxTopPct + boxHeightPct, boxLeftPct + boxWidthPct, boxTopPct + boxHeightPct)
 
   return (
     <>
-      {/* Outside dim overlay — highlights the measurement area */}
+      {/* Outside dim overlay */}
       {active && (
-        <div className="absolute pointer-events-none" style={{
-          left: 0, top: 0, width: '100%', height: '100%',
-          zIndex: 11,
-        }}>
-          {/* Top strip */}
+        <div className="absolute pointer-events-none" style={{ left: 0, top: 0, width: '100%', height: '100%', zIndex: 11 }}>
           <div style={{ position: 'absolute', left: 0, top: 0, width: '100%', height: `${boxTopPct}%`, background: 'rgba(0,0,0,0.35)' }} />
-          {/* Bottom strip */}
           <div style={{ position: 'absolute', left: 0, top: `${boxTopPct + boxHeightPct}%`, width: '100%', height: `${100 - boxTopPct - boxHeightPct}%`, background: 'rgba(0,0,0,0.35)' }} />
-          {/* Left strip */}
           <div style={{ position: 'absolute', left: 0, top: `${boxTopPct}%`, width: `${boxLeftPct}%`, height: `${boxHeightPct}%`, background: 'rgba(0,0,0,0.35)' }} />
-          {/* Right strip */}
           <div style={{ position: 'absolute', left: `${boxLeftPct + boxWidthPct}%`, top: `${boxTopPct}%`, width: `${100 - boxLeftPct - boxWidthPct}%`, height: `${boxHeightPct}%`, background: 'rgba(0,0,0,0.35)' }} />
         </div>
       )}
 
-      {/* Dotted edge line (midline of each side) */}
+      {/* Dotted edge lines + corner brackets */}
       <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 12 }}>
-        {/* Top edge thin dots */}
         <line x1={`${boxLeftPct + 2}%`} y1={`${boxTopPct}%`}
           x2={`${boxLeftPct + boxWidthPct - 2}%`} y2={`${boxTopPct}%`}
-          stroke={`${lineColor}50`} strokeWidth="1" strokeDasharray="3 4" />
-        {/* Bottom edge thin dots */}
+          stroke={`${color}50`} strokeWidth="1" strokeDasharray="3 4" />
         <line x1={`${boxLeftPct + 2}%`} y1={`${boxTopPct + boxHeightPct}%`}
           x2={`${boxLeftPct + boxWidthPct - 2}%`} y2={`${boxTopPct + boxHeightPct}%`}
-          stroke={`${lineColor}50`} strokeWidth="1" strokeDasharray="3 4" />
-        {/* Left edge thin dots */}
+          stroke={`${color}50`} strokeWidth="1" strokeDasharray="3 4" />
         <line x1={`${boxLeftPct}%`} y1={`${boxTopPct + 2}%`}
           x2={`${boxLeftPct}%`} y2={`${boxTopPct + boxHeightPct - 2}%`}
-          stroke={`${lineColor}50`} strokeWidth="1" strokeDasharray="3 4" />
-        {/* Right edge thin dots */}
+          stroke={`${color}50`} strokeWidth="1" strokeDasharray="3 4" />
         <line x1={`${boxLeftPct + boxWidthPct}%`} y1={`${boxTopPct + 2}%`}
           x2={`${boxLeftPct + boxWidthPct}%`} y2={`${boxTopPct + boxHeightPct - 2}%`}
-          stroke={`${lineColor}50`} strokeWidth="1" strokeDasharray="3 4" />
-
-        {/* Corner brackets */}
+          stroke={`${color}50`} strokeWidth="1" strokeDasharray="3 4" />
         {active && cornerBrackets}
       </svg>
 
-      {/* Move handle — cross-arrows diamond */}
+      {/* Move handle */}
       {active && (
         <div className="absolute cursor-move" style={{
           left: `${boxLeftPct + boxWidthPct / 2}%`, top: `${boxTopPct + boxHeightPct / 2}%`,
@@ -242,30 +264,31 @@ export default function BoxingRect({
         </div>
       )}
 
-      {/* Resize handles — diamond shaped */}
-      {active && Object.entries(handles).map(([key, h]) => {
+      {/* 16 resize handles */}
+      {active && Object.entries(hPos).map(([key, h]) => {
         const isHovered = hoveredHandle === key
+        const mode = handleToMode[key] || key
+        const isCorner = ['nw','ne','sw','se'].includes(key)
+        const sz = isCorner ? 14 : 10
         return (
           <div key={key} className="absolute" style={{
             left: `${h.left}%`, top: `${h.top}%`,
             transform: 'translate(-50%, -50%)',
-            zIndex: 21,
-            cursor: h.cursor,
+            zIndex: 21, cursor: h.cursor,
           }}
-            onPointerDown={(e) => handlePointerDown(key, e)}
+            onPointerDown={(e) => handlePointerDown(mode, e)}
             onPointerMove={handlePointerMove} onPointerUp={handlePointerUp}
             onClick={handleClick}
             onMouseEnter={() => setHoveredHandle(key)}
             onMouseLeave={() => setHoveredHandle(null)}>
-            <svg width="14" height="14" viewBox="0 0 14 14"
-              style={{ display: 'block', transition: 'transform 0.15s', transform: isHovered ? 'scale(1.3)' : 'scale(1)' }}>
-              <rect x="2" y="2" width="10" height="10" rx="2" ry="2"
+            <svg width={sz} height={sz} viewBox={`0 0 ${sz} ${sz}`}
+              style={{ display: 'block', transition: 'transform 0.15s', transform: isHovered ? 'scale(1.4)' : 'scale(1)' }}>
+              <rect x={sz*0.15} y={sz*0.15} width={sz*0.7} height={sz*0.7} rx={sz*0.15}
                 fill={isHovered ? color : `${color}cc`}
                 stroke="rgba(255,255,255,0.6)" strokeWidth="1"
                 style={{ transition: 'fill 0.15s' }}
               />
-              {/* Inner diamond accent */}
-              <rect x="4.5" y="4.5" width="5" height="5" rx="1"
+              <rect x={sz*0.35} y={sz*0.35} width={sz*0.3} height={sz*0.3} rx={sz*0.08}
                 fill="rgba(255,255,255,0.25)" />
             </svg>
           </div>
@@ -277,7 +300,7 @@ export default function BoxingRect({
         left: `${boxLeftPct + boxWidthPct / 2}%`, top: `${boxTopPct}%`,
         transform: 'translate(-50%, -50%)', zIndex: 22,
       }}>
-        <span className="text-[10px] font-semibold whitespace-nowrap px-2 py-0.5 rounded-full inline-flex items-center gap-1"
+        <span className="text-[9px] font-semibold whitespace-nowrap px-1.5 py-0.5 rounded-full inline-flex items-center gap-1"
           style={{
             background: `${color}dd`,
             color: '#fff',
@@ -285,9 +308,6 @@ export default function BoxingRect({
             backdropFilter: 'blur(4px)',
             boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
           }}>
-          <svg width="8" height="8" viewBox="0 0 8 8">
-            <rect x="1" y="1" width="6" height="6" rx="1" fill="none" stroke="#fff" strokeWidth="1" opacity="0.6" />
-          </svg>
           {label}
         </span>
       </div>

@@ -314,6 +314,41 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   const BRIDGE_COLOR = '#22c55e'
   const BOX_COLOR = '#8b5cf6'
 
+  // ── Drag state for markers ──
+  const [dragMarker, setDragMarker] = useState(null) // { markerId, startClient, startPos }
+
+  const handleMarkerPointerDown = useCallback((markerId, e) => {
+    e.stopPropagation()
+    e.preventDefault()
+    e.target.setPointerCapture(e.pointerId)
+    const currentPos = {
+      bridgeL, bridgeR, leftEye, rightEye
+    }
+    setDragMarker({ markerId, startClient: { x: e.clientX, y: e.clientY }, startPos: { ...currentPos[markerId] } })
+  }, [bridgeL, bridgeR, leftEye, rightEye])
+
+  const handleMarkerPointerMove = useCallback((e) => {
+    if (!dragMarker) return
+    const startImg = toImageCoords(dragMarker.startClient.x, dragMarker.startClient.y)
+    const currImg = toImageCoords(e.clientX, e.clientY)
+    if (!startImg || !currImg) return
+    const dx = currImg.x - startImg.x
+    const dy = currImg.y - startImg.y
+    const newPos = { x: dragMarker.startPos.x + dx, y: dragMarker.startPos.y + dy }
+
+    switch (dragMarker.markerId) {
+      case 'bridgeL': setBridgeL(newPos); break
+      case 'bridgeR': setBridgeR(newPos); break
+      case 'left': setLeftEye(newPos); break
+      case 'right': setRightEye(newPos); break
+    }
+  }, [dragMarker, toImageCoords])
+
+  const handleMarkerPointerUp = useCallback((e) => {
+    if (e.target) e.target.releasePointerCapture(e.pointerId)
+    setDragMarker(null)
+  }, [])
+
   const renderCrossMarker = (pos, color, label, isActive, markerId, sz = SZ) => {
     if (!pos || !imageSize || !containerRef.current) return null
     const dr = getImageDisplayRect()
@@ -325,14 +360,19 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     const gap = 5 // gap in crosshair center
     const arm = half - 2
     return (
-      <div className="absolute transform -translate-x-1/2 -translate-y-1/2 transition-all duration-150"
+      <div className="absolute transform -translate-x-1/2 -translate-y-1/2"
         style={{
           left: `${l}%`, top: `${t}%`,
           filter: 'drop-shadow(0 0 4px rgba(0,0,0,0.5))',
           zIndex: 15,
+          touchAction: 'none',
+          cursor: isActive ? 'grab' : 'pointer',
           animation: isActive ? 'pulse-smarker 1.5s ease-in-out infinite' : 'none',
         }}
-        onClick={(e) => { e.stopPropagation(); setActiveMarker(markerId) }}>
+        onClick={(e) => { e.stopPropagation(); setActiveMarker(markerId) }}
+        onPointerDown={(e) => { handleMarkerPointerDown(markerId, e) }}
+        onPointerMove={handleMarkerPointerMove}
+        onPointerUp={handleMarkerPointerUp}>
         <svg width={sz} height={sz} viewBox={`0 0 ${sz} ${sz}`}>
           {/* Outer glow ring */}
           <circle cx={half} cy={half} r={half - 1.5}
@@ -363,7 +403,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
             <circle cx={half} cy={half} r={5} fill={color} opacity="0.2" />
           )}
         </svg>
-        <div className="absolute -bottom-[18px] left-1/2 -translate-x-1/2 text-[10px] font-semibold whitespace-nowrap px-1.5 py-0.5 rounded"
+        <div className="absolute -bottom-[16px] left-1/2 -translate-x-1/2 text-[9px] font-medium whitespace-nowrap px-1.5 py-0.5 rounded"
           style={{
             color: '#fff',
             background: `${color}cc`,
@@ -383,14 +423,19 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     const l = dr ? ((dr.left + (pos.x / imageSize.width) * dr.width) / cw) * 100 : (pos.x / imageSize.width) * 100
     const t = dr ? ((dr.top + (pos.y / imageSize.height) * dr.height) / ch) * 100 : (pos.y / imageSize.height) * 100
     return (
-      <div className="absolute transform -translate-x-1/2 -translate-y-1/2 transition-all duration-150"
+      <div className="absolute transform -translate-x-1/2 -translate-y-1/2"
         style={{
           left: `${l}%`, top: `${t}%`,
           filter: 'drop-shadow(0 0 4px rgba(0,0,0,0.5))',
           zIndex: 15,
+          touchAction: 'none',
+          cursor: isActive ? 'grab' : 'pointer',
           animation: isActive ? 'pulse-smarker 1.5s ease-in-out infinite' : 'none',
         }}
-        onClick={(e) => { e.stopPropagation(); setActiveMarker(markerId) }}>
+        onClick={(e) => { e.stopPropagation(); setActiveMarker(markerId) }}
+        onPointerDown={(e) => handleMarkerPointerDown(markerId, e)}
+        onPointerMove={handleMarkerPointerMove}
+        onPointerUp={handleMarkerPointerUp}>
         <svg width={SZ_BRIDGE} height={SZ_BRIDGE * 1.6} viewBox={`0 0 ${SZ_BRIDGE} ${SZ_BRIDGE * 1.6}`}>
           <defs>
             <linearGradient id={`bg-${markerId}`} x1="0" y1="0" x2="0" y2="1">
@@ -412,7 +457,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
           {/* Bottom dot */}
           <circle cx={SZ_BRIDGE / 2} cy={SZ_BRIDGE * 1.5 - 2} r="2" fill={color} opacity={isActive ? 1 : 0.4} />
         </svg>
-        <div className="absolute -bottom-[18px] left-1/2 -translate-x-1/2 text-[10px] font-semibold whitespace-nowrap px-1.5 py-0.5 rounded"
+        <div className="absolute -bottom-[16px] left-1/2 -translate-x-1/2 text-[9px] font-medium whitespace-nowrap px-1.5 py-0.5 rounded"
           style={{
             color: '#fff',
             background: `${color}cc`,
