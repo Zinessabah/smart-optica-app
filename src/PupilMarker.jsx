@@ -172,51 +172,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     return { width: 72, height: 56 }
   }, [calibration])
 
-  const handlePointerMove = useCallback((e) => {
-    if (!containerRef.current) return
-    const r = containerRef.current.getBoundingClientRect()
-    setLoupePos({ x: e.clientX - r.left, y: e.clientY - r.top })
-  }, [])
-
   const handlePointerLeave = useCallback(() => setLoupePos(null), [])
-
-  const handleClick = useCallback((e) => {
-    const coords = toImageCoords(e.clientX, e.clientY)
-    if (!coords) return
-    const pt = { x: Math.round(coords.x), y: Math.round(coords.y) }
-    switch (activeMarker) {
-      case 'bridgeL': setBridgeL(pt); break
-      case 'bridgeR': setBridgeR(pt); break
-      case 'left': setLeftEye(pt); break
-      case 'right': setRightEye(pt); break
-      case 'boxOG': {
-        if (boxOG) break
-        const def = getDefaultBoxSize()
-        if (bridgeL) {
-          setBoxOG({ x: bridgeL.x - def.width / 2, y: bridgeL.y, width: def.width, height: def.height })
-          setLeftEye({ x: bridgeL.x - def.width / 2, y: bridgeL.y })
-        } else {
-          setBoxOG({ x: pt.x, y: pt.y, width: def.width, height: def.height })
-          setLeftEye({ x: pt.x, y: pt.y })
-        }
-        break
-      }
-      case 'boxOD': {
-        if (boxOD) break
-        if (!boxOG) {
-          const def = getDefaultBoxSize()
-          if (bridgeR) {
-            setBoxOD({ x: bridgeR.x + def.width / 2, y: bridgeR.y, width: def.width, height: def.height })
-            setRightEye({ x: bridgeR.x + def.width / 2, y: bridgeR.y })
-          } else {
-            setBoxOD({ x: pt.x, y: pt.y, width: def.width, height: def.height })
-            setRightEye({ x: pt.x, y: pt.y })
-          }
-        }
-        break
-      }
-    }
-  }, [activeMarker, toImageCoords, boxOG, boxOD, bridgeL, bridgeR, getDefaultBoxSize])
 
   const undo = () => {
     switch (activeMarker) {
@@ -315,19 +271,73 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   const BOX_COLOR = '#8b5cf6'
 
   // ── Drag state for markers ──
-  const [dragMarker, setDragMarker] = useState(null) // { markerId, startClient, startPos }
+  const [dragMarker, setDragMarker] = useState(null)
+  const currentPosRef = useRef({ bridgeL: null, bridgeR: null, leftEye: null, rightEye: null })
 
-  const handleMarkerPointerDown = useCallback((markerId, e) => {
-    e.stopPropagation()
-    e.preventDefault()
-    e.target.setPointerCapture(e.pointerId)
-    const currentPos = {
-      bridgeL, bridgeR, leftEye, rightEye
+  // Keep ref in sync with state for the drag handler
+  useEffect(() => { currentPosRef.current = { bridgeL, bridgeR, leftEye, rightEye } }, [bridgeL, bridgeR, leftEye, rightEye])
+
+  // Single pointer handler on the container: detect target and drag
+  const handleContainerPointerDown = useCallback((e) => {
+    // Find which marker was hit (look at the markerId stored as data attribute)
+    let target = e.target
+    while (target && target !== containerRef.current) {
+      if (target.dataset?.markerid) {
+        const markerId = target.dataset.markerid
+        e.stopPropagation()
+        e.preventDefault()
+        target.setPointerCapture(e.pointerId)
+        const startPos = currentPosRef.current[markerId]
+        if (!startPos) return
+        setActiveMarker(markerId)
+        setDragMarker({ markerId, startClient: { x: e.clientX, y: e.clientY }, startPos: { ...startPos } })
+        return
+      }
+      target = target.parentElement
     }
-    setDragMarker({ markerId, startClient: { x: e.clientX, y: e.clientY }, startPos: { ...currentPos[markerId] } })
-  }, [bridgeL, bridgeR, leftEye, rightEye])
+    // Otherwise regular click → place marker or create box using handleClick logic
+    const coords = toImageCoords(e.clientX, e.clientY)
+    if (!coords) return
+    const pt = { x: Math.round(coords.x), y: Math.round(coords.y) }
+    // Inline handleClick logic
+    const am = activeMarker
+    if (am === 'bridgeL') { setBridgeL(pt) }
+    else if (am === 'bridgeR') { setBridgeR(pt) }
+    else if (am === 'left') { setLeftEye(pt) }
+    else if (am === 'right') { setRightEye(pt) }
+    else if (am === 'boxOG') {
+      if (boxOG) return
+      const def = getDefaultBoxSize()
+      if (bridgeL) {
+        setBoxOG({ x: bridgeL.x - def.width / 2, y: bridgeL.y, width: def.width, height: def.height })
+        setLeftEye({ x: bridgeL.x - def.width / 2, y: bridgeL.y })
+      } else {
+        setBoxOG({ x: pt.x, y: pt.y, width: def.width, height: def.height })
+        setLeftEye({ x: pt.x, y: pt.y })
+      }
+    }
+    else if (am === 'boxOD') {
+      if (boxOD) return
+      if (!boxOG) {
+        const def = getDefaultBoxSize()
+        if (bridgeR) {
+          setBoxOD({ x: bridgeR.x + def.width / 2, y: bridgeR.y, width: def.width, height: def.height })
+          setRightEye({ x: bridgeR.x + def.width / 2, y: bridgeR.y })
+        } else {
+          setBoxOD({ x: pt.x, y: pt.y, width: def.width, height: def.height })
+          setRightEye({ x: pt.x, y: pt.y })
+        }
+      }
+    }
+  }, [toImageCoords, activeMarker, bridgeL, bridgeR, boxOG, boxOD, getDefaultBoxSize, getBridgeHalfGapPx])
 
-  const handleMarkerPointerMove = useCallback((e) => {
+  const handleContainerPointerMove = useCallback((e) => {
+    // Loupe tracking always
+    if (containerRef.current) {
+      const r = containerRef.current.getBoundingClientRect()
+      setLoupePos({ x: e.clientX - r.left, y: e.clientY - r.top })
+    }
+    // Marker drag
     if (!dragMarker) return
     const startImg = toImageCoords(dragMarker.startClient.x, dragMarker.startClient.y)
     const currImg = toImageCoords(e.clientX, e.clientY)
@@ -335,19 +345,16 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     const dx = currImg.x - startImg.x
     const dy = currImg.y - startImg.y
     const newPos = { x: dragMarker.startPos.x + dx, y: dragMarker.startPos.y + dy }
-
-    switch (dragMarker.markerId) {
-      case 'bridgeL': setBridgeL(newPos); break
-      case 'bridgeR': setBridgeR(newPos); break
-      case 'left': setLeftEye(newPos); break
-      case 'right': setRightEye(newPos); break
-    }
+    const setters = { bridgeL: setBridgeL, bridgeR: setBridgeR, left: setLeftEye, right: setRightEye }
+    if (setters[dragMarker.markerId]) setters[dragMarker.markerId](newPos)
   }, [dragMarker, toImageCoords])
 
-  const handleMarkerPointerUp = useCallback((e) => {
-    if (e.target) e.target.releasePointerCapture(e.pointerId)
-    setDragMarker(null)
-  }, [])
+  const handleContainerPointerUp = useCallback((e) => {
+    if (dragMarker) {
+      if (e.target && e.target.releasePointerCapture) e.target.releasePointerCapture(e.pointerId)
+      setDragMarker(null)
+    }
+  }, [dragMarker])
 
   const renderCrossMarker = (pos, color, label, isActive, markerId, sz = SZ) => {
     if (!pos || !imageSize || !containerRef.current) return null
@@ -369,10 +376,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
           cursor: isActive ? 'grab' : 'pointer',
           animation: isActive ? 'pulse-smarker 1.5s ease-in-out infinite' : 'none',
         }}
-        onClick={(e) => { e.stopPropagation(); setActiveMarker(markerId) }}
-        onPointerDown={(e) => { handleMarkerPointerDown(markerId, e) }}
-        onPointerMove={handleMarkerPointerMove}
-        onPointerUp={handleMarkerPointerUp}>
+        data-markerid={markerId}>
         <svg width={sz} height={sz} viewBox={`0 0 ${sz} ${sz}`}>
           {/* Outer glow ring */}
           <circle cx={half} cy={half} r={half - 1.5}
@@ -433,9 +437,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
           animation: isActive ? 'pulse-smarker 1.5s ease-in-out infinite' : 'none',
         }}
         onClick={(e) => { e.stopPropagation(); setActiveMarker(markerId) }}
-        onPointerDown={(e) => handleMarkerPointerDown(markerId, e)}
-        onPointerMove={handleMarkerPointerMove}
-        onPointerUp={handleMarkerPointerUp}>
+        data-markerid={markerId}>
         <svg width={SZ_BRIDGE} height={SZ_BRIDGE * 1.6} viewBox={`0 0 ${SZ_BRIDGE} ${SZ_BRIDGE * 1.6}`}>
           <defs>
             <linearGradient id={`bg-${markerId}`} x1="0" y1="0" x2="0" y2="1">
@@ -612,7 +614,10 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       <div ref={containerRef}
         className="relative rounded-2xl border overflow-hidden select-none cursor-crosshair"
         style={{ background: '#08080a', borderColor: 'var(--color-border)', aspectRatio: imageSize ? `${imageSize.width}/${imageSize.height}` : '4/3' }}
-        onClick={handleClick} onPointerMove={handlePointerMove} onPointerLeave={handlePointerLeave}>
+        onPointerDown={handleContainerPointerDown}
+        onPointerMove={handleContainerPointerMove}
+        onPointerUp={handleContainerPointerUp}
+        onPointerLeave={handlePointerLeave}>
         {imageUrl && <img src={imageUrl} alt="Centrage" className="w-full h-full block object-contain" draggable={false} />}
 
         <BoxingRect rect={boxOG} imageSize={imageSize} toImageCoords={toImageCoords}
