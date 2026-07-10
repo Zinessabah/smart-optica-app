@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { ArrowLeft, RotateCcw, Check, SkipForward, AlertTriangle, Loader2, Settings2, Camera } from 'lucide-react'
+import { RotateCcw, Check, SkipForward, AlertTriangle, Loader2, Settings2, Camera } from 'lucide-react'
 import Loupe from './Loupe'
 import { detectCalibrationMarkers } from './detectMarkers'
 
@@ -12,9 +12,15 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
   const [showSpacingInput, setShowSpacingInput] = useState(false)
   const [autoDetecting, setAutoDetecting] = useState(true)
   const [autoFailed, setAutoFailed] = useState(false)
-  const [editingIndex, setEditingIndex] = useState(null)
   const cancelAutoRef = useRef(false)
   const containerRef = useRef(null)
+
+  // ── Drag state for calibration markers ──
+  const [dragTarget, setDragTarget] = useState(null) // { index, startClient, startPos }
+  const pointsRef = useRef([])
+
+  // Keep ref in sync
+  useEffect(() => { pointsRef.current = points }, [points])
 
   useEffect(() => {
     const img = new Image()
@@ -39,7 +45,6 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
       await new Promise(r => setTimeout(r, 200))
       if (cancelAutoRef.current) { setAutoDetecting(false); setAutoFailed(true); return }
 
-      // Timeout réduit à 15s
       const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(null), 15000))
       const found = await Promise.race([detectCalibrationMarkers(imageUrl), timeoutPromise])
       if (cancelled || cancelAutoRef.current) { setAutoDetecting(false); setAutoFailed(true); return }
@@ -56,9 +61,9 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
     })()
 
     return () => { cancelled = true }
-  }, [imageUrl])
+  }, [imageUrl, markerSpacing])
 
-  const getImageDisplayRect = () => {
+  const getImageDisplayRect = useCallback(() => {
     if (!containerRef.current || !imageSize) return null
     const r = containerRef.current.getBoundingClientRect()
     const cAspect = r.width / r.height
@@ -69,9 +74,9 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
     }
     const w = r.height * iAspect
     return { left: (r.width - w) / 2, top: 0, width: w, height: r.height }
-  }
+  }, [imageSize])
 
-  const toImageCoords = (clientX, clientY) => {
+  const toImageCoords = useCallback((clientX, clientY) => {
     if (!containerRef.current || !imageSize) return null
     const dr = getImageDisplayRect()
     if (!dr) return null
@@ -81,7 +86,7 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
     const cx = Math.max(0, Math.min(dr.width, rx))
     const cy = Math.max(0, Math.min(dr.height, ry))
     return { x: (cx / dr.width) * imageSize.width, y: (cy / dr.height) * imageSize.height }
-  }
+  }, [imageSize, getImageDisplayRect])
 
   const handlePointerMove = (e) => {
     if (!containerRef.current) return
@@ -89,42 +94,78 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
     setLoupePos({ x: e.clientX - rect.left, y: e.clientY - rect.top })
   }
 
-  const handlePointerLeave = () => setLoupePos(null)
+  // ── Drag markers via data-markerid ──
+  const handleContainerPointerDown = (e) => {
+    // Walk up DOM to find a calibration marker
+    let target = e.target
+    while (target && target !== containerRef.current) {
+      if (target.dataset?.markerid !== undefined) {
+        const idx = parseInt(target.dataset.markerid, 10)
+        const p = pointsRef.current[idx]
+        if (!p) return
+        e.preventDefault()
+        setDragTarget({ index: idx, startClient: { x: e.clientX, y: e.clientY }, startPos: { ...p } })
+        return
+      }
+      target = target.parentElement
+    }
 
-  const handleClick = (e) => {
-    if (points.length >= 3 && editingIndex === null) return
+    // Tap outside markers → no-op (désactive tout)
+    // But if less than 3 markers and not dragging, create new marker
+    const cp = pointsRef.current
+    if (cp.length >= 3) return // all 3 placed → tap outside does nothing
     const coords = toImageCoords(e.clientX, e.clientY)
     if (!coords) return
-
-    if (editingIndex !== null) {
-      const newPoints = [...points]
-      newPoints[editingIndex] = coords
-      setPoints(newPoints)
-      setEditingIndex(null)
-      if (newPoints.length === 3) {
-        setDebugInfo(calculateScale(newPoints, markerSpacing))
-      }
-      return
-    }
-
-    if (points.length < 3) {
-      const newPoints = [...points, coords]
-      setPoints(newPoints)
-      if (newPoints.length === 3) {
-        setDebugInfo(calculateScale(newPoints, markerSpacing))
-      }
+    const newPoints = [...cp, coords]
+    setPoints(newPoints)
+    if (newPoints.length === 3) {
+      setDebugInfo(calculateScale(newPoints, markerSpacing))
     }
   }
+
+  // Window-level drag listeners
+  useEffect(() => {
+    if (!dragTarget) return
+
+    const onMove = (e) => {
+      // Loupe
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect()
+        setLoupePos({ x: e.clientX - rect.left, y: e.clientY - rect.top })
+      }
+      const startImg = toImageCoords(dragTarget.startClient.x, dragTarget.startClient.y)
+      const currImg = toImageCoords(e.clientX, e.clientY)
+      if (!startImg || !currImg) return
+      const dx = currImg.x - startImg.x
+      const dy = currImg.y - startImg.y
+      const newPos = { x: dragTarget.startPos.x + dx, y: dragTarget.startPos.y + dy }
+      const newPoints = [...pointsRef.current]
+      newPoints[dragTarget.index] = newPos
+      setPoints(newPoints)
+    }
+
+    const onUp = () => {
+      setDragTarget(null)
+      // Recalc scale if we have 3
+      if (pointsRef.current.length === 3) {
+        setDebugInfo(calculateScale(pointsRef.current, markerSpacing))
+      }
+    }
+
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+  }, [dragTarget, toImageCoords, markerSpacing])
+
+  const handlePointerLeave = () => setLoupePos(null)
 
   const resetPoints = () => {
     setPoints([])
     setDebugInfo(null)
-    setEditingIndex(null)
     setAutoFailed(false)
-  }
-
-  const startEdit = (index) => {
-    setEditingIndex(index)
   }
 
   const confirmCalibration = () => {
@@ -132,8 +173,6 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
       onCalibrated(calculateScale(points, markerSpacing))
     }
   }
-
-  const getLabel = (i) => ['Gauche', 'Centre', 'Droite'][i] || ''
 
   const allPlaced = points.length === 3
 
@@ -152,7 +191,7 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
             </span>
           ) : (
             <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
-              ① Gauche → ② Centre → ③ Droite
+              ① Gauche · ② Centre · ③ Droite
             </span>
           )}
         </div>
@@ -191,11 +230,12 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
         </div>
       )}
 
-      {/* Image + annotations */}
+      {/* Image + markers */}
       <div
         ref={containerRef}
-        className="relative cursor-crosshair select-none"
-        onClick={handleClick}
+        className="relative select-none"
+        style={{ cursor: allPlaced ? 'default' : 'crosshair', touchAction: 'none' }}
+        onPointerDown={handleContainerPointerDown}
         onPointerMove={handlePointerMove}
         onPointerLeave={handlePointerLeave}
       >
@@ -210,24 +250,25 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
           return points.map((p, i) => {
             const leftPct = dr ? ((dr.left + (p.x / imageSize.width) * dr.width) / cw) * 100 : (p.x / imageSize.width) * 100
             const topPct = dr ? ((dr.top + (p.y / imageSize.height) * dr.height) / ch) * 100 : (p.y / imageSize.height) * 100
-            const isEditing = editingIndex === i
+            const isDragging = dragTarget?.index === i
             return (
-              <div key={i} className="absolute transform -translate-x-1/2 -translate-y-1/2 transition-all duration-100"
-                style={{ left: `${leftPct}%`, top: `${topPct}%`, zIndex: isEditing ? 30 : 10, cursor: 'pointer' }}
-                onClick={(e) => { e.stopPropagation(); startEdit(i) }}>
-                <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold transition-all"
-                  style={{
-                    background: isEditing ? 'var(--color-red)' : 'var(--color-gold)',
-                    color: isEditing ? '#fff' : 'var(--color-bg)',
-                    boxShadow: isEditing
-                      ? '0 0 0 4px rgba(204,68,68,0.4), 0 0 12px rgba(204,68,68,0.3)'
-                      : '0 0 0 3px rgba(201,151,90,0.3)',
-                    transform: isEditing ? 'scale(1.15)' : 'scale(1)',
-                  }}>
-                  {i + 1}
-                </div>
-                <div className="text-[10px] text-center mt-0.5 font-medium" style={{ color: 'var(--color-text-muted)' }}>
-                  {isEditing ? '↕ Ajuster' : getLabel(i)}
+              <div key={i} className="absolute transform -translate-x-1/2 -translate-y-1/2 transition-none"
+                style={{ left: `${leftPct}%`, top: `${topPct}%`, zIndex: isDragging ? 30 : 10, cursor: 'grab' }}
+                data-markerid={i}>
+                {/* Marqueur : cercle vide + point central */}
+                <svg width="22" height="22" viewBox="0 0 22 22" className="mx-auto block">
+                  <circle cx="11" cy="11" r="9"
+                    fill="none"
+                    stroke={isDragging ? '#fff' : 'var(--color-gold)'}
+                    strokeWidth={isDragging ? 2.5 : 2}
+                    opacity={isDragging ? 1 : 0.8}
+                    style={{ filter: 'drop-shadow(0 0 3px rgba(0,0,0,0.6))' }} />
+                  <circle cx="11" cy="11" r="2"
+                    fill={isDragging ? 'var(--color-red)' : 'var(--color-gold)'}
+                    opacity={isDragging ? 1 : 0.9} />
+                </svg>
+                <div className="text-[9px] text-center mt-0.5 font-medium" style={{ color: 'var(--color-gold)' }}>
+                  {['Gauche','Centre','Droite'][i]}
                 </div>
               </div>
             )
@@ -256,23 +297,13 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
         })()}
 
         {/* Guide hint */}
-        {!allPlaced && points.length < 3 && (
+        {!allPlaced && (
           <div className="absolute bottom-3 left-0 right-0 text-center pointer-events-none" style={{ zIndex: 50 }}>
             <span className="inline-block px-3 py-1.5 rounded-full text-xs font-medium"
               style={{ background: 'rgba(0,0,0,0.7)', color: '#ccc', border: '1px solid rgba(255,255,255,0.1)' }}>
-              {editingIndex !== null ? `Tapotez pour repositionner le repère ${editingIndex + 1}` :
-               points.length === 0 ? '① Repère GAUCHE' :
+              {points.length === 0 ? '① Repère GAUCHE' :
                points.length === 1 ? '② Repère CENTRE' :
                '③ Repère DROITE'}
-            </span>
-          </div>
-        )}
-
-        {allPlaced && editingIndex === null && (
-          <div className="absolute bottom-3 left-0 right-0 flex justify-center gap-2 pointer-events-none" style={{ zIndex: 50 }}>
-            <span className="inline-block px-3 py-1.5 rounded-full text-xs font-medium pointer-events-auto"
-              style={{ background: 'rgba(0,0,0,0.7)', color: '#ccc', border: '1px solid rgba(255,255,255,0.1)' }}>
-              Tapotez ① ② ③ pour ajuster
             </span>
           </div>
         )}

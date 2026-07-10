@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { Camera, Upload, Ruler, CheckCircle2, ChevronLeft, RotateCcw } from 'lucide-react'
+import { Camera, Ruler, CheckCircle2 } from 'lucide-react'
 import PhotoPicker from './PhotoPicker'
 import CalibrationOverlay from './CalibrationOverlay'
 import PupilMarker from './PupilMarker'
@@ -53,19 +53,19 @@ export default function App() {
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--color-bg)' }}>
-      {/* ── Header ── */}
+      {/* Header */}
       <header className="sticky top-0 z-40 border-b" style={{ background: 'var(--color-card)', borderColor: 'var(--color-border)', backdropFilter: 'blur(12px)' }}>
-        <div className="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between">
+        <div className="app-container max-w-2xl mx-auto px-4 py-2.5 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center"
+            <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0"
               style={{ background: 'linear-gradient(135deg, var(--color-gold), var(--color-gold-dark))' }}>
-              <span className="text-[var(--color-bg)] font-bold text-xs">SO</span>
+              <span className="text-[var(--color-bg)] font-bold text-[10px]">SO</span>
             </div>
             <div>
-              <h1 className="text-base font-semibold tracking-tight" style={{ color: 'var(--color-text)', fontFamily: "'Playfair Display', Georgia, serif" }}>
+              <h1 className="app-header-title text-sm font-semibold tracking-tight" style={{ color: 'var(--color-text)', fontFamily: "'Playfair Display', Georgia, serif" }}>
                 Smart Optica
               </h1>
-              <p className="text-[10px] tracking-wider uppercase" style={{ color: 'var(--color-gold)' }}>
+              <p className="text-[9px] tracking-wider uppercase leading-tight" style={{ color: 'var(--color-gold)' }}>
                 Centrage Digital
               </p>
             </div>
@@ -77,8 +77,8 @@ export default function App() {
           </div>
         </div>
 
-        {/* Step indicator */}
-        <div className="max-w-2xl mx-auto px-4 pb-2.5">
+      {/* Step indicator */}
+        <div className="app-container max-w-2xl mx-auto px-4 pb-2">
           <div className="flex items-center gap-1.5">
             {STEPS.map((s, i) => {
               const StepIcon = s.icon
@@ -119,8 +119,8 @@ export default function App() {
         </div>
       </header>
 
-      {/* ── Main ── */}
-      <main className="max-w-2xl mx-auto px-4 py-6 animate-fade-in">
+      {/* Main */}
+      <main className="app-main max-w-2xl mx-auto px-4 py-6 animate-fade-in">
         {step === 'photo' && (
           <div className="space-y-5">
             <div className="text-center">
@@ -176,7 +176,7 @@ export default function App() {
         )}
       </main>
 
-      {/* ── Footer ── */}
+      {/* Footer */}
       <footer className="text-center py-6 text-[10px]" style={{ color: 'var(--color-text-dim)' }}>
         Smart Optica © 2026 · Mesure DP de précision
       </footer>

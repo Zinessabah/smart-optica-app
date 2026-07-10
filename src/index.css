@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-/* ── Smart Optica — Thème sombre pro ── */
+/* Smart Optica — Thème sombre pro */
 
 :root {
   --color-bg: #0f0f12;
@@ -34,15 +34,11 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* ── Animations ── */
+/* Animations */
 
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
-}
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
 }
 @keyframes spin {
   to { transform: rotate(360deg); }
@@ -51,11 +47,8 @@ body {
 .animate-fade-in {
   animation: fadeIn 0.35s ease-out;
 }
-.animate-pulse-slow {
-  animation: pulse 1.8s ease-in-out infinite;
-}
 
-/* ── Scrollbar ── */
+/* Scrollbar */
 
 ::-webkit-scrollbar {
   width: 6px;
@@ -68,15 +61,73 @@ body {
   border-radius: 3px;
 }
 
-/* ── Marker pulse animation ── */
+/* Marker pulse animation */
 
 @keyframes pulse-smarker {
   0%, 100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
   50% { opacity: 0.8; transform: translate(-50%, -50%) scale(1.08); }
 }
 
-/* ── Selection ── */
+/* Selection */
 
 ::selection {
   background: rgba(201, 160, 90, 0.25);
+}
+
+/* Responsive iPad */
+
+/* iPad en portrait */
+@media (max-width: 768px) and (orientation: portrait) {
+  .app-container {
+    max-width: 100% !important;
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+  }
+  .app-image {
+    max-height: 40vh !important;
+  }
+}
+
+/* iPad en paysage */
+@media (min-width: 768px) and (orientation: landscape) {
+  .app-container {
+    max-width: 90vw !important;
+    padding-left: 24px !important;
+    padding-right: 24px !important;
+  }
+  .app-image {
+    max-height: 75vh !important;
+  }
+  .app-main {
+    padding-top: 12px !important;
+    padding-bottom: 12px !important;
+  }
+  .app-header-title {
+    font-size: 1.1rem !important;
+  }
+}
+
+/* iPhone / petit écran */
+@media (max-width: 480px) {
+  .app-container {
+    padding-left: 8px !important;
+    padding-right: 8px !important;
+  }
+  .app-image {
+    max-height: 35vh !important;
+  }
+}
+
+/* Limite de taille pour les images */
+img[alt*="Calibrage"],
+img[alt*="Photo"] {
+  max-height: 60vh !important;
+  width: auto !important;
+}
+
+@media (orientation: landscape) {
+  img[alt*="Calibrage"],
+  img[alt*="Photo"] {
+    max-height: 78vh !important;
+  }
 }

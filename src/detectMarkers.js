@@ -110,9 +110,7 @@ function detectOnCanvas(img) {
         // So circle center is opposite to gradient direction
         // We approximate by sampling in 8 directions from this edge pixel
 
-        // Check if pixel is on a dark-bright edge
-        const c = gray(x, y)
-        // Look at surrounding area — is this edge part of a ring?
+        // Check if pixel is on a dark-bright edge; look for ring patterns
         // Simplified: check if inside is darker and outside is lighter
         const inside = gray(x - r + innerR, y) + gray(x, y - r + innerR) +
                        gray(x + r - innerR, y) + gray(x, y + r - innerR)

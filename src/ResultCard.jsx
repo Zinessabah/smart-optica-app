@@ -1,6 +1,38 @@
-import { RotateCcw, FileText, CheckCircle2 } from 'lucide-react'
+import { RotateCcw, FileText, CheckCircle2, AlertTriangle, AlertCircle } from 'lucide-react'
 
 export default function ResultCard({ measurements, imageUrl, onRetake }) {
+  // --- Validation des mesures ---
+  const validation = (() => {
+    const issues = []
+    const pd = measurements.pd
+    const pdOG = measurements.pdMonoculaireGauche
+    const pdOD = measurements.pdMonoculaireDroit
+    const pont = measurements.pont
+
+    // DP binoculaire : normale entre 50mm et 75mm (adulte)
+    if (pd != null) {
+      if (pd < 50) issues.push('DP binoculaire anormalement basse (< 50mm)')
+      else if (pd > 75) issues.push('DP binoculaire anormalement haute (> 75mm)')
+    }
+
+    // DP monoculaires : somme ≈ DP binoculaire
+    if (pdOG != null && pdOD != null && pd != null) {
+      const sum = pdOG + pdOD
+      const diff = Math.abs(sum - pd)
+      if (diff > 3) issues.push(`Somme des monoculaires (${sum}mm) incohérente avec la DP (${pd}mm)`)
+    }
+
+    // Pont : valeurs réalistes (10-30mm)
+    if (pont != null && (pont < 5 || pont > 40)) {
+      issues.push('Écart inter-verres (pont) hors norme')
+    }
+
+    return {
+      valid: issues.length === 0,
+      issues,
+      level: issues.length === 0 ? 'ok' : issues.some(i => i.includes('incohérente')) ? 'warning' : 'error',
+    }
+  })()
   const getConfianceColor = (level) => {
     switch (level) {
       case 'haute': return 'var(--color-green)'
@@ -27,7 +59,106 @@ export default function ResultCard({ measurements, imageUrl, onRetake }) {
     }
   }
 
-  const handleSavePDF = () => {
+  const handleSavePDF = async () => {
+    const el = document.getElementById('result-card-content')
+    if (!el) return
+
+    try {
+      const { default: html2canvas } = await import('html2canvas')
+      const { jsPDF } = await import('jspdf')
+
+      const pdf = new jsPDF('p', 'mm', 'a4')
+      const pageW = 210
+      const pageH = 297
+      const margin = 12
+
+      // Page unique : photo client réduite en haut + carte des mesures en dessous
+      // On capture d'abord la carte des mesures
+      const measureCanvas = await html2canvas(el, {
+        scale: 2,
+        backgroundColor: '#0f0f12',
+        useCORS: true,
+        logging: false,
+      })
+
+      const measureImgData = measureCanvas.toDataURL('image/png')
+      const measureAspect = measureCanvas.width / measureCanvas.height
+
+      // Calculer l'espace disponible
+      let measureW = pageW - margin * 2
+      let measureH = measureW / measureAspect
+
+      // Si on a une photo, on la réduit en haut et les mesures en dessous
+      if (imageUrl) {
+        // Photo en haut (max 25% de la page — taille passeport)
+        const photoMaxH = (pageH - margin * 2) * 0.25
+        // Charger l'image et détecter l'orientation EXIF
+        const photoImg = new Image()
+        photoImg.src = imageUrl
+        await new Promise(r => { photoImg.onload = r })
+        // Déterminer la bonne orientation
+        let photoW = measureW * 0.4 // 40% largeur
+        let photoH = photoW / (photoImg.width > photoImg.height ? photoImg.height / photoImg.width : photoImg.width / photoImg.height)
+        if (photoH > photoMaxH) {
+          photoH = photoMaxH
+          photoW = photoH * (photoImg.width > photoImg.height ? photoImg.height / photoImg.width : photoImg.width / photoImg.height)
+        }
+
+        // Redresser l'image via canvas (corrige EXIF)
+        const orientCanvas = document.createElement('canvas')
+        const ctx = orientCanvas.getContext('2d')
+        // Si l'image est en paysage (w > h), on l'utilise telle quelle
+        // Sinon aussi, mais on s'assure que le ratio est bon
+        if (photoImg.width > photoImg.height) {
+          // Image en paysage → on la tourne pour que ce soit un portrait
+          orientCanvas.width = photoImg.height
+          orientCanvas.height = photoImg.width
+          ctx.translate(orientCanvas.width / 2, orientCanvas.height / 2)
+          ctx.rotate(-Math.PI / 2)
+          ctx.drawImage(photoImg, -photoImg.width / 2, -photoImg.height / 2)
+        } else {
+          orientCanvas.width = photoImg.width
+          orientCanvas.height = photoImg.height
+          ctx.drawImage(photoImg, 0, 0)
+        }
+
+        const orientedDataUrl = orientCanvas.toDataURL('image/jpeg', 0.9)
+        const orientedAspect = orientCanvas.width / orientCanvas.height
+        photoW = measureW * 0.4
+        photoH = photoW / orientedAspect
+        if (photoH > photoMaxH) {
+          photoH = photoMaxH
+          photoW = photoH * orientedAspect
+        }
+
+        pdf.addImage(orientedDataUrl, 'JPEG', (pageW - photoW) / 2, margin, photoW, photoH)
+
+        // Espace restant pour les mesures
+        const remainingH = pageH - margin - photoH - margin - margin
+        measureH = Math.min(measureH, remainingH)
+        if (measureH < 50) measureH = 50 // minimum
+
+        const measureY = margin + photoH + margin
+        pdf.addImage(measureImgData, 'PNG', (pageW - measureW) / 2, measureY, measureW, measureH)
+      } else {
+        // Sans photo, les mesures prennent toute la page
+        if (measureH > pageH - margin * 2) {
+          measureH = pageH - margin * 2
+          measureW = measureH * measureAspect
+        }
+        pdf.addImage(measureImgData, 'PNG', (pageW - measureW) / 2, margin, measureW, measureH)
+      }
+
+      const dateStr = new Date().toISOString().slice(0, 10)
+      pdf.save(`SmartOptica_DP_${dateStr}.pdf`)
+    } catch (err) {
+      console.error('PDF generation error:', err)
+      // Fallback : téléchargement HTML
+      fallbackHtmlExport()
+    }
+  }
+
+  const fallbackHtmlExport = () => {
     // Génération HTML pour impression/export
     const date = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' })
     const heure = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
@@ -143,11 +274,31 @@ export default function ResultCard({ measurements, imageUrl, onRetake }) {
       )}
 
       {/* Results card */}
-      <div className="rounded-2xl p-6 border" style={{ background: 'var(--color-card)', borderColor: 'var(--color-border)' }}>
+      <div id="result-card-content" className="rounded-2xl p-6 border" style={{ background: 'var(--color-card)', borderColor: 'var(--color-border)' }}>
         <h3 className="text-xs uppercase tracking-wider mb-4 flex items-center gap-2" style={{ color: 'var(--color-gold)' }}>
           <CheckCircle2 size={14} />
           Résultat de la mesure
         </h3>
+
+        {/* Validation banner */}
+        {!validation.valid && (
+          <div className={`rounded-xl px-4 py-3 mb-4 flex items-start gap-2 text-xs ${
+            validation.level === 'error' ? 'border' : 'border'
+          }`}
+          style={{
+            background: validation.level === 'error' ? 'var(--color-red-bg)' : 'var(--color-gold-bg)',
+            borderColor: validation.level === 'error' ? 'var(--color-red)' : 'var(--color-gold)',
+            color: validation.level === 'error' ? 'var(--color-red)' : 'var(--color-gold)',
+          }}>
+            {validation.level === 'error' ? <AlertCircle size={14} className="shrink-0 mt-0.5" /> : <AlertTriangle size={14} className="shrink-0 mt-0.5" />}
+            <div className="space-y-0.5">
+              <span className="font-medium">Mesure suspecte</span>
+              {validation.issues.map((msg, i) => (
+                <div key={i} className="opacity-80">{msg}</div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Main PD */}
         <div className="text-center py-5 mb-4 rounded-xl" style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)' }}>
@@ -244,7 +395,7 @@ export default function ResultCard({ measurements, imageUrl, onRetake }) {
         <button onClick={handleSavePDF}
           className="flex items-center justify-center gap-1.5 flex-1 py-3 rounded-full font-medium text-sm text-white transition-all hover:opacity-90"
           style={{ background: 'var(--color-gold)' }}>
-          <FileText size={16} /> Exporter HTML
+          <FileText size={16} /> Exporter PDF
         </button>
       </div>
 

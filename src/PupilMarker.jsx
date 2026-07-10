@@ -92,7 +92,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       } catch (_) {}
     })()
     return () => { cancelled = true }
-  }, [imageUrl, imageSize])
+  }, [imageUrl, imageSize, calibration])
 
   // --- Auto-duplication boxOD depuis boxOG (one-shot, quand OG est créé) ---
   const boxODDuplicated = useRef(false)
@@ -104,7 +104,6 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       const mirrorX = bridgeCenterX - ogCenterOffset
       const centerY = boxOG.y
       setBoxOD({ x: mirrorX, y: centerY, width: boxOG.width, height: boxOG.height })
-      setRightEye({ x: mirrorX, y: centerY })
     }
     if (!boxOG) boxODDuplicated.current = false
   }, [boxOG, boxOD, bridgeL, bridgeR])
@@ -224,8 +223,9 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     }
   })()
 
-  const confirm = () => {
-    if (result) onConfirm({
+  const confirm = async () => {
+    if (!result) return
+    onConfirm({
       ...result,
       pdBinoculaire: result.pd,
       pontPlace: result.pontOk,
@@ -238,14 +238,35 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   const BRIDGE_COLOR = '#22c55e'
   const BOX_COLOR = '#8b5cf6'
 
+  // ── Verrouillage des marqueurs ──
+  const lockedRef = useRef(new Set())
+  const [lockVersion, setLockVersion] = useState(0)
+  const toggleLock = (id) => {
+    const next = new Set(lockedRef.current)
+    if (next.has(id)) {
+      next.delete(id)
+    } else {
+      next.add(id)
+      // Si on verrouille, désactiver le marqueur actif s'il correspond
+      if (activeMarkerRef.current === id) {
+        setActiveMarker(null)
+        activeMarkerRef.current = null
+      }
+    }
+    lockedRef.current = next
+    setLockVersion(v => v + 1)
+  }
+  // isLocked n'a pas besoin de useCallback — lockVersion dans la closure force recalcul
+  const isLocked = (id) => lockedRef.current.has(id)
+
   // ── Drag state for markers ──
   const [dragMarker, setDragMarker] = useState(null)
-  const currentPosRef = useRef({ bridgeL: null, bridgeR: null, leftEye: null, rightEye: null })
+  const currentPosRef = useRef({ bridgeL: null, bridgeR: null, left: null, right: null })
   const activeMarkerRef = useRef('bridgeL')
 
   // Keep refs in sync with state (for use inside window event listeners)
   useEffect(() => {
-    currentPosRef.current = { bridgeL, bridgeR, leftEye, rightEye }
+    currentPosRef.current = { bridgeL, bridgeR, left: leftEye, right: rightEye }
   }, [bridgeL, bridgeR, leftEye, rightEye])
   useEffect(() => {
     activeMarkerRef.current = activeMarker
@@ -256,6 +277,11 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     if (!dragMarker) return
 
     const onMove = (e) => {
+      // If marker became locked mid-drag, abort
+      if (lockedRef.current.has(dragMarker.markerId)) {
+        setDragMarker(null)
+        return
+      }
       // Loupe
       if (containerRef.current) {
         const r = containerRef.current.getBoundingClientRect()
@@ -289,50 +315,56 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     while (target && target !== containerRef.current) {
       if (target.dataset?.markerid) {
         const markerId = target.dataset.markerid
-        e.preventDefault()
         const startPos = currentPosRef.current[markerId]
         if (!startPos) return
+        // Check lock via ref (always up-to-date)
+        if (lockedRef.current.has(markerId)) return
+        e.preventDefault()
         setActiveMarker(markerId)
         setDragMarker({ markerId, startClient: { x: e.clientX, y: e.clientY }, startPos: { ...startPos } })
         return
       }
       target = target.parentElement
     }
-    // Not on a marker → place new marker
+    // Not on a marker → tap outside: place if not yet existing, otherwise no-op (pure drag)
     const coords = toImageCoords(e.clientX, e.clientY)
     if (!coords) return
     const pt = { x: Math.round(coords.x), y: Math.round(coords.y) }
     const am = activeMarkerRef.current
+    // Si le marqueur actif est verrouillé, ignorer tout tap
+    if (am && lockedRef.current.has(am)) return
     const bl = currentPosRef.current.bridgeL
     const br = currentPosRef.current.bridgeR
-    if (am === 'bridgeL') { setBridgeL(pt) }
-    else if (am === 'bridgeR') { setBridgeR(pt) }
-    else if (am === 'left') { setLeftEye(pt) }
-    else if (am === 'right') { setRightEye(pt) }
-    else if (am === 'boxOG') {
-      if (boxOG) return
+    const le = currentPosRef.current.leftEye
+    const re = currentPosRef.current.rightEye
+
+    // Only allow tap-placement if marker doesn't exist yet
+    if (am === 'bridgeL' && !bl) { setBridgeL(pt); return }
+    if (am === 'bridgeR' && !br) { setBridgeR(pt); return }
+    if (am === 'left' && !le) { setLeftEye(pt); return }
+    if (am === 'right' && !re) { setRightEye(pt); return }
+    if (am === 'boxOG' && !boxOG) {
       const def = getDefaultBoxSize()
       if (bl) {
         setBoxOG({ x: bl.x - def.width / 2, y: bl.y, width: def.width, height: def.height })
-        setLeftEye({ x: bl.x - def.width / 2, y: bl.y })
       } else {
         setBoxOG({ x: pt.x, y: pt.y, width: def.width, height: def.height })
-        setLeftEye({ x: pt.x, y: pt.y })
       }
+      return
     }
-    else if (am === 'boxOD') {
-      if (boxOD) return
+    if (am === 'boxOD' && !boxOD) {
       if (!boxOG) {
         const def = getDefaultBoxSize()
         if (br) {
           setBoxOD({ x: br.x + def.width / 2, y: br.y, width: def.width, height: def.height })
-          setRightEye({ x: br.x + def.width / 2, y: br.y })
         } else {
           setBoxOD({ x: pt.x, y: pt.y, width: def.width, height: def.height })
-          setRightEye({ x: pt.x, y: pt.y })
         }
       }
+      return
     }
+    // Already placed → tap outside does nothing
+    return
   }, [toImageCoords, boxOG, boxOD, getDefaultBoxSize])
 
   // ── Simplified marker renderers (no letterboxing compensation — overlay handles it) ──
@@ -484,12 +516,26 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
           <span className="w-2 h-3 rounded-sm inline-block" style={{ background: bridgeL ? BRIDGE_COLOR : 'var(--color-text-dim)' }} />
           Pont G{bridgeL ? ' ✓' : ''}
         </button>
+        {bridgeL && (
+          <button onClick={() => toggleLock('bridgeL')}
+            className="px-2 py-2 rounded-xl text-xs transition-all"
+            style={{ background: isLocked('bridgeL') ? 'var(--color-green-bg)' : 'var(--color-border)', color: isLocked('bridgeL') ? 'var(--color-green)' : 'var(--color-text-dim)' }}>
+            {isLocked('bridgeL') ? '🔒' : '🔓'}
+          </button>
+        )}
         <button onClick={() => setActiveMarker('bridgeR')}
           className="flex-1 min-w-[55px] py-2 rounded-xl text-xs font-medium transition-all flex items-center justify-center gap-1"
           style={btnStyle('bridgeR', BRIDGE_COLOR)}>
           <span className="w-2 h-3 rounded-sm inline-block" style={{ background: bridgeR ? BRIDGE_COLOR : 'var(--color-text-dim)' }} />
           Pont D{bridgeR ? ' ✓' : ''}
         </button>
+        {bridgeR && (
+          <button onClick={() => toggleLock('bridgeR')}
+            className="px-2 py-2 rounded-xl text-xs transition-all"
+            style={{ background: isLocked('bridgeR') ? 'var(--color-green-bg)' : 'var(--color-border)', color: isLocked('bridgeR') ? 'var(--color-green)' : 'var(--color-text-dim)' }}>
+            {isLocked('bridgeR') ? '🔒' : '🔓'}
+          </button>
+        )}
       </div>
 
       {/* OG row */}
@@ -501,12 +547,26 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
           <span style={{ color: boxOG ? BOX_COLOR : 'var(--color-text-dim)' }}>▣</span>
           Box OG{boxOG ? ' ✓' : ''}
         </button>
+        {boxOG && (
+          <button onClick={() => toggleLock('boxOG')}
+            className="px-2 py-2 rounded-xl text-xs transition-all"
+            style={{ background: isLocked('boxOG') ? 'var(--color-green-bg)' : 'var(--color-border)', color: isLocked('boxOG') ? 'var(--color-green)' : 'var(--color-text-dim)' }}>
+            {isLocked('boxOG') ? '🔒' : '🔓'}
+          </button>
+        )}
         <button onClick={() => setActiveMarker('left')}
           className="flex-1 min-w-[55px] py-2 rounded-xl text-xs font-medium transition-all flex items-center justify-center gap-1"
           style={btnStyle('left', '#3b82f6')}>
           <span className="w-3 h-3 rounded-full inline-block" style={{ background: leftEye ? '#3b82f6' : 'var(--color-text-dim)' }} />
           Pupille OG{leftEye ? ' ✓' : ''}
         </button>
+        {leftEye && (
+          <button onClick={() => toggleLock('left')}
+            className="px-2 py-2 rounded-xl text-xs transition-all"
+            style={{ background: isLocked('left') ? 'var(--color-green-bg)' : 'var(--color-border)', color: isLocked('left') ? 'var(--color-green)' : 'var(--color-text-dim)' }}>
+            {isLocked('left') ? '🔒' : '🔓'}
+          </button>
+        )}
         {boxOG && !boxOD && (
           <button onClick={() => setActiveMarker('boxOD')}
             className="flex-1 min-w-[60px] py-2 rounded-xl text-xs font-medium transition-all"
@@ -514,10 +574,6 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
             → Dupliquer OD
           </button>
         )}
-        <span className="self-center text-[9px]" style={{ color: 'var(--color-text-dim)' }}>
-          {activeMarker === 'boxOG' ? (boxOG ? '→ Ajustez' : '→ Tapez le verre') :
-           activeMarker === 'left' ? (leftEye ? '→ Ok' : '→ Tapez la pupille') : ''}
-        </span>
       </div>
 
       {/* OD row */}
@@ -530,21 +586,31 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
             <span style={{ color: boxOD ? BOX_COLOR : 'var(--color-text-dim)' }}>▣</span>
             Box OD{boxOD ? ' ✓' : ''}
           </button>
+          {boxOD && (
+          <button onClick={() => toggleLock('boxOD')}
+            className="px-2 py-2 rounded-xl text-xs transition-all"
+            style={{ background: isLocked('boxOD') ? 'var(--color-green-bg)' : 'var(--color-border)', color: isLocked('boxOD') ? 'var(--color-green)' : 'var(--color-text-dim)' }}>
+            {isLocked('boxOD') ? '🔒' : '🔓'}
+          </button>
+          )}
           <button onClick={() => setActiveMarker('right')}
             className="flex-1 min-w-[55px] py-2 rounded-xl text-xs font-medium transition-all flex items-center justify-center gap-1"
             style={btnStyle('right', 'var(--color-gold)')}>
             <span className="w-3 h-3 rounded-full inline-block" style={{ background: rightEye ? 'var(--color-gold)' : 'var(--color-text-dim)' }} />
             Pupille OD{rightEye ? ' ✓' : ''}
           </button>
+          {rightEye && (
+          <button onClick={() => toggleLock('right')}
+            className="px-2 py-2 rounded-xl text-xs transition-all"
+            style={{ background: isLocked('right') ? 'var(--color-green-bg)' : 'var(--color-border)', color: isLocked('right') ? 'var(--color-green)' : 'var(--color-text-dim)' }}>
+            {isLocked('right') ? '🔒' : '🔓'}
+          </button>
+          )}
           <button onClick={undo} disabled={!hasAnyMarker}
             className="px-3 py-2 rounded-xl text-xs font-medium transition-opacity disabled:opacity-30 flex items-center gap-1"
             style={{ background: 'var(--color-red-bg)', color: 'var(--color-red)' }}>
             <RotateCcw size={12} /> Annuler
           </button>
-          <span className="self-center text-[9px]" style={{ color: 'var(--color-text-dim)' }}>
-            {activeMarker === 'boxOD' ? (boxOD ? '→ Ajustez' : '→ Auto depuis OG') :
-             activeMarker === 'right' ? (rightEye ? '→ Ok' : '→ Tapez') : ''}
-          </span>
         </div>
       )}
 
@@ -560,7 +626,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       )}
 
       {/* Image */}
-      <div ref={containerRef}
+      <div ref={containerRef} id="pupil-image-container"
         className="relative rounded-2xl border overflow-hidden select-none cursor-crosshair"
         style={{ background: '#08080a', borderColor: 'var(--color-border)', aspectRatio: imageSize ? `${imageSize.width}/${imageSize.height}` : '4/3', touchAction: 'none' }}
         onPointerDown={handleContainerPointerDown}
@@ -581,9 +647,9 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
             }}>
               {/* Boxing rectangles render via BoxingRect (which handles its own letterboxing) */}
               <BoxingRect rect={boxOG} imageSize={imageSize} toImageCoords={toImageCoords}
-                onChange={setBoxOG} active={activeMarker === 'boxOG'} color={BOX_COLOR} label="Verre OG" containerRef={containerRef} />
+                onChange={setBoxOG} active={activeMarker === 'boxOG'} color={BOX_COLOR} label="VOG" containerRef={containerRef} />
               <BoxingRect rect={boxOD} imageSize={imageSize} toImageCoords={toImageCoords}
-                onChange={setBoxOD} active={activeMarker === 'boxOD'} color={BOX_COLOR} label="Verre OD" containerRef={containerRef} />
+                onChange={setBoxOD} active={activeMarker === 'boxOD'} color={BOX_COLOR} label="VOD" containerRef={containerRef} />
 
               {/* Pupillary lines */}
               {boxOG && leftEye && (

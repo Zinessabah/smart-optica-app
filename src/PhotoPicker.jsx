@@ -2,7 +2,7 @@ import { useState, useRef, useCallback } from 'react'
 import { Camera, Upload, ArrowLeft } from 'lucide-react'
 import Webcam from './Webcam'
 
-export default function PhotoPicker({ onCapture, onCancel }) {
+export default function PhotoPicker({ onCapture }) {
   const [mode, setMode] = useState(null)
   const fileInputRef = useRef(null)
 

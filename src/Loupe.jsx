@@ -16,18 +16,27 @@ export default function Loupe({ imageUrl, pos, zoom = 3, size = 140, displayRect
   const half = size / 2
   const bgSize = `${zoom * 100}%`
 
-  // If we have displayRect + imageSize, map pixel-level image coords to screen coords
-  // so the loupe background aligns with the actual image pixels under the cursor
   let bgX, bgY
 
-  if (displayRect && imageSize) {
-    // Convert screen position (within container) to image pixel coordinates
-    const imgX = ((pos.x - displayRect.left) / displayRect.width) * imageSize.width
-    const imgY = ((pos.y - displayRect.top) / displayRect.height) * imageSize.height
-    // Then convert back: background image fills the entire element at zoom level
-    // backgroundPosition offsets the image so the pixel under cursor is centered
-    bgX = -(imgX * zoom - half)
-    bgY = -(imgY * zoom - half)
+  if (displayRect && imageSize && displayRect.width > 0 && displayRect.height > 0) {
+    // pos is container-relative px. displayRect tells where the actual image sits.
+    // The mouse position relative to the displayed image:
+    const mouseInImageX = pos.x - displayRect.left   // px from image display left edge
+    const mouseInImageY = pos.y - displayRect.top    // px from image display top edge
+
+    // Map to image pixel coordinates
+    const imgPxX = (mouseInImageX / displayRect.width) * imageSize.width
+    const imgPxY = (mouseInImageY / displayRect.height) * imageSize.height
+
+    // For the loupe background, we want the pixel at (imgPxX, imgPxY)
+    // to appear centered in the loupe circle.
+    // background-position is offset from the top-left of the element.
+    // The element shows the image scaled to (zoom * 100)%.
+    // If we place pixel (imgPxX, imgPxY) at the center of the loupe (half, half),
+    // the top-left corner of the loupe sees pixel (imgPxX - half/zoom, imgPxY - half/zoom).
+    // background-position in px = -(imgPxX * zoom - half), -(imgPxY * zoom - half)
+    bgX = -(imgPxX * zoom - half)
+    bgY = -(imgPxY * zoom - half)
   } else {
     // Fallback: assume 1:1 mapping (no letterboxing)
     bgX = -(pos.x * zoom - half)

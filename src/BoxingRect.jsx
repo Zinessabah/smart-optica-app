@@ -1,9 +1,5 @@
 import { useState, useCallback } from 'react'
 
-/**
- * Boxing rectangle — 16 handles (2 per side + 4 corners), professional optical style.
- * Corner brackets + dotted midlines + outside dim overlay.
- */
 export default function BoxingRect({
   rect, imageSize, toImageCoords, onChange, active, color, label, containerRef
 }) {
@@ -181,7 +177,6 @@ export default function BoxingRect({
     sw:  { left: boxLeftPct,            top: boxTopPct + boxHeightPct,     cursor: 'sw-resize' },
     wl:  { left: boxLeftPct,            top: boxTopPct + boxHeightPct*2/3, cursor: 'w-resize' },
     w:   { left: boxLeftPct,            top: boxTopPct + boxHeightPct/3,   cursor: 'w-resize' },
-    // Additional mid-edge handles for 2-per-side feel (total 16)
     nw2: { left: boxLeftPct + boxWidthPct*0.15, top: boxTopPct,              cursor: 'n-resize' },
     ne2: { left: boxLeftPct + boxWidthPct*0.85, top: boxTopPct,              cursor: 'n-resize' },
     sw2: { left: boxLeftPct + boxWidthPct*0.15, top: boxTopPct + boxHeightPct, cursor: 's-resize' },
@@ -234,16 +229,16 @@ export default function BoxingRect({
       <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 12 }}>
         <line x1={`${boxLeftPct + 2}%`} y1={`${boxTopPct}%`}
           x2={`${boxLeftPct + boxWidthPct - 2}%`} y2={`${boxTopPct}%`}
-          stroke={`${color}50`} strokeWidth="1" strokeDasharray="3 4" />
+          stroke={`${color}aa`} strokeWidth="1.5" strokeDasharray="4 3" />
         <line x1={`${boxLeftPct + 2}%`} y1={`${boxTopPct + boxHeightPct}%`}
           x2={`${boxLeftPct + boxWidthPct - 2}%`} y2={`${boxTopPct + boxHeightPct}%`}
-          stroke={`${color}50`} strokeWidth="1" strokeDasharray="3 4" />
+          stroke={`${color}aa`} strokeWidth="1.5" strokeDasharray="4 3" />
         <line x1={`${boxLeftPct}%`} y1={`${boxTopPct + 2}%`}
           x2={`${boxLeftPct}%`} y2={`${boxTopPct + boxHeightPct - 2}%`}
-          stroke={`${color}50`} strokeWidth="1" strokeDasharray="3 4" />
+          stroke={`${color}aa`} strokeWidth="1.5" strokeDasharray="4 3" />
         <line x1={`${boxLeftPct + boxWidthPct}%`} y1={`${boxTopPct + 2}%`}
           x2={`${boxLeftPct + boxWidthPct}%`} y2={`${boxTopPct + boxHeightPct - 2}%`}
-          stroke={`${color}50`} strokeWidth="1" strokeDasharray="3 4" />
+          stroke={`${color}aa`} strokeWidth="1.5" strokeDasharray="4 3" />
         {active && cornerBrackets}
       </svg>
 
@@ -295,18 +290,16 @@ export default function BoxingRect({
         )
       })}
 
-      {/* Label badge */}
+      {/* Label badge — transparent */}
       <div className="absolute pointer-events-none" style={{
         left: `${boxLeftPct + boxWidthPct / 2}%`, top: `${boxTopPct}%`,
         transform: 'translate(-50%, -50%)', zIndex: 22,
       }}>
-        <span className="text-[9px] font-semibold whitespace-nowrap px-1.5 py-0.5 rounded-full inline-flex items-center gap-1"
+        <span className="text-[9px] font-medium whitespace-nowrap"
           style={{
-            background: `${color}dd`,
-            color: '#fff',
-            border: '1px solid rgba(255,255,255,0.3)',
-            backdropFilter: 'blur(4px)',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+            color: `${color}aa`,
+            textShadow: '0 0 6px rgba(0,0,0,0.8)',
+            opacity: 0.6,
           }}>
           {label}
         </span>
