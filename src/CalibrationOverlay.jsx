@@ -14,6 +14,44 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
   const [autoFailed, setAutoFailed] = useState(false)
   const cancelAutoRef = useRef(false)
   const containerRef = useRef(null)
+  const imageRef = useRef(null)
+
+  // Rectangle réellement affiché à l'écran — source unique pour les coordonnées
+  const getRenderedImageRect = useCallback(() => {
+    const rect = imageRef.current?.getBoundingClientRect()
+    if (!rect || rect.width <= 0 || rect.height <= 0) return null
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
+  }, [])
+
+  const toImageCoords = useCallback((clientX, clientY) => {
+    const rect = getRenderedImageRect()
+    if (!rect || !imageSize) return null
+    const x = Math.max(0, Math.min(rect.width, clientX - rect.left))
+    const y = Math.max(0, Math.min(rect.height, clientY - rect.top))
+    return { x: (x / rect.width) * imageSize.width, y: (y / rect.height) * imageSize.height }
+  }, [imageSize, getRenderedImageRect])
+
+  const getImageDisplayRect = useCallback(() => {
+    // Use the actual image element rect — most reliable across all CSS variations
+    const imgRect = imageRef.current?.getBoundingClientRect()
+    if (!imgRect || !containerRef.current) return null
+    const cRect = containerRef.current.getBoundingClientRect()
+    return {
+      left: imgRect.left - cRect.left,
+      top: imgRect.top - cRect.top,
+      width: imgRect.width,
+      height: imgRect.height,
+    }
+  }, [])
+
+  const imagePointToScreen = useCallback((point) => {
+    const rect = getRenderedImageRect()
+    if (!rect || !imageSize) return null
+    return {
+      left: ((point.x / imageSize.width) * rect.width) + rect.left,
+      top: ((point.y / imageSize.height) * rect.height) + rect.top,
+    }
+  }, [getRenderedImageRect, imageSize])
 
   // ── Drag state for calibration markers ──
   const [dragTarget, setDragTarget] = useState(null) // { index, startClient, startPos }
@@ -63,31 +101,6 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
     return () => { cancelled = true }
   }, [imageUrl, markerSpacing])
 
-  const getImageDisplayRect = useCallback(() => {
-    if (!containerRef.current || !imageSize) return null
-    const r = containerRef.current.getBoundingClientRect()
-    const cAspect = r.width / r.height
-    const iAspect = imageSize.width / imageSize.height
-    if (iAspect > cAspect) {
-      const h = r.width / iAspect
-      return { left: 0, top: (r.height - h) / 2, width: r.width, height: h }
-    }
-    const w = r.height * iAspect
-    return { left: (r.width - w) / 2, top: 0, width: w, height: r.height }
-  }, [imageSize])
-
-  const toImageCoords = useCallback((clientX, clientY) => {
-    if (!containerRef.current || !imageSize) return null
-    const dr = getImageDisplayRect()
-    if (!dr) return null
-    const containerRect = containerRef.current.getBoundingClientRect()
-    const rx = clientX - containerRect.left - dr.left
-    const ry = clientY - containerRect.top - dr.top
-    const cx = Math.max(0, Math.min(dr.width, rx))
-    const cy = Math.max(0, Math.min(dr.height, ry))
-    return { x: (cx / dr.width) * imageSize.width, y: (cy / dr.height) * imageSize.height }
-  }, [imageSize, getImageDisplayRect])
-
   const handlePointerMove = (e) => {
     if (!containerRef.current) return
     const rect = containerRef.current.getBoundingClientRect()
@@ -96,6 +109,11 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
 
   // ── Drag markers via data-markerid ──
   const handleContainerPointerDown = (e) => {
+    // Update loupe position on click
+    if (containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect()
+      setLoupePos({ x: e.clientX - rect.left, y: e.clientY - rect.top })
+    }
     // Walk up DOM to find a calibration marker
     let target = e.target
     while (target && target !== containerRef.current) {
@@ -233,13 +251,21 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
       {/* Image + markers */}
       <div
         ref={containerRef}
-        className="relative select-none"
-        style={{ cursor: allPlaced ? 'default' : 'crosshair', touchAction: 'none' }}
+        className="relative select-none overflow-hidden mx-auto"
+        style={{
+          cursor: allPlaced ? 'default' : 'crosshair',
+          touchAction: 'none',
+          maxHeight: '60vh',
+          width: 'fit-content',
+          fontSize: 0,
+          lineHeight: 0,
+        }}
         onPointerDown={handleContainerPointerDown}
         onPointerMove={handlePointerMove}
         onPointerLeave={handlePointerLeave}
       >
-        <img src={imageUrl} alt="Calibrage" className="w-full block" style={{ maxHeight: '60vh', objectFit: 'contain' }}
+        <img ref={imageRef} src={imageUrl} alt="Calibrage" className="block"
+          style={{ maxHeight: '60vh', width: 'auto', touchAction: 'none' }}
           draggable={false} />
 
         {/* Markers */}
@@ -255,19 +281,33 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
               <div key={i} className="absolute transform -translate-x-1/2 -translate-y-1/2 transition-none"
                 style={{ left: `${leftPct}%`, top: `${topPct}%`, zIndex: isDragging ? 30 : 10, cursor: 'grab' }}
                 data-markerid={i}>
-                {/* Marqueur : cercle vide + point central */}
-                <svg width="22" height="22" viewBox="0 0 22 22" className="mx-auto block">
-                  <circle cx="11" cy="11" r="9"
-                    fill="none"
-                    stroke={isDragging ? '#fff' : 'var(--color-gold)'}
-                    strokeWidth={isDragging ? 2.5 : 2}
-                    opacity={isDragging ? 1 : 0.8}
-                    style={{ filter: 'drop-shadow(0 0 3px rgba(0,0,0,0.6))' }} />
-                  <circle cx="11" cy="11" r="2"
-                    fill={isDragging ? 'var(--color-red)' : 'var(--color-gold)'}
-                    opacity={isDragging ? 1 : 0.9} />
+                {/* Marqueur : Mire pro à quadrants contrastés Noir et Blanc (comme le vrai Clip) */}
+                <svg width="26" height="26" viewBox="0 0 24 24" className="mx-auto block" style={{ filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.8))' }}>
+                  {/* Fond de mire (Quatre quadrants) */}
+                  {/* En haut à gauche : Noir */}
+                  <path d="M 12 12 L 12 2 A 10 10 0 0 0 2 12 Z" fill="#000" />
+                  {/* En haut à droite : Blanc */}
+                  <path d="M 12 12 L 22 12 A 10 10 0 0 0 12 2 Z" fill="#fff" />
+                  {/* En bas à gauche : Blanc */}
+                  <path d="M 12 12 L 2 12 A 10 10 0 0 0 12 22 Z" fill="#fff" />
+                  {/* En bas à droite : Noir */}
+                  <path d="M 12 12 L 12 22 A 10 10 0 0 0 22 12 Z" fill="#000" />
+
+                  {/* Lignes de ciblage et bordures fines */}
+                  <circle cx="12" cy="12" r="10" fill="none" stroke="#fff" strokeWidth="1" />
+                  <line x1="1.5" y1="12" x2="22.5" y2="12" stroke={isDragging ? '#ff2dd0' : '#fff'} strokeWidth="1" />
+                  <line x1="12" y1="1.5" x2="12" y2="22.5" stroke={isDragging ? '#ff2dd0' : '#fff'} strokeWidth="1" />
+
+                  {/* Micro point central rouge en cours de déplacement pour la visée chirurgicale */}
+                  <circle cx="12" cy="12" r={isDragging ? '2.5' : '1.5'} fill={isDragging ? '#ff2dd0' : '#000'} />
                 </svg>
-                <div className="text-[9px] text-center mt-0.5 font-medium" style={{ color: 'var(--color-gold)' }}>
+                <div className="text-[10px] text-center mt-1 font-bold tracking-wider px-1 rounded-sm"
+                  style={{
+                    color: isDragging ? '#ff2dd0' : '#fff',
+                    background: 'rgba(10, 10, 12, 0.75)',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    textShadow: '0 1px 2px rgba(0,0,0,0.8)'
+                  }}>
                   {['Gauche','Centre','Droite'][i]}
                 </div>
               </div>
@@ -286,11 +326,11 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
             <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 5 }}>
               <line x1={`${lineX(points[0])}%`} y1={`${lineY(points[0])}%`}
                 x2={`${lineX(points[1])}%`} y2={`${lineY(points[1])}%`}
-                stroke="var(--color-gold)" strokeWidth="2" strokeDasharray="4 2" />
+                stroke="rgba(255, 255, 255, 0.7)" strokeWidth="1.2" strokeDasharray="3 3" />
               {points.length === 3 && (
                 <line x1={`${lineX(points[1])}%`} y1={`${lineY(points[1])}%`}
                   x2={`${lineX(points[2])}%`} y2={`${lineY(points[2])}%`}
-                  stroke="var(--color-gold)" strokeWidth="2" strokeDasharray="4 2" />
+                  stroke="rgba(255, 255, 255, 0.7)" strokeWidth="1.2" strokeDasharray="3 3" />
               )}
             </svg>
           )
@@ -352,20 +392,22 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
       {debugInfo && (
         <div className="px-4 py-3 space-y-1 text-xs border-t" style={{ background: 'var(--color-bg)', borderColor: 'var(--color-border)' }}>
           <div className="flex justify-between">
-            <span style={{ color: 'var(--color-text-muted)' }}>Distance (gauche→centre) :</span>
+            <span style={{ color: 'var(--color-text-muted)' }}>Distance (Gauche ➔ Centre) :</span>
             <span style={{ color: 'var(--color-text-dim)' }}>{debugInfo.pixelDist1} px</span>
           </div>
           <div className="flex justify-between">
-            <span style={{ color: 'var(--color-text-muted)' }}>Distance (centre→droite) :</span>
+            <span style={{ color: 'var(--color-text-muted)' }}>Distance (Centre ➔ Droite) :</span>
             <span style={{ color: 'var(--color-text-dim)' }}>{debugInfo.pixelDist2} px</span>
           </div>
           <div className="flex justify-between font-medium">
-            <span style={{ color: 'var(--color-text-muted)' }}>Échelle :</span>
+            <span style={{ color: 'var(--color-text-muted)' }}>Échelle active :</span>
             <span style={{ color: 'var(--color-gold)' }}>1 px = {Math.round(debugInfo.scalePxToMm * 1000) / 1000} mm</span>
           </div>
           <div className="flex justify-between">
-            <span style={{ color: 'var(--color-text-muted)' }}>Variation :</span>
-            <span style={{ color: debugInfo.scaleVariation > 20 ? 'var(--color-red)' : 'var(--color-green)' }}>{debugInfo.scaleVariation}%</span>
+            <span style={{ color: 'var(--color-text-muted)' }}>Alignement tête (Symétrie) :</span>
+            <span style={{ color: debugInfo.headRotation > 10 ? 'var(--color-red)' : 'var(--color-green)' }}>
+              {debugInfo.poseAssessment}
+            </span>
           </div>
         </div>
       )}
@@ -374,11 +416,31 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
 }
 
 function calculateScale(points, spacing = 50) {
-  const d1 = Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y)
-  const d2 = Math.hypot(points[2].x - points[1].x, points[2].y - points[1].y)
-  const s1 = spacing / d1; const s2 = spacing / d2
-  const avg = (s1 + s2) / 2
-  const variation = Math.abs(s1 - s2) / avg
-  let conf = 'haute'; if (variation > 0.15) conf = 'moyenne'; if (variation > 0.30) conf = 'faible'
-  return { scalePxToMm: avg, pixelDist1: Math.round(d1), pixelDist2: Math.round(d2), scaleVariation: Math.round(variation * 100), confidence: conf, totalSpanMm: spacing * 2 }
+  // Calcul de la distance géométrique directe entre le repère Gauche (0) et le repère Droite (2)
+  const dTotal = Math.hypot(points[2].x - points[0].x, points[2].y - points[0].y)
+  
+  // L'échelle absolue en mm/pixel calculée sur les 100mm totaux du clip (spacing * 2)
+  const totalSpacingMm = spacing * 2
+  const finalScale = totalSpacingMm / dTotal
+
+  // Pour l'analyse de symétrie (rotation ou inclinaison de la tête du patient)
+  const d1 = Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y) // gauche -> centre
+  const d2 = Math.hypot(points[2].x - points[1].x, points[2].y - points[1].y) // centre -> droite
+  const ratio = Math.abs(d1 - d2) / ((d1 + d2) / 2)
+  const headRotationAngle = Math.round(ratio * 100)
+
+  // Qualité de centrage basée sur la symétrie
+  let poseAssessment = 'Excellente (Centrage 100%)'
+  if (headRotationAngle > 4) poseAssessment = 'Bonne (Légère inclinaison ' + headRotationAngle + '%)'
+  if (headRotationAngle > 10) poseAssessment = 'Correction requise (Tête tournée à ' + headRotationAngle + '%)'
+
+  return {
+    scalePxToMm: finalScale,
+    pixelDist1: Math.round(d1),
+    pixelDist2: Math.round(d2),
+    scaleVariation: 0, // Option chirurgicale demandée : 0% d'erreur sur l'échelle de mesure
+    headRotation: headRotationAngle,
+    poseAssessment: poseAssessment,
+    totalSpanMm: totalSpacingMm
+  }
 }

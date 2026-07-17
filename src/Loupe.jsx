@@ -1,44 +1,32 @@
 /**
- * Pure magnifying glass (loupe).
- *
- * Props:
- *   imageUrl     - background image
- *   pos          - { x, y } position over the container (container-relative px), or null
- *   zoom         - magnification (default 3)
- *   size         - diameter in px (default 140)
- *   displayRect  - { left, top, width, height } of actual image display area within container
- *                  (compensates object-fit:contain letterboxing)
- *   imageSize    - { width, height } natural image dimensions (needed with displayRect)
+ * Pure magnifying glass (loupe) avec calcul exact d'alignement pour images avec letterboxing.
  */
 export default function Loupe({ imageUrl, pos, zoom = 3, size = 140, displayRect, imageSize }) {
   if (!pos || !imageUrl) return null
 
   const half = size / 2
-  const bgSize = `${zoom * 100}%`
 
+  let bgSizeW, bgSizeH
   let bgX, bgY
 
-  if (displayRect && imageSize && displayRect.width > 0 && displayRect.height > 0) {
-    // pos is container-relative px. displayRect tells where the actual image sits.
-    // The mouse position relative to the displayed image:
-    const mouseInImageX = pos.x - displayRect.left   // px from image display left edge
-    const mouseInImageY = pos.y - displayRect.top    // px from image display top edge
+  // displayRect représente le rectangle d'affichage réel de la photo dans l'écran de l'iPad
+  if (displayRect && displayRect.width > 0 && displayRect.height > 0) {
+    // 1. Taille totale de l'image d'arrière-plan agrandie de "zoom" fois
+    bgSizeW = displayRect.width * zoom
+    bgSizeH = displayRect.height * zoom
 
-    // Map to image pixel coordinates
-    const imgPxX = (mouseInImageX / displayRect.width) * imageSize.width
-    const imgPxY = (mouseInImageY / displayRect.height) * imageSize.height
+    // 2. Coordonnées de la souris relatives à la photo affichée à l'écran
+    const mouseInImageX = pos.x - displayRect.left
+    const mouseInImageY = pos.y - displayRect.top
 
-    // For the loupe background, we want the pixel at (imgPxX, imgPxY)
-    // to appear centered in the loupe circle.
-    // background-position is offset from the top-left of the element.
-    // The element shows the image scaled to (zoom * 100)%.
-    // If we place pixel (imgPxX, imgPxY) at the center of the loupe (half, half),
-    // the top-left corner of the loupe sees pixel (imgPxX - half/zoom, imgPxY - half/zoom).
-    // background-position in px = -(imgPxX * zoom - half), -(imgPxY * zoom - half)
-    bgX = -(imgPxX * zoom - half)
-    bgY = -(imgPxY * zoom - half)
+    // 3. Positionnement du background pour centrer cette coordonnée sous la loupe
+    // La position de la texture doit être décalée de -(clientX_dans_vrai_image * zoom) + la moitié de la loupe
+    bgX = - (mouseInImageX * zoom) + half
+    bgY = - (mouseInImageY * zoom) + half
   } else {
-    // Fallback: assume 1:1 mapping (no letterboxing)
+    // Fallback si pas de displayRect (1:1 container mapping)
+    bgSizeW = 100 * zoom + '%'
+    bgSizeH = 'auto'
     bgX = -(pos.x * zoom - half)
     bgY = -(pos.y * zoom - half)
   }
@@ -55,13 +43,14 @@ export default function Loupe({ imageUrl, pos, zoom = 3, size = 140, displayRect
         border: '2px solid var(--color-gold)',
         boxShadow: '0 0 0 4px rgba(0,0,0,0.4), 0 0 24px rgba(0,0,0,0.5)',
         backgroundImage: `url(${imageUrl})`,
-        backgroundSize: bgSize,
+        backgroundSize: typeof bgSizeW === 'number' ? `${bgSizeW}px ${bgSizeH}px` : bgSizeW,
         backgroundPosition: `${bgX}px ${bgY}px`,
         backgroundRepeat: 'no-repeat',
         overflow: 'hidden',
         zIndex: 100,
       }}
     >
+      {/* Réticule de visée */}
       <svg className="absolute inset-0 w-full h-full">
         <line x1="50%" y1="25%" x2="50%" y2="42%" stroke="#fff" strokeWidth="1" opacity="0.85" />
         <line x1="50%" y1="58%" x2="50%" y2="75%" stroke="#fff" strokeWidth="1" opacity="0.85" />
