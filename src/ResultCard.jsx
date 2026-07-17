@@ -219,12 +219,12 @@ export default function ResultCard({ measurements, imageUrl, onRetake }) {
 
     <div class="grid">
       <div class="box">
-        <div class="val">${measurements.pdMonoculaireGauche}<span style="font-size:14px;color:#555">mm</span></div>
-        <div class="lbl">Œil Gauche (OG)${measurements.pontPlace ? ' · Pont → OG' : ''}</div>
-      </div>
-      <div class="box">
         <div class="val">${measurements.pdMonoculaireDroit}<span style="font-size:14px;color:#555">mm</span></div>
         <div class="lbl">Œil Droit (OD)${measurements.pontPlace ? ' · Pont → OD' : ''}</div>
+      </div>
+      <div class="box">
+        <div class="val">${measurements.pdMonoculaireGauche}<span style="font-size:14px;color:#555">mm</span></div>
+        <div class="lbl">Œil Gauche (OG)${measurements.pontPlace ? ' · Pont → OG' : ''}</div>
       </div>
     </div>
 
@@ -232,9 +232,9 @@ export default function ResultCard({ measurements, imageUrl, onRetake }) {
     <div class="section-title">📐 Dimensions calibre (boxing)</div>
     <div class="dim-grid">
       <div class="dim-item"><span class="lbl">H. Calibre</span><span class="val">${measurements.hauteurCalibre} mm</span></div>
-      <div class="dim-item"><span class="lbl">L. Calibre OD/OG</span><span class="val">${measurements.largeurOD ?? '—'} / ${measurements.largeurOG ?? '—'} mm</span></div>
-      <div class="dim-item"><span class="lbl">H. Montage OD</span><span class="val">${measurements.hauteurMontageOG ?? '—'} mm</span></div>
-      <div class="dim-item"><span class="lbl">H. Montage OG</span><span class="val">${measurements.hauteurMontageOD ?? '—'} mm</span></div>
+      <div class="dim-item"><span class="lbl">L. Calibre G/D</span><span class="val">${measurements.largeurG ?? '—'} / ${measurements.largeurD ?? '—'} mm</span></div>
+      <div class="dim-item"><span class="lbl">H. Montage OG</span><span class="val">${measurements.hauteurMontageOG ?? '—'} mm</span></div>
+      <div class="dim-item"><span class="lbl">H. Montage OD</span><span class="val">${measurements.hauteurMontageOD ?? '—'} mm</span></div>
     </div>` : ''}
 
     ${measurements.pont != null ? `
@@ -315,23 +315,23 @@ export default function ResultCard({ measurements, imageUrl, onRetake }) {
         {/* Monocular */}
         <div className="grid grid-cols-2 gap-3 mb-4">
           <div className="text-center py-3 rounded-xl" style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)' }}>
-            <div className="text-xs mb-1" style={{ color: 'var(--color-text-muted)' }}>Œil Gauche (OG)</div>
-            <div className="text-2xl font-semibold" style={{ color: 'var(--color-gold)' }}>
-              {measurements.pdMonoculaireGauche}
-              <span className="text-sm ml-1" style={{ color: 'var(--color-text-dim)' }}>mm</span>
-            </div>
-            {measurements.pontPlace && (
-              <div className="text-[9px] mt-0.5" style={{ color: 'var(--color-green)' }}>Pont → OG</div>
-            )}
-          </div>
-          <div className="text-center py-3 rounded-xl" style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)' }}>
             <div className="text-xs mb-1" style={{ color: 'var(--color-text-muted)' }}>Œil Droit (OD)</div>
-            <div className="text-2xl font-semibold" style={{ color: '#3b82f6' }}>
+            <div className="text-2xl font-semibold" style={{ color: 'var(--color-gold)' }}>
               {measurements.pdMonoculaireDroit}
               <span className="text-sm ml-1" style={{ color: 'var(--color-text-dim)' }}>mm</span>
             </div>
             {measurements.pontPlace && (
               <div className="text-[9px] mt-0.5" style={{ color: 'var(--color-green)' }}>Pont → OD</div>
+            )}
+          </div>
+          <div className="text-center py-3 rounded-xl" style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)' }}>
+            <div className="text-xs mb-1" style={{ color: 'var(--color-text-muted)' }}>Œil Gauche (OG)</div>
+            <div className="text-2xl font-semibold" style={{ color: '#3b82f6' }}>
+              {measurements.pdMonoculaireGauche}
+              <span className="text-sm ml-1" style={{ color: 'var(--color-text-dim)' }}>mm</span>
+            </div>
+            {measurements.pontPlace && (
+              <div className="text-[9px] mt-0.5" style={{ color: 'var(--color-green)' }}>Pont → OG</div>
             )}
           </div>
         </div>
@@ -357,15 +357,15 @@ export default function ResultCard({ measurements, imageUrl, onRetake }) {
                 <span style={{ color: 'var(--color-purple)' }}>{measurements.hauteurCalibre} mm</span>
               </div>
               <div className="flex justify-between">
-                <span style={{ color: 'var(--color-text-muted)' }}>L. Calibre OD/OG :</span>
-                <span style={{ color: 'var(--color-purple)' }}>{measurements.largeurOD} / {measurements.largeurOG} mm</span>
-              </div>
-              <div className="flex justify-between">
-                <span style={{ color: 'var(--color-text-muted)' }}>H. Montage OD :</span>
-                <span style={{ color: 'var(--color-purple)' }}>{measurements.hauteurMontageOG} mm</span>
+                <span style={{ color: 'var(--color-text-muted)' }}>L. Calibre G/D :</span>
+                <span style={{ color: 'var(--color-purple)' }}>{measurements.largeurG} / {measurements.largeurD} mm</span>
               </div>
               <div className="flex justify-between">
                 <span style={{ color: 'var(--color-text-muted)' }}>H. Montage OG :</span>
+                <span style={{ color: 'var(--color-purple)' }}>{measurements.hauteurMontageOG} mm</span>
+              </div>
+              <div className="flex justify-between">
+                <span style={{ color: 'var(--color-text-muted)' }}>H. Montage OD :</span>
                 <span style={{ color: 'var(--color-purple)' }}>{measurements.hauteurMontageOD} mm</span>
               </div>
             </div>
