@@ -1,7 +1,7 @@
 /**
  * Pure magnifying glass (loupe) avec calcul exact d'alignement pour images avec letterboxing.
  */
-export default function Loupe({ imageUrl, pos, zoom = 3, size = 140, displayRect, imageSize }) {
+export default function Loupe({ imageUrl, pos, zoom = 3, size = 140, displayRect }) {
   if (!pos || !imageUrl) return null
 
   const half = size / 2

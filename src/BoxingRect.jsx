@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react'
 
 export default function BoxingRect({
-  rect, imageSize, toImageCoords, onChange, active, color, label, containerRef
+  rect, imageSize, toImageCoords, onChange, active, label, containerRef
 }) {
   const [drag, setDrag] = useState(null)
 

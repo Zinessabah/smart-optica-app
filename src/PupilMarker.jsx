@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { ChevronLeft, RotateCcw, ZoomIn, ZoomOut, Camera, Check } from 'lucide-react'
-import Loupe from './Loupe'
+import { ChevronLeft, RotateCcw, Camera, Check } from 'lucide-react'
 import BoxingRect from './BoxingRect'
 
 export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, onRetake }) {
@@ -11,9 +10,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   const [boxOG, setBoxOG] = useState(null)
   const [boxOD, setBoxOD] = useState(null)
   const [activeMarker, setActiveMarker] = useState('bridge')
-  const [loupeZoom, setLoupeZoom] = useState(3)
-  const [loupePos, setLoupePos] = useState(null)
-  const [panelPos, setPanelPos] = useState(null) // null = use default
+    const [panelPos, setPanelPos] = useState(null) // null = use default
   const panelDragRef = useRef(null) // { startX, startY, baseX, baseY }
   const panelRef = useRef(null)
   const containerRef = useRef(null)
@@ -78,7 +75,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
             }
             return
           }
-        } catch (_) {}
+        } catch {}
 
         // 3) Proportion estimate
         if (!cancelled) {
@@ -86,22 +83,24 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
           setLeftEye({ x: mx - d, y: my }); setRightEye({ x: mx + d, y: my })
           setBridge({ x: mx, y: my + d * 0.9 })
         }
-      } catch (_) {}
+      } catch {}
     })()
     return () => { cancelled = true }
   }, [imageUrl, imageSize, calibration])
 
   const getImageDisplayRect = useCallback(() => {
     if (!containerRef.current || !imageSize) return null
-    const r = containerRef.current.getBoundingClientRect()
-    const cAspect = r.width / r.height
+    const cw = containerRef.current.clientWidth
+    const ch = containerRef.current.clientHeight
+    if (!cw || !ch) return null
+    const cAspect = cw / ch
     const iAspect = imageSize.width / imageSize.height
     if (iAspect > cAspect) {
-      const h = r.width / iAspect
-      return { left: 0, top: (r.height - h) / 2, width: r.width, height: h }
+      const h = cw / iAspect
+      return { left: 0, top: (ch - h) / 2, width: cw, height: h }
     }
-    const w = r.height * iAspect
-    return { left: (r.width - w) / 2, top: 0, width: w, height: r.height }
+    const w = ch * iAspect
+    return { left: (cw - w) / 2, top: 0, width: w, height: ch }
   }, [imageSize])
 
   const toImageCoords = useCallback((clientX, clientY) => {
@@ -109,8 +108,10 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     const dr = getImageDisplayRect()
     if (!dr) return null
     const containerRect = containerRef.current.getBoundingClientRect()
-    const rx = clientX - containerRect.left - dr.left
-    const ry = clientY - containerRect.top - dr.top
+    const bl = containerRef.current.clientLeft
+    const bt = containerRef.current.clientTop
+    const rx = clientX - containerRect.left - bl - dr.left
+    const ry = clientY - containerRect.top - bt - dr.top
     const cx = Math.max(0, Math.min(dr.width, rx))
     const cy = Math.max(0, Math.min(dr.height, ry))
     return { x: (cx / dr.width) * imageSize.width, y: (cy / dr.height) * imageSize.height }
@@ -122,8 +123,6 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     return { width: 72, height: 56 }
   }, [calibration])
 
-  const handlePointerLeave = useCallback(() => setLoupePos(null), [])
-
   const undo = () => {
     switch (activeMarker) {
       case 'bridge': if (bridge) setBridge(null); break
@@ -133,9 +132,6 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       case 'boxOD': if (boxOD) setBoxOD(null); break
     }
   }
-
-  const zoomIn = () => setLoupeZoom(z => Math.min(6, z + 1))
-  const zoomOut = () => setLoupeZoom(z => Math.max(2, z - 1))
 
   // --- Calculs ---
   const result = (() => {
@@ -220,8 +216,6 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     })
   }
 
-  const SZ = 26
-  const SZ_BRIDGE = 20
   // Couleurs plus vives et saturées pour contraste sur photo
   const BRIDGE_COLOR = '#00ff7f'      // vert néon vif
   const BOX_COLOR = '#ff2dd0'         // magenta vif (verre)
@@ -231,7 +225,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   // ── Verrouillage des marqueurs + duplication rectangle (one-shot) ──
   const boxDuplicated = useRef(false)
   const lockedRef = useRef(new Set())
-  const [lockVersion, setLockVersion] = useState(0)
+  const [, setLockVersion] = useState(0)
   const toggleLock = (id) => {
     // Duplication rectangle si on verrouille un box et que l'autre n'existe pas encore
     if (id === 'boxOG' && boxOG && !boxOD && !boxDuplicated.current) {
@@ -293,18 +287,6 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
         setDragMarker(null)
         return
       }
-      // Loupe — Si on déplace une pupille, on aligne le focus sur la mire de la pupille (45px plus bas)
-      if (containerRef.current) {
-        const r = containerRef.current.getBoundingClientRect()
-        let focusY = e.clientY - r.top
-        
-        // Si c'est la pupille OD (left), OG (right) ou le Nez (bridge), la mire se trouve 75px plus bas que le doigt (car la poignée tactile a handleOffsetY = -75px)
-        if (dragMarker.markerId === 'left' || dragMarker.markerId === 'right' || dragMarker.markerId === 'bridge') {
-          focusY += 75
-        }
-        
-        setLoupePos({ x: e.clientX - r.left, y: focusY })
-      }
       // Compute delta
       const startImg = toImageCoords(dragMarker.startClient.x, dragMarker.startClient.y)
       const currImg = toImageCoords(e.clientX, e.clientY)
@@ -352,7 +334,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
 
   const handlePanelPointerUp = useCallback((e) => {
     if (panelDragRef.current) {
-      try { e.target.releasePointerCapture(e.pointerId) } catch (_) {}
+      try { e.target.releasePointerCapture(e.pointerId) } catch {}
     }
     panelDragRef.current = null
   }, [])
@@ -382,266 +364,98 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     const am = activeMarkerRef.current
     // Si le marqueur actif est verrouillé, ignorer tout tap
     if (am && lockedRef.current.has(am)) return
-    const bl = currentPosRef.current.bridgeL
-    const br = currentPosRef.current.bridgeR
-    const le = currentPosRef.current.leftEye
-    const re = currentPosRef.current.rightEye
+    const b = currentPosRef.current.bridge
 
-    // Only allow tap-placement if marker doesn't exist yet
-    if (am === 'bridgeL' && !bl) { setBridgeL(pt); return }
-    if (am === 'bridgeR' && !br) { setBridgeR(pt); return }
-    if (am === 'left' && !le) { setLeftEye(pt); return }
-    if (am === 'right' && !re) { setRightEye(pt); return }
-    if (am === 'boxOG' && !boxOG) {
-      const def = getDefaultBoxSize()
-      if (bl) {
-        setBoxOG({ x: bl.x - def.width / 2, y: bl.y, width: def.width, height: def.height })
-      } else {
-        setBoxOG({ x: pt.x, y: pt.y, width: def.width, height: def.height })
-      }
-      return
-    }
-    if (am === 'boxOD' && !boxOD) {
-      if (!boxOG) {
-        const def = getDefaultBoxSize()
-        if (br) {
-          setBoxOD({ x: br.x + def.width / 2, y: br.y, width: def.width, height: def.height })
-        } else {
-          setBoxOD({ x: pt.x, y: pt.y, width: def.width, height: def.height })
+        // Tap repositionne le marqueur actif (même s'il existe déjà)
+        if (am === 'bridge') { setBridge(pt); return }
+        if (am === 'left')   { setLeftEye(pt); return }
+        if (am === 'right')  { setRightEye(pt); return }
+        if (am === 'boxOG' && !boxOG) {
+          const def = getDefaultBoxSize()
+          if (b) {
+            setBoxOG({ x: b.x - def.width / 2, y: b.y, width: def.width, height: def.height })
+          } else {
+            setBoxOG({ x: pt.x, y: pt.y, width: def.width, height: def.height })
+          }
+          return
         }
-      }
-      return
-    }
+        if (am === 'boxOD' && !boxOD) {
+          if (!boxOG) {
+            const def = getDefaultBoxSize()
+            if (b) {
+              setBoxOD({ x: b.x + def.width / 2, y: b.y, width: def.width, height: def.height })
+            } else {
+              setBoxOD({ x: pt.x, y: pt.y, width: def.width, height: def.height })
+            }
+          }
+          return
+        }
     // Already placed → tap outside does nothing
     return
   }, [toImageCoords, boxOG, boxOD, getDefaultBoxSize])
 
-  // ── Simplified marker renderers (no letterboxing compensation — overlay handles it) ──
-  const renderCrossMarkerSimple = (pos, color, label, isActive, markerId, sz = 24) => {
+  // ── Simplified marker renderers — réticules purs directement tactiles ──
+  const renderCrossMarkerSimple = (pos, color, label, isActive, markerId, sz = 22) => {
     if (!pos || !imageSize) return null
     const l = (pos.x / imageSize.width) * 100
     const t = (pos.y / imageSize.height) * 100
     const half = sz / 2
-    
-    // Décalage vertical du contrôle tactile (Offset) pour ne pas cacher le visage ou l'oeil du client.
-    // On augmente à -75px pour remonter les gros boutons au niveau du front/dessus du visage.
     const handleOffsetY = -75
 
     return (
+    <div style={{
+      position: 'absolute',
+      left: `${l}%`, top: `${t}%`,
+      zIndex: 15,
+      pointerEvents: 'none',
+    }}>
+      {/* Réticule de précision — centré sur le point de mesure, non tactile */}
       <div style={{
         position: 'absolute',
-        left: `${l}%`, top: `${t}%`,
-        zIndex: 15,
-        pointerEvents: 'none' // Laisse l'event intercepter le conteneur ou la barre
+        left: 0, top: 0,
+        transform: 'translate(-50%, -50%)',
+        filter: 'drop-shadow(0 1px 4px rgba(0,0,0,0.95))',
       }}>
-        {/* 1. LE RETICULE CHIRURGICAL SUR LA PUPILLE (Reste sous l'oeil pour la précision) */}
-        <div style={{
-          position: 'absolute',
-          left: 0, top: 0,
-          transform: 'translate(-50%, -50%)',
-          filter: 'drop-shadow(0 1px 4px rgba(0,0,0,0.95))',
-        }}>
-          <svg width={sz} height={sz} viewBox={`0 0 ${sz} ${sz}`}>
-            {/* Réticule en croix fine blanche */}
-            <line x1="0" y1={half} x2={half - 4} y2={half} stroke="#fff" strokeWidth="1" strokeLinecap="round" />
-            <line x1={half + 4} y1={half} x2={sz} y2={half} stroke="#fff" strokeWidth="1" strokeLinecap="round" />
-            <line x1={half} y1="0" x2={half} y2={half - 4} stroke="#fff" strokeWidth="1" strokeLinecap="round" />
-            <line x1={half} y1={half + 4} x2={half} y2={sz} stroke="#fff" strokeWidth="1" strokeLinecap="round" />
-
-            {/* Cercle central de visée de 10px de diamètre (Couleur jaune ou bleu pur) */}
-            <circle cx={half} cy={half} r="4.5" fill="none" stroke={color} strokeWidth="1.2" />
-            {/* Cercle noir extérieur de contraste */}
-            <circle cx={half} cy={half} r="9" fill="none" stroke="#fff" strokeWidth="0.8" opacity="0.6" />
-
-            {/* Micro micro point central blanc */}
-            <circle cx={half} cy={half} r="1" fill="#fff" />
-          </svg>
-        </div>
-
-        {/* 2. LA LIGNE DE LIAISON ULTRA-FINE D'ALIGNEMENT */}
-        <svg width="2" height={Math.abs(handleOffsetY)} style={{
-          position: 'absolute',
-          left: 0,
-          top: handleOffsetY,
-          pointerEvents: 'none',
-          overflow: 'visible'
-        }}>
-          <line x1="0" y1="0" x2="0" y2={Math.abs(handleOffsetY)} stroke="rgba(255, 255, 255, 0.7)" strokeWidth="1" strokeDasharray="2 2" />
-        </svg>
-
-        {/* 3. LE BOUTON TACTILE "OFFSET HANDLE" COMMANDE DE DEPLACEMENT */}
-        <div 
-          style={{
-            position: 'absolute',
-            left: 0,
-            top: handleOffsetY,
-            transform: 'translate(-50%, -50%)',
-            pointerEvents: 'auto', // Active l'interactivité pour attraper le marqueur
-            cursor: 'grab',
-            filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.65))',
-          }} 
-          data-markerid={markerId}
-        >
-          {/* Poignée circulaire blanche lumineuse, avec l'index de rotation */}
-          <div style={{
-            width: '32px',
-            height: '32px',
-            borderRadius: '50%',
-            background: isActive ? '#fff' : 'rgba(255,255,255,0.95)',
-            border: `2px solid ${color}`,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            boxShadow: '0 0 10px rgba(0, 0, 0, 0.2)',
-            transition: 'all 0.1s ease',
-            transform: isActive ? 'scale(1.15)' : 'scale(1)'
-          }}>
-            {/* Icône de déplacement directionnel ✥ */}
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="5 9 2 12 5 15" />
-              <polyline points="9 5 12 2 15 5" />
-              <polyline points="15 19 12 22 9 19" />
-              <polyline points="19 9 22 12 19 15" />
-              <line x1="2" y1="12" x2="22" y2="12" />
-              <line x1="12" y1="2" x2="12" y2="22" />
-            </svg>
-          </div>
-
-          {/* Badge de l'œil correspondant (OD pour le bleu, OG pour l'ocre) */}
-          <div style={{
-            position: 'absolute',
-            bottom: '-14px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            fontSize: '8px',
-            fontWeight: 800,
-            color: '#fff',
-            background: color,
-            padding: '1px 5px',
-            borderRadius: '4px',
-            border: '1px solid rgba(255,255,255,0.3)',
-            boxShadow: '0 1px 3px rgba(0,0,0,0.4)',
-            whiteSpace: 'nowrap'
-          }}>
-            {label}
-          </div>
-        </div>
+        <svg width={sz} height={sz} viewBox={`0 0 ${sz} ${sz}`}>
+                  <circle cx={half} cy={half} r="2.5" fill={color} fillOpacity="0.20" stroke="#fff" strokeWidth="0.8" />
+                </svg>
       </div>
-    )
-  }
 
-  const renderBridgeBarSimple = (pos, color, label, isActive, markerId, sz = 24) => {
-    if (!pos || !imageSize) return null
-    const l = (pos.x / imageSize.width) * 100
-    const t = (pos.y / imageSize.height) * 100
-    const half = sz / 2
-    
-    // Même décalage vertical ergonomique de -75px que pour la pupille
-    const handleOffsetY = -75
+      {/* Ligne de liaison fine */}
+      <svg width="2" height={Math.abs(handleOffsetY)} style={{
+        position: 'absolute', left: 0, top: handleOffsetY,
+        pointerEvents: 'none', overflow: 'visible',
+      }}>
+        <line x1="0" y1="0" x2="0" y2={Math.abs(handleOffsetY)}
+          stroke="rgba(255,255,255,0.5)" strokeWidth="0.8" strokeDasharray="2 3" />
+      </svg>
 
-    return (
+      {/* Poignée tactile déportée 75px au-dessus */}
       <div style={{
-        position: 'absolute',
-        left: `${l}%`, top: `${t}%`,
-        zIndex: 15,
-        pointerEvents: 'none' // Laisse l'event intercepter le conteneur ou la barre
-      }}>
-        {/* 1. LA MIRE CHIRURGICALE VERTE NEON SUR LE PONT */}
+        position: 'absolute', left: 0, top: handleOffsetY,
+        transform: 'translate(-50%, -50%)',
+        pointerEvents: 'auto', cursor: 'grab',
+      }} data-markerid={markerId}>
         <div style={{
-          position: 'absolute',
-          left: 0, top: 0,
-          transform: 'translate(-50%, -50%)',
-          filter: 'drop-shadow(0 1px 4px rgba(0,0,0,0.95))',
-        }}>
-          <svg width={sz} height={sz} viewBox={`0 0 ${sz} ${sz}`}>
-            {/* Liseré blanc extérieur */}
-            <circle cx={half} cy={half} r="9" fill="none" stroke="#fff" strokeWidth="0.8" opacity="0.6" />
-            
-            {/* Croix verte néon fine de repère */}
-            <line x1="0" y1={half} x2={sz} y2={half} stroke={color} strokeWidth="1" />
-            <line x1={half} y1="0" x2={half} y2={sz} stroke={color} strokeWidth="1" />
-
-            {/* Micro point central blanc au centre d'intersection */}
-            <circle cx={half} cy={half} r="2" fill={color} stroke="#fff" strokeWidth="0.8" />
-          </svg>
-        </div>
-
-        {/* 2. LA LIGNE DE LIAISON ULTRA-FINE D'ALIGNEMENT */}
-        <svg width="2" height={Math.abs(handleOffsetY)} style={{
-          position: 'absolute',
-          left: 0,
-          top: handleOffsetY,
-          pointerEvents: 'none',
-          overflow: 'visible'
-        }}>
-          <line x1="0" y1="0" x2="0" y2={Math.abs(handleOffsetY)} stroke="rgba(255, 255, 255, 0.7)" strokeWidth="1" strokeDasharray="2 2" />
-        </svg>
-
-        {/* 3. LE BOUTON TACTILE "OFFSET HANDLE" COMMANDE DE DEPLACEMENT */}
-        <div 
-          style={{
-            position: 'absolute',
-            left: 0,
-            top: handleOffsetY,
-            transform: 'translate(-50%, -50%)',
-            pointerEvents: 'auto', // Active l'interactivité pour attraper le repère
-            cursor: 'grab',
-            filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.65))',
-          }} 
-          data-markerid={markerId}
-        >
-          {/* Poignée circulaire blanche lumineuse, avec l'index de rotation */}
-          <div style={{
-            width: '32px',
-            height: '32px',
-            borderRadius: '50%',
-            background: isActive ? '#fff' : 'rgba(255,255,255,0.95)',
-            border: `2px solid ${color}`,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            boxShadow: '0 0 10px rgba(0, 0, 0, 0.2)',
-            transition: 'all 0.1s ease',
-            transform: isActive ? 'scale(1.15)' : 'scale(1)'
-          }}>
-            {/* Icône de déplacement directionnel ✥ */}
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="5 9 2 12 5 15" />
-              <polyline points="9 5 12 2 15 5" />
-              <polyline points="15 19 12 22 9 19" />
-              <polyline points="19 9 22 12 19 15" />
-              <line x1="2" y1="12" x2="22" y2="12" />
-              <line x1="12" y1="2" x2="12" y2="22" />
-            </svg>
-          </div>
-
-          {/* Badge central du Pont */}
-          <div style={{
-            position: 'absolute',
-            bottom: '-14px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            fontSize: '8px',
-            fontWeight: 800,
-            color: '#fff',
-            background: color,
-            padding: '1px 5px',
-            borderRadius: '4px',
-            border: '1px solid rgba(255,255,255,0.3)',
-            boxShadow: '0 1px 3px rgba(0,0,0,0.4)',
-            whiteSpace: 'nowrap'
-          }}>
-            {label}
-          </div>
-        </div>
+          width: '16px', height: '16px', borderRadius: '50%',
+          background: isActive ? color : 'rgba(255,255,255,0.85)',
+          border: `1.5px solid ${color}`,
+          boxShadow: '0 0 6px rgba(0,0,0,0.5)',
+        }} />
+        <div style={{
+          textAlign: 'center', fontSize: '8px', fontWeight: 700,
+          color: color, marginTop: '2px',
+          textShadow: '0 1px 2px rgba(0,0,0,0.8)',
+        }}>{label}</div>
       </div>
+    </div>
     )
-  }
+    }
 
   const btnStyle = (marker, accentColor) => ({
-    background: activeMarker === marker ? `${accentColor}20` : 'var(--color-border)',
-    color: activeMarker === marker ? accentColor : 'var(--color-text-dim)',
-    border: activeMarker === marker ? `1.5px solid ${accentColor}` : '1.5px solid transparent',
+  background: activeMarker === marker ? `${accentColor}20` : 'var(--color-border)',
+  color: activeMarker === marker ? accentColor : 'var(--color-text-dim)',
+  border: activeMarker === marker ? `1.5px solid ${accentColor}` : '1.5px solid transparent',
   })
 
   const hasAnyMarker = leftEye || rightEye || bridge || boxOG || boxOD
@@ -667,25 +481,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
         )}
       </div>
 
-      {/* Zoom controls */}
-      <div className="flex items-center justify-center gap-2">
-        <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Loupe :</span>
-        <button onClick={zoomOut} disabled={loupeZoom <= 2}
-          className="flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold transition-opacity disabled:opacity-30"
-          style={{ background: 'var(--color-border)', color: 'var(--color-text-muted)' }}>
-          <ZoomOut size={14} />
-        </button>
-        <span className="text-xs font-medium min-w-[36px] text-center" style={{ color: 'var(--color-text-muted)' }}>
-          ×{loupeZoom}
-        </span>
-        <button onClick={zoomIn} disabled={loupeZoom >= 6}
-          className="flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold transition-opacity disabled:opacity-30"
-          style={{ background: 'var(--color-border)', color: 'var(--color-text-muted)' }}>
-          <ZoomIn size={14} />
-        </button>
-      </div>
-
-      {/* Calibration info row */}
+            {/* Calibration info row */}
       <div className="flex items-stretch gap-1.5 flex-wrap">
         <span className="self-center text-[10px] font-medium" style={{ color: 'var(--color-gold)' }}>Calibrage :</span>
         <span className="self-center text-xs" style={{ color: 'var(--color-text-muted)' }}>
@@ -782,8 +578,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       <div ref={containerRef} id="pupil-image-container"
         className="relative rounded-2xl border overflow-hidden select-none cursor-crosshair"
         style={{ background: '#08080a', borderColor: 'var(--color-border)', aspectRatio: imageSize ? `${imageSize.width}/${imageSize.height}` : '4/3', touchAction: 'none' }}
-        onPointerDown={handleContainerPointerDown}
-        onPointerLeave={handlePointerLeave}>
+        onPointerDown={handleContainerPointerDown}>
         {imageUrl && <img src={imageUrl} alt="Centrage" className="w-full h-full block object-contain" draggable={false} />}
 
         {/* Image overlay — exact display rect, all markers render inside it with simple % */}
@@ -835,19 +630,25 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
               )}
 
               {/* Bridge markers */}
-              {bridge && renderBridgeBarSimple(bridge, BRIDGE_COLOR, 'Centre Nez', activeMarker === 'bridge', 'bridge')}
+              {bridge && renderCrossMarkerSimple(bridge, BRIDGE_COLOR, 'Nez', activeMarker === 'bridge', 'bridge')}
               {/* Eye markers */}
               {leftEye && renderCrossMarkerSimple(leftEye, PUPIL_L_COLOR, 'OD', activeMarker === 'left', 'left')}
               {rightEye && renderCrossMarkerSimple(rightEye, PUPIL_R_COLOR, 'OG', activeMarker === 'right', 'right')}
 
-              {/* Ligne pointillée fine verticale traversant tout l'affichage pour l'Axe de Visée du Nez */}
-              {bridge && (
-                <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 10 }}>
-                  <line x1={`${(bridge.x / imageSize.width) * 100}%`} y1="0%"
-                    x2={`${(bridge.x / imageSize.width) * 100}%`} y2="100%"
-                    stroke="rgba(0, 255, 127, 0.45)" strokeWidth="1" strokeDasharray="3 3" />
-                </svg>
-              )}
+              {/* Ligne pointillée fine — 25% hauteur, centrée sur le pont */}
+                            {bridge && (() => {
+                              const bridgeYPct = (bridge.y / imageSize.height) * 100
+                              const halfSpan = 12.5 // ±12.5% → 25% total
+                              return (
+                                <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 10 }}>
+                                  <line x1={`${(bridge.x / imageSize.width) * 100}%`}
+                                    y1={`${bridgeYPct - halfSpan}%`}
+                                    x2={`${(bridge.x / imageSize.width) * 100}%`}
+                                    y2={`${bridgeYPct + halfSpan}%`}
+                                    stroke="rgba(0, 255, 127, 0.45)" strokeWidth="1" strokeDasharray="3 3" />
+                                </svg>
+                              )
+                            })()}
 
               {/* Panneau live — DP / DPD / DPG en temps réel */}
               {leftEye && rightEye && (() => {
@@ -974,9 +775,6 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
             </div>
           )
         })()}
-
-        <Loupe imageUrl={imageUrl} pos={loupePos} zoom={loupeZoom} size={140}
-          displayRect={getImageDisplayRect()} imageSize={imageSize} />
 
         <div className="absolute bottom-3 left-0 right-0 text-center pointer-events-none" style={{ zIndex: 50 }}>
           <span className="inline-block px-3 py-1.5 rounded-full text-xs"

@@ -44,15 +44,6 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
     }
   }, [])
 
-  const imagePointToScreen = useCallback((point) => {
-    const rect = getRenderedImageRect()
-    if (!rect || !imageSize) return null
-    return {
-      left: ((point.x / imageSize.width) * rect.width) + rect.left,
-      top: ((point.y / imageSize.height) * rect.height) + rect.top,
-    }
-  }, [getRenderedImageRect, imageSize])
-
   // ── Drag state for calibration markers ──
   const [dragTarget, setDragTarget] = useState(null) // { index, startClient, startPos }
   const pointsRef = useRef([])
