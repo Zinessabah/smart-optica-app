@@ -1,6 +1,6 @@
-import { RotateCcw, FileText, CheckCircle2, AlertTriangle, AlertCircle } from 'lucide-react'
+import { RotateCcw, FileText, CheckCircle2, AlertTriangle, AlertCircle, UserRound } from 'lucide-react'
 
-export default function ResultCard({ measurements, imageUrl, onRetake }) {
+export default function ResultCard({ measurements, imageUrl, profileImageUrl, profileData, onRetake }) {
   // --- Validation des mesures ---
   const validation = (() => {
     const issues = []
@@ -88,57 +88,67 @@ export default function ResultCard({ measurements, imageUrl, onRetake }) {
       let measureW = pageW - margin * 2
       let measureH = measureW / measureAspect
 
-      // Si on a une photo, on la réduit en haut et les mesures en dessous
-      if (imageUrl) {
-        // Photo en haut (max 25% de la page — taille passeport)
-        const photoMaxH = (pageH - margin * 2) * 0.25
-        // Charger l'image et détecter l'orientation EXIF
-        const photoImg = new Image()
-        photoImg.src = imageUrl
-        await new Promise(r => { photoImg.onload = r })
-        // Déterminer la bonne orientation
-        let photoW = measureW * 0.4 // 40% largeur
-        let photoH = photoW / (photoImg.width > photoImg.height ? photoImg.height / photoImg.width : photoImg.width / photoImg.height)
-        if (photoH > photoMaxH) {
-          photoH = photoMaxH
-          photoW = photoH * (photoImg.width > photoImg.height ? photoImg.height / photoImg.width : photoImg.width / photoImg.height)
-        }
-
-        // Redresser l'image via canvas (corrige EXIF)
+      // Helper : charger et orienter une image pour le PDF
+      const loadPhoto = async (url) => {
+        const img = new Image()
+        img.src = url
+        await new Promise(r => { img.onload = r })
         const orientCanvas = document.createElement('canvas')
         const ctx = orientCanvas.getContext('2d')
-        // Si l'image est en paysage (w > h), on l'utilise telle quelle
-        // Sinon aussi, mais on s'assure que le ratio est bon
-        if (photoImg.width > photoImg.height) {
-          // Image en paysage → on la tourne pour que ce soit un portrait
-          orientCanvas.width = photoImg.height
-          orientCanvas.height = photoImg.width
+        if (img.width > img.height) {
+          orientCanvas.width = img.height
+          orientCanvas.height = img.width
           ctx.translate(orientCanvas.width / 2, orientCanvas.height / 2)
           ctx.rotate(-Math.PI / 2)
-          ctx.drawImage(photoImg, -photoImg.width / 2, -photoImg.height / 2)
+          ctx.drawImage(img, -img.width / 2, -img.height / 2)
         } else {
-          orientCanvas.width = photoImg.width
-          orientCanvas.height = photoImg.height
-          ctx.drawImage(photoImg, 0, 0)
+          orientCanvas.width = img.width
+          orientCanvas.height = img.height
+          ctx.drawImage(img, 0, 0)
         }
+        return orientCanvas.toDataURL('image/jpeg', 0.9)
+      }
 
-        const orientedDataUrl = orientCanvas.toDataURL('image/jpeg', 0.9)
-        const orientedAspect = orientCanvas.width / orientCanvas.height
-        photoW = measureW * 0.4
-        photoH = photoW / orientedAspect
-        if (photoH > photoMaxH) {
-          photoH = photoMaxH
-          photoW = photoH * orientedAspect
+      // Photos en haut
+      const photoUrls = []
+      if (imageUrl) photoUrls.push({ url: imageUrl, label: 'Face' })
+      if (profileImageUrl) photoUrls.push({ url: profileImageUrl, label: 'Profil D' })
+
+      if (photoUrls.length > 0) {
+        const photoMaxH = (pageH - margin * 2) * 0.25
+        const photoMaxW = (pageW - margin * 2) / photoUrls.length - 4 // réparti sur la largeur
+
+        const orientedDataUrls = await Promise.all(photoUrls.map(p => loadPhoto(p.url)))
+
+        for (let i = 0; i < orientedDataUrls.length; i++) {
+          const imgObj = new Image()
+          imgObj.src = orientedDataUrls[i]
+          await new Promise(r => { imgObj.onload = r })
+          const aspect = imgObj.width / imgObj.height
+          let pw = photoMaxW
+          let ph = pw / aspect
+          if (ph > photoMaxH) {
+            ph = photoMaxH
+            pw = ph * aspect
+          }
+          const px = margin + (photoUrls.length === 1
+            ? (pageW - pw) / 2 - margin
+            : i * ((pageW - margin * 2) / photoUrls.length) + ((pageW - margin * 2) / photoUrls.length - pw) / 2)
+          pdf.addImage(orientedDataUrls[i], 'JPEG', px, margin, pw, ph)
+
+          // Label sous la photo
+          pdf.setFontSize(6)
+          pdf.setTextColor(100, 100, 100)
+          pdf.text(photoUrls[i].label, px + pw / 2, margin + ph + 2, { align: 'center' })
         }
-
-        pdf.addImage(orientedDataUrl, 'JPEG', (pageW - photoW) / 2, margin, photoW, photoH)
 
         // Espace restant pour les mesures
-        const remainingH = pageH - margin - photoH - margin - margin
+        const photoSectionH = photoMaxH + 6
+        const remainingH = pageH - margin - photoSectionH - margin
         measureH = Math.min(measureH, remainingH)
-        if (measureH < 50) measureH = 50 // minimum
+        if (measureH < 50) measureH = 50
 
-        const measureY = margin + photoH + margin
+        const measureY = margin + photoSectionH + 2
         pdf.addImage(measureImgData, 'PNG', (pageW - measureW) / 2, measureY, measureW, measureH)
       } else {
         // Sans photo, les mesures prennent toute la page
@@ -207,7 +217,20 @@ export default function ResultCard({ measurements, imageUrl, onRetake }) {
     </div>
   </div>
 
-  ${imageUrl ? `<img class="photo" src="${imageUrl}" alt="Photo client" />` : ''}
+  ${imageUrl || profileImageUrl ? (() => {
+    let photosHtml = ''
+    if (imageUrl && profileImageUrl) {
+      photosHtml = `<div style="display:flex;gap:8px;margin-bottom:16px">
+        <img class="photo" src="${imageUrl}" alt="Photo face" style="flex:1" />
+        <img class="photo" src="${profileImageUrl}" alt="Photo profil" style="flex:1" />
+      </div>`
+    } else if (imageUrl) {
+      photosHtml = `<img class="photo" src="${imageUrl}" alt="Photo face" />`
+    } else if (profileImageUrl) {
+      photosHtml = `<img class="photo" src="${profileImageUrl}" alt="Photo profil" />`
+    }
+    return photosHtml
+  })() : ''}
 
   <div class="card">
     <div class="dp-main">
@@ -243,6 +266,21 @@ export default function ResultCard({ measurements, imageUrl, onRetake }) {
       <div style="font-size:22px;font-weight:600;color:#22c55e">${measurements.pont} mm</div>
     </div>` : ''}
 
+    ${measurements.pantoscopicAngle != null ? `
+    <div style="text-align:center;padding:10px;background:#1a1a2e;border-radius:10px;margin-bottom:14px;border:1px solid #2a2a4e">
+      <div style="display:flex;gap:16px;justify-content:center">
+        <div>
+          <div style="font-size:10px;color:#888;text-transform:uppercase">Angle pantoscopique</div>
+          <div style="font-size:20px;font-weight:600;color:#8b5cf6">${measurements.pantoscopicAngle}°</div>
+        </div>
+        ${measurements.vertexDistance != null ? `
+        <div>
+          <div style="font-size:10px;color:#888;text-transform:uppercase">Distance Vertex (D'L)</div>
+          <div style="font-size:20px;font-weight:600;color:#8b5cf6">${measurements.vertexDistance} mm</div>
+        </div>` : ''}
+      </div>
+    </div>` : ''}
+
     <div class="meta">
       <div><strong>Méthode :</strong> ${getMethodeLabel(measurements.methode)}</div>
       <div style="color:${getConfianceColor(measurements.confiance)}">
@@ -266,10 +304,23 @@ export default function ResultCard({ measurements, imageUrl, onRetake }) {
 
   return (
     <div className="space-y-5 animate-fade-in">
-      {/* Photo preview */}
-      {imageUrl && (
+      {/* Photos preview — face + profil */}
+      {(imageUrl || profileImageUrl) && (
         <div className="rounded-2xl border overflow-hidden" style={{ background: 'var(--color-card)', borderColor: 'var(--color-border)' }}>
-          <img src={imageUrl} alt="Photo client" className="w-full aspect-[4/3] object-cover" />
+          <div className={`grid ${imageUrl && profileImageUrl ? 'grid-cols-2' : 'grid-cols-1'} gap-0`}>
+            {imageUrl && (
+              <div>
+                <img src={imageUrl} alt="Photo face" className="w-full aspect-[3/4] object-cover" />
+                <div className="text-[9px] text-center py-1" style={{ color: 'var(--color-text-dim)', background: 'var(--color-bg)' }}>📸 Face</div>
+              </div>
+            )}
+            {profileImageUrl && (
+              <div>
+                <img src={profileImageUrl} alt="Photo profil" className="w-full aspect-[3/4] object-cover" />
+                <div className="text-[9px] text-center py-1" style={{ color: 'var(--color-text-dim)', background: 'var(--color-bg)' }}>📸 Profil D</div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -369,6 +420,36 @@ export default function ResultCard({ measurements, imageUrl, onRetake }) {
                 <span style={{ color: 'var(--color-purple)' }}>{measurements.hauteurMontageOD} mm</span>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* 3D Measurements: Pantoscopic angle + Vertex */}
+        {(measurements.pantoscopicAngle != null || measurements.vertexDistance != null) && (
+          <div className="rounded-xl p-3 mb-3 space-y-2 text-xs"
+            style={{ background: 'var(--color-purple-bg)', border: '1px solid var(--color-border)' }}>
+            <div className="text-[10px] uppercase tracking-wide font-medium flex items-center gap-1.5" style={{ color: 'var(--color-purple)' }}>
+              <UserRound size={12} /> Mesures 3D (photo de profil)
+            </div>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+              <div className="flex justify-between">
+                <span style={{ color: 'var(--color-text-muted)' }}>Angle pantoscopique :</span>
+                <span style={{ color: 'var(--color-purple)' }}>
+                  {measurements.pantoscopicAngle != null ? `${measurements.pantoscopicAngle}°` : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span style={{ color: 'var(--color-text-muted)' }}>Distance Vertex (D'L) :</span>
+                <span style={{ color: 'var(--color-purple)' }}>
+                  {measurements.vertexDistance != null ? `${measurements.vertexDistance} mm` : '—'}
+                </span>
+              </div>
+            </div>
+            {(measurements.pantoscopicAngle != null && (measurements.pantoscopicAngle < 5 || measurements.pantoscopicAngle > 15)) && (
+              <div className="flex items-center gap-1 mt-1 text-[9px]" style={{ color: 'var(--color-gold)' }}>
+                <AlertTriangle size={10} />
+                Angle pantoscopique hors norme (8-12°)
+              </div>
+            )}
           </div>
         )}
 

@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { ChevronLeft, RotateCcw, Camera, Check } from 'lucide-react'
+import { ChevronLeft, RotateCcw, Camera, Check, Loader2 } from 'lucide-react'
 import BoxingRect from './BoxingRect'
 
-export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, onRetake }) {
+export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, onRetake, initialLeftEye, initialRightEye, initialBridge }) {
   const [imageSize, setImageSize] = useState(null)
   const [leftEye, setLeftEye] = useState(null)
   const [rightEye, setRightEye] = useState(null)
@@ -10,10 +10,22 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   const [boxOG, setBoxOG] = useState(null)
   const [boxOD, setBoxOD] = useState(null)
   const [activeMarker, setActiveMarker] = useState('bridge')
+  const [faceDetectStatus, setFaceDetectStatus] = useState('idle') // idle | detecting | success | failed
     const [panelPos, setPanelPos] = useState(null) // null = use default
   const panelDragRef = useRef(null) // { startX, startY, baseX, baseY }
   const panelRef = useRef(null)
   const containerRef = useRef(null)
+  const cancelAutoFaceRef = useRef(false)
+
+  // Helper: convertit un point ou un tableau de points en {x,y} image coords
+  const c = (pt) => {
+    if (Array.isArray(pt)) {
+      const avgX = pt.reduce((s, p) => s + (p.x ?? p), 0) / pt.length
+      const avgY = pt.reduce((s, p) => s + (p.y ?? p), 0) / pt.length
+      return { x: Math.round(avgX), y: Math.round(avgY) }
+    }
+    return { x: Math.round(pt.x), y: Math.round(pt.y) }
+  }
 
   useEffect(() => {
     const img = new Image(); img.src = imageUrl
@@ -23,14 +35,27 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   // --- Auto-détection faciale ---
   useEffect(() => {
     if (!imageSize) return
+
+    // Si coordonnées fournies par le backend → les utiliser directement
+    if (initialLeftEye && initialRightEye && initialBridge) {
+      setLeftEye(initialLeftEye)
+      setRightEye(initialRightEye)
+      setBridge(initialBridge)
+      setFaceDetectStatus('success')
+      return
+    }
+
     let cancelled = false
+    cancelAutoFaceRef.current = false
+    setFaceDetectStatus('detecting')
     ;(async () => {
       try {
         const img = new Image(); img.src = imageUrl
         await new Promise(r => { img.onload = r })
+        if (cancelled || cancelAutoFaceRef.current) return
         let eyesFound = false
 
-        // 1) FaceDetector API native
+        // 1) FaceDetector API native (Safari iPadOS 16.4+)
         if (typeof window.FaceDetector !== 'undefined') {
           const faces = await new window.FaceDetector({ maxDetectedFaces: 1, fastMode: false }).detect(await createImageBitmap(img))
           if (!cancelled && faces.length > 0) {
@@ -46,7 +71,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
                 const nc = c(nose[0].locations)
                 setBridge({ x: nc.x, y: nc.y })
               }
-              if (eyesFound) return
+              if (eyesFound) { setFaceDetectStatus('success'); return }
             }
             // Fallback bounding box proportions
             const b = f.boundingBox?.box || f.boundingBox
@@ -54,17 +79,19 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
             setLeftEye({ x: b.x + b.width * 0.29, y: b.y + b.height * 0.42 })
             setRightEye({ x: b.x + b.width * 0.71, y: b.y + b.height * 0.42 })
             setBridge({ x: cx, y: cy })
-            return
+            setFaceDetectStatus('success'); return
           }
         }
 
-        // 2) face-api.js
+        // 2) face-api.js (modèles locaux)
         try {
           const fa = await import('face-api.js')
+          const modelPath = window.location.origin + '/models'
           await Promise.all([
-            fa.nets.tinyFaceDetector.loadFromUri('https://justadudewhohacks.github.io/face-api.js/models'),
-            fa.nets.faceLandmarks68Net.loadFromUri('https://justadudewhohacks.github.io/face-api.js/models')
+            fa.nets.tinyFaceDetector.loadFromUri(modelPath),
+            fa.nets.faceLandmarks68Net.loadFromUri(modelPath)
           ])
+          if (cancelled || cancelAutoFaceRef.current) return
           const d = await fa.detectSingleFace(img, new fa.TinyFaceDetectorOptions()).withFaceLandmarks()
           if (!cancelled && d?.landmarks) {
             setLeftEye(c(d.landmarks.getLeftEye())); setRightEye(c(d.landmarks.getRightEye()))
@@ -73,19 +100,37 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
               const nc = c(nose.slice(0, 4))
               setBridge({ x: nc.x, y: nc.y })
             }
-            return
+            setFaceDetectStatus('success'); return
           }
         } catch {}
 
         // 3) Proportion estimate
-        if (!cancelled) {
+        if (!cancelled && !cancelAutoFaceRef.current) {
           const mx = img.width / 2, my = img.height * 0.42, d = img.width * 0.12
           setLeftEye({ x: mx - d, y: my }); setRightEye({ x: mx + d, y: my })
           setBridge({ x: mx, y: my + d * 0.9 })
+          setFaceDetectStatus('success'); return
         }
-      } catch {}
+
+        // Tous les niveaux ont échoué
+        if (!cancelled) setFaceDetectStatus('failed')
+      } catch {
+        if (!cancelled) setFaceDetectStatus('failed')
+      }
     })()
-    return () => { cancelled = true }
+
+    // Timeout 15s → fail
+    const timeoutId = setTimeout(() => {
+      if (!cancelled) {
+        cancelAutoFaceRef.current = true
+        setFaceDetectStatus('failed')
+      }
+    }, 15000)
+
+    return () => {
+      cancelled = true
+      clearTimeout(timeoutId)
+    }
   }, [imageUrl, imageSize, calibration])
 
   const getImageDisplayRect = useCallback(() => {
@@ -136,19 +181,19 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   // --- Calculs ---
   const result = (() => {
     if (!imageSize) return null
-    const scale = calibration?.scalePxToMm || (140 / (imageSize.width * 0.65))
+    // Échelle : exclusivement depuis la calibration backend
+    const scale = calibration?.scalePxToMm || null
     const confiance = calibration?.confidence || 'moyenne'
     const pontOk = !!bridge
     const pupilsOk = !!(leftEye && rightEye)
 
     let pdBinoc = null, pdOG = null, pdOD = null
-    if (pupilsOk) {
-      pdBinoc = Math.round(Math.hypot(rightEye.x - leftEye.x, rightEye.y - leftEye.y) * scale * 10) / 10
+    if (pupilsOk && scale) {
+      pdBinoc = Math.round(Math.abs(rightEye.x - leftEye.x) * scale * 10) / 10
     }
-    if (pontOk && pupilsOk) {
-      // leftEye = côté gauche image = patient OD (œil droit), rightEye = côté droit image = patient OG (œil gauche)
-      pdOD = Math.round(Math.hypot(leftEye.x - bridge.x, leftEye.y - bridge.y) * scale * 10) / 10
-      pdOG = Math.round(Math.hypot(rightEye.x - bridge.x, rightEye.y - bridge.y) * scale * 10) / 10
+    if (pontOk && pupilsOk && scale) {
+      pdOD = Math.round(Math.abs(leftEye.x - bridge.x) * scale * 10) / 10
+      pdOG = Math.round(Math.abs(rightEye.x - bridge.x) * scale * 10) / 10
     } else if (pdBinoc) {
       pdOG = Math.round((pdBinoc / 2) * 10) / 10
       pdOD = Math.round((pdBinoc / 2) * 10) / 10
@@ -481,7 +526,22 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
         )}
       </div>
 
-            {/* Calibration info row */}
+      {/* Bannière détection faciale */}
+      {faceDetectStatus === 'detecting' && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
+          style={{ background: 'rgba(201,160,90,0.12)', color: 'var(--color-gold)', border: '1px solid rgba(201,160,90,0.25)' }}>
+          <Loader2 size={14} className="animate-spin" />
+          <span>Détection automatique du visage en cours…</span>
+        </div>
+      )}
+      {faceDetectStatus === 'failed' && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
+          style={{ background: 'var(--color-red-bg)', color: 'var(--color-red)', border: '1px solid rgba(255,107,107,0.25)' }}>
+          <span>Détection automatique impossible — Placez les repères manuellement</span>
+        </div>
+      )}
+
+      {/* Calibration info row */}
       <div className="flex items-stretch gap-1.5 flex-wrap">
         <span className="self-center text-[10px] font-medium" style={{ color: 'var(--color-gold)' }}>Calibrage :</span>
         <span className="self-center text-xs" style={{ color: 'var(--color-text-muted)' }}>
@@ -654,8 +714,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
               {leftEye && rightEye && (() => {
                 const scale = calibration?.scalePxToMm
                 const dx = rightEye.x - leftEye.x
-                const dy = rightEye.y - leftEye.y
-                const distPx = Math.sqrt(dx * dx + dy * dy)
+                const distPx = Math.abs(dx)
                 const dp = scale ? (distPx * scale).toFixed(1) : '—'
                 let dpd = '—', dpg = '—'
                 let pont = '—'
@@ -869,9 +928,4 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       )}
     </div>
   )
-}
-
-function c(l) {
-  const xs = l.map(p => p.x), ys = l.map(p => p.y)
-  return { x: xs.reduce((a, b) => a + b, 0) / xs.length, y: ys.reduce((a, b) => a + b, 0) / ys.length }
 }

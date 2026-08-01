@@ -1,38 +1,22 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { RotateCcw, Check, SkipForward, AlertTriangle, Loader2, Settings2, Camera } from 'lucide-react'
-import Loupe from './Loupe'
-import { detectCalibrationMarkers } from './detectMarkers'
+import { analyzeCalibration } from './services/api'
 
-export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onRetake }) {
+export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onRetake, initialPoints }) {
   const [points, setPoints] = useState([])
   const [imageSize, setImageSize] = useState(null)
-  const [loupePos, setLoupePos] = useState(null)
   const [debugInfo, setDebugInfo] = useState(null)
   const [markerSpacing, setMarkerSpacing] = useState(50)
   const [showSpacingInput, setShowSpacingInput] = useState(false)
   const [autoDetecting, setAutoDetecting] = useState(true)
   const [autoFailed, setAutoFailed] = useState(false)
+  const backendScaleRef = useRef(null)  // échelle du backend, prioritaire
   const cancelAutoRef = useRef(false)
   const containerRef = useRef(null)
   const imageRef = useRef(null)
 
   // Rectangle réellement affiché à l'écran — source unique pour les coordonnées
-  const getRenderedImageRect = useCallback(() => {
-    const rect = imageRef.current?.getBoundingClientRect()
-    if (!rect || rect.width <= 0 || rect.height <= 0) return null
-    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
-  }, [])
-
-  const toImageCoords = useCallback((clientX, clientY) => {
-    const rect = getRenderedImageRect()
-    if (!rect || !imageSize) return null
-    const x = Math.max(0, Math.min(rect.width, clientX - rect.left))
-    const y = Math.max(0, Math.min(rect.height, clientY - rect.top))
-    return { x: (x / rect.width) * imageSize.width, y: (y / rect.height) * imageSize.height }
-  }, [imageSize, getRenderedImageRect])
-
   const getImageDisplayRect = useCallback(() => {
-    // Use the actual image element rect — most reliable across all CSS variations
     const imgRect = imageRef.current?.getBoundingClientRect()
     if (!imgRect || !containerRef.current) return null
     const cRect = containerRef.current.getBoundingClientRect()
@@ -43,6 +27,14 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
       height: imgRect.height,
     }
   }, [])
+
+  const toImageCoords = useCallback((clientX, clientY) => {
+    const rect = getImageDisplayRect()
+    if (!rect || !imageSize) return null
+    const x = Math.max(0, Math.min(rect.width, clientX - containerRef.current.getBoundingClientRect().left - rect.left))
+    const y = Math.max(0, Math.min(rect.height, clientY - containerRef.current.getBoundingClientRect().top - rect.top))
+    return { x: (x / rect.width) * imageSize.width, y: (y / rect.height) * imageSize.height }
+  }, [imageSize, getImageDisplayRect])
 
   // ── Drag state for calibration markers ──
   const [dragTarget, setDragTarget] = useState(null) // { index, startClient, startPos }
@@ -65,7 +57,7 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
 
   useEffect(() => {
     if (!imageUrl) return
-    let cancelled = false
+    // TOUJOURS appeler l'API backend
     setAutoDetecting(true)
     setAutoFailed(false)
     cancelAutoRef.current = false
@@ -74,37 +66,41 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
       await new Promise(r => setTimeout(r, 200))
       if (cancelAutoRef.current) { setAutoDetecting(false); setAutoFailed(true); return }
 
-      const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(null), 15000))
-      const found = await Promise.race([detectCalibrationMarkers(imageUrl), timeoutPromise])
-      if (cancelled || cancelAutoRef.current) { setAutoDetecting(false); setAutoFailed(true); return }
-
-      setAutoDetecting(false)
-
-      if (found && found.length === 3) {
-        setPoints(found)
-        const scale = calculateScale(found, markerSpacing)
-        setDebugInfo(scale)
-      } else {
-        setAutoFailed(true)
+      // 1) Backend API /api/analyze-calibration (HoughCircles + checkerboard)
+      try {
+        const resp = await fetch(imageUrl)
+        const blob = await resp.blob()
+        if (cancelAutoRef.current) { setAutoDetecting(false); setAutoFailed(true); return }
+        const apiResult = await analyzeCalibration(blob)
+        if (!cancelAutoRef.current && apiResult.markers && apiResult.markers.length === 3) {
+          setPoints(apiResult.markers)
+          setAutoDetecting(false)
+          // Utiliser l'échelle calculée par le backend — plus de recalcul frontal
+          const scaleInfo = {
+            scalePxToMm: apiResult.scale_mm_per_px,
+            pixelDist1: Math.round(apiResult.spacing_px),
+            pixelDist2: Math.round(apiResult.spacing_px),
+            scaleVariation: 0,
+            headRotation: 0,
+            poseAssessment: 'Automatique (backend)',
+          }
+          setDebugInfo({ ...scaleInfo, backendConfidence: apiResult.detection_confidence })
+          backendScaleRef.current = scaleInfo  // stocker pour confirmCalibration
+          return
+        }
+      } catch (e) {
+        console.error('Calibration API échouée:', e.message)
+        if (!cancelAutoRef.current) {
+          setAutoDetecting(false)
+          setAutoFailed(true)
+          setDebugInfo({ error: 'API indisponible — vérifiez la connexion au serveur' })
+        }
+        return
       }
     })()
-
-    return () => { cancelled = true }
   }, [imageUrl, markerSpacing])
 
-  const handlePointerMove = (e) => {
-    if (!containerRef.current) return
-    const rect = containerRef.current.getBoundingClientRect()
-    setLoupePos({ x: e.clientX - rect.left, y: e.clientY - rect.top })
-  }
-
-  // ── Drag markers via data-markerid ──
   const handleContainerPointerDown = (e) => {
-    // Update loupe position on click
-    if (containerRef.current) {
-      const rect = containerRef.current.getBoundingClientRect()
-      setLoupePos({ x: e.clientX - rect.left, y: e.clientY - rect.top })
-    }
     // Walk up DOM to find a calibration marker
     let target = e.target
     while (target && target !== containerRef.current) {
@@ -137,11 +133,6 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
     if (!dragTarget) return
 
     const onMove = (e) => {
-      // Loupe
-      if (containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect()
-        setLoupePos({ x: e.clientX - rect.left, y: e.clientY - rect.top })
-      }
       const startImg = toImageCoords(dragTarget.startClient.x, dragTarget.startClient.y)
       const currImg = toImageCoords(e.clientX, e.clientY)
       if (!startImg || !currImg) return
@@ -169,17 +160,18 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
     }
   }, [dragTarget, toImageCoords, markerSpacing])
 
-  const handlePointerLeave = () => setLoupePos(null)
-
   const resetPoints = () => {
     setPoints([])
     setDebugInfo(null)
     setAutoFailed(false)
+    backendScaleRef.current = null
   }
 
   const confirmCalibration = () => {
     if (points.length === 3) {
-      onCalibrated(calculateScale(points, markerSpacing))
+      // Priorité à l'échelle backend si dispo (évite le recalcul)
+      const scaleData = backendScaleRef.current || calculateScale(points, markerSpacing)
+      onCalibrated(scaleData)
     }
   }
 
@@ -252,78 +244,61 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
           lineHeight: 0,
         }}
         onPointerDown={handleContainerPointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerLeave={handlePointerLeave}
       >
         <img ref={imageRef} src={imageUrl} alt="Calibrage" className="block"
           style={{ maxHeight: '60vh', width: 'auto', touchAction: 'none' }}
           draggable={false} />
 
-        {/* Markers */}
-        {imageSize && (() => {
+        {/* Markers + connection lines — overlay div calé sur l'image (comme PupilMarker) */}
+        {imageSize && getImageDisplayRect() && (() => {
           const dr = getImageDisplayRect()
-          const cw = containerRef.current?.getBoundingClientRect()?.width || 1
-          const ch = containerRef.current?.getBoundingClientRect()?.height || 1
-          return points.map((p, i) => {
-            const leftPct = dr ? ((dr.left + (p.x / imageSize.width) * dr.width) / cw) * 100 : (p.x / imageSize.width) * 100
-            const topPct = dr ? ((dr.top + (p.y / imageSize.height) * dr.height) / ch) * 100 : (p.y / imageSize.height) * 100
-            const isDragging = dragTarget?.index === i
-            return (
-              <div key={i} className="absolute transform -translate-x-1/2 -translate-y-1/2 transition-none"
-                style={{ left: `${leftPct}%`, top: `${topPct}%`, zIndex: isDragging ? 30 : 10, cursor: 'grab' }}
-                data-markerid={i}>
-                {/* Marqueur : Mire pro à quadrants contrastés Noir et Blanc (comme le vrai Clip) */}
-                <svg width="26" height="26" viewBox="0 0 24 24" className="mx-auto block" style={{ filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.8))' }}>
-                  {/* Fond de mire (Quatre quadrants) */}
-                  {/* En haut à gauche : Noir */}
-                  <path d="M 12 12 L 12 2 A 10 10 0 0 0 2 12 Z" fill="#000" />
-                  {/* En haut à droite : Blanc */}
-                  <path d="M 12 12 L 22 12 A 10 10 0 0 0 12 2 Z" fill="#fff" />
-                  {/* En bas à gauche : Blanc */}
-                  <path d="M 12 12 L 2 12 A 10 10 0 0 0 12 22 Z" fill="#fff" />
-                  {/* En bas à droite : Noir */}
-                  <path d="M 12 12 L 12 22 A 10 10 0 0 0 22 12 Z" fill="#000" />
-
-                  {/* Lignes de ciblage et bordures fines */}
-                  <circle cx="12" cy="12" r="10" fill="none" stroke="#fff" strokeWidth="1" />
-                  <line x1="1.5" y1="12" x2="22.5" y2="12" stroke={isDragging ? '#ff2dd0' : '#fff'} strokeWidth="1" />
-                  <line x1="12" y1="1.5" x2="12" y2="22.5" stroke={isDragging ? '#ff2dd0' : '#fff'} strokeWidth="1" />
-
-                  {/* Micro point central rouge en cours de déplacement pour la visée chirurgicale */}
-                  <circle cx="12" cy="12" r={isDragging ? '2.5' : '1.5'} fill={isDragging ? '#ff2dd0' : '#000'} />
-                </svg>
-                <div className="text-[10px] text-center mt-1 font-bold tracking-wider px-1 rounded-sm"
-                  style={{
-                    color: isDragging ? '#ff2dd0' : '#fff',
-                    background: 'rgba(10, 10, 12, 0.75)',
-                    border: '1px solid rgba(255, 255, 255, 0.15)',
-                    textShadow: '0 1px 2px rgba(0,0,0,0.8)'
-                  }}>
-                  {['Gauche','Centre','Droite'][i]}
-                </div>
-              </div>
-            )
-          })
-        })()}
-
-        {/* Connection lines */}
-        {imageSize && points.length >= 2 && (() => {
-          const dr = getImageDisplayRect()
-          const cw = containerRef.current?.getBoundingClientRect()?.width || 1
-          const ch = containerRef.current?.getBoundingClientRect()?.height || 1
-          const lineX = (p) => dr ? ((dr.left + (p.x / imageSize.width) * dr.width) / cw) * 100 : (p.x / imageSize.width) * 100
-          const lineY = (p) => dr ? ((dr.top + (p.y / imageSize.height) * dr.height) / ch) * 100 : (p.y / imageSize.height) * 100
           return (
-            <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 5 }}>
-              <line x1={`${lineX(points[0])}%`} y1={`${lineY(points[0])}%`}
-                x2={`${lineX(points[1])}%`} y2={`${lineY(points[1])}%`}
-                stroke="rgba(255, 255, 255, 0.7)" strokeWidth="1.2" strokeDasharray="3 3" />
-              {points.length === 3 && (
-                <line x1={`${lineX(points[1])}%`} y1={`${lineY(points[1])}%`}
-                  x2={`${lineX(points[2])}%`} y2={`${lineY(points[2])}%`}
-                  stroke="rgba(255, 255, 255, 0.7)" strokeWidth="1.2" strokeDasharray="3 3" />
+            <div style={{ position: 'absolute', left: dr.left, top: dr.top, width: dr.width, height: dr.height, zIndex: 10 }}>
+              {points.map((p, i) => {
+                const leftPct = (p.x / imageSize.width) * 100
+                const topPct = (p.y / imageSize.height) * 100
+                const isDragging = dragTarget?.index === i
+                return (
+                  <div key={i} className="absolute transform -translate-x-1/2 -translate-y-1/2 transition-none"
+                    style={{ left: `${leftPct}%`, top: `${topPct}%`, zIndex: isDragging ? 30 : 10, cursor: 'grab' }}
+                    data-markerid={i}>
+                    <svg width="22" height="22" viewBox="0 0 22 22" className="mx-auto block"
+                      style={{ filter: 'drop-shadow(0 0 4px rgba(0,0,0,0.5))' }}>
+                      <circle cx="11" cy="11" r="9" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
+                      <line x1="2" y1="11" x2="20" y2="11" stroke={isDragging ? '#ff2dd0' : 'rgba(255,255,255,0.6)'} strokeWidth="1.5" />
+                      <line x1="11" y1="2" x2="11" y2="20" stroke={isDragging ? '#ff2dd0' : 'rgba(255,255,255,0.6)'} strokeWidth="1.5" />
+                      <circle cx="11" cy="11" r={isDragging ? 3 : 2} fill={isDragging ? '#ff2dd0' : 'rgba(255,255,255,0.8)'} />
+                    </svg>
+                    <div className="text-[10px] text-center mt-1 font-bold tracking-wider px-1 rounded-sm"
+                      style={{
+                        color: isDragging ? '#ff2dd0' : 'rgba(255,255,255,0.8)',
+                        background: 'rgba(10, 10, 12, 0.6)',
+                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                      }}>
+                      {['Gauche','Centre','Droite'][i]}
+                    </div>
+                  </div>
+                )
+              })}
+
+              {/* Connection lines */}
+              {points.length >= 2 && (
+                <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 5 }}>
+                  <line x1={`${(points[0].x / imageSize.width) * 100}%`}
+                    y1={`${(points[0].y / imageSize.height) * 100}%`}
+                    x2={`${(points[1].x / imageSize.width) * 100}%`}
+                    y2={`${(points[1].y / imageSize.height) * 100}%`}
+                    stroke="rgba(255, 255, 255, 0.7)" strokeWidth="1.2" strokeDasharray="3 3" />
+                  {points.length === 3 && (
+                    <line x1={`${(points[1].x / imageSize.width) * 100}%`}
+                      y1={`${(points[1].y / imageSize.height) * 100}%`}
+                      x2={`${(points[2].x / imageSize.width) * 100}%`}
+                      y2={`${(points[2].y / imageSize.height) * 100}%`}
+                      stroke="rgba(255, 255, 255, 0.7)" strokeWidth="1.2" strokeDasharray="3 3" />
+                  )}
+                </svg>
               )}
-            </svg>
+            </div>
           )
         })()}
 
@@ -339,16 +314,26 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
           </div>
         )}
 
-        <Loupe imageUrl={imageUrl} pos={loupePos} zoom={3} size={140}
-          displayRect={getImageDisplayRect()} imageSize={imageSize} />
       </div>
 
-      {/* Spacing + reset */}
+      {/* Spacing + reset + debug */}
       <div className="px-4 py-2 flex justify-between items-center border-t" style={{ borderColor: 'var(--color-border)' }}>
-        <button onClick={() => setShowSpacingInput(!showSpacingInput)}
-          className="flex items-center gap-1 text-xs transition-all hover:opacity-80" style={{ color: 'var(--color-gold)' }}>
-          <Settings2 size={12} /> Écart : {markerSpacing} mm
-        </button>
+        <div className="flex items-center gap-3">
+          <button onClick={() => setShowSpacingInput(!showSpacingInput)}
+            className="flex items-center gap-1 text-xs transition-all hover:opacity-80" style={{ color: 'var(--color-gold)' }}>
+            <Settings2 size={12} /> Écart : {markerSpacing} mm
+          </button>
+          {debugInfo && allPlaced && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded font-mono" style={{
+              background: debugInfo.headRotation > 10 ? 'var(--color-red-bg)' : 'var(--color-green-bg)',
+              color: debugInfo.headRotation > 10 ? 'var(--color-red)' : 'var(--color-green)',
+              border: '1px solid',
+              borderColor: debugInfo.headRotation > 10 ? 'var(--color-red)' : 'var(--color-green)',
+            }}>
+              {Math.round(debugInfo.scalePxToMm * 1000) / 1000} mm/px
+            </span>
+          )}
+        </div>
         {points.length > 0 && (
           <button onClick={resetPoints} className="flex items-center gap-1 text-xs transition-all hover:opacity-80" style={{ color: 'var(--color-gold)' }}>
             <RotateCcw size={12} /> Recommencer
