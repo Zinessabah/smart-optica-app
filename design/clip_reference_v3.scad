@@ -1,5 +1,5 @@
 // ============================================================
-// Clip de référence optométrique — v3 (imprimable, précision améliorée)
+// Clip de référence optométrique — v3.1 (imprimable, précision améliorée)
 // ============================================================
 // Format : OpenSCAD (.scad) — fichier paramétrique, PAS un STL.
 // Pour obtenir le fichier imprimable :
@@ -9,84 +9,84 @@
 //   4. File > Export > Export as STL
 // Ligne de commande : openscad -o clip_reference_v3.stl clip_reference_v3.scad
 //
-// Améliorations v3 vs v2 :
-//   • Mires latérales sur la FACE EXTERNE des bras (étiquette orientée ±X,
-//     perpendiculaire au bras) → visible de FACE en photo de profil
-//     (le motif ne se voit plus de biais comme dans la v2).
-//   • Triangle latéral IDENTIQUE des 2 côtés grâce au mirror en X seul
-//     (Y,Z préservés) → une seule géométrie à calibrer (positions miroir
-//     documentées dans clip_calibration.json).
-//   • Pince en U corrigée : évidement central centré, canal ouvert vers le
-//     haut, base pleine = épaisseur du bras (rigidité), lèvres flexibles.
-//   • Rigidité : barre plus haute (8mm) + nervures entre mires (anti-torsion).
-//   • Montant central renforcé (4×4 + 4 goussets) — la 4e mire ne casse pas.
-//   • Congés (fillets) sur tous les plots → meilleure impression FDM.
-//   • Paramètres groupés par section, tous ajustables en tête de fichier.
+// Changements v3.1 (retour Driss) :
+//   • 5 PINCES au lieu de 2 : 3 sur la barre faciale (au-dessus des verres
+//     et du pont) + 2 en bout de bras latéraux → fixation stable sur la monture
+//   • Montant de la 4e mire DÉCALÉ en X (stem_x = -12) pour ne pas boucher
+//     la pince centrale (à x=0, au-dessus du pont)
+//   • Pinces de barre : canal ouvert vers le bas, lèvres verticales qui
+//     pincent le bord supérieur de la monture par flexion
 //
-// À ajuster après mesure réelle (voir "À MESURER" ci-dessous) :
-//   clamp_gap : épaisseur de la branche/charnière (2.5–4 mm selon monture)
-//   stem_height : hauteur du montant (liée à l'espace front-clip)
+// Améliorations v3 (conservées) :
+//   • Mires latérales sur la FACE EXTERNE des bras → visibles de profil
+//   • Triangle latéral identique des 2 côtés (mirror X seul)
+//   • 3e mire latérale portée par montant (v2 : flottait)
+//   • Pince en U corrigée, rigidité (barre 8mm + nervures)
+//   • Sink systématique → fusion CGAL = pièce unique
+//   • Recess traversant la surface (poche ouverte)
+//
+// À ajuster après mesure réelle :
+//   clamp_gap : épaisseur du bord de monture / branche (2.5–4 mm)
 // ============================================================
 
-$fn = 64; // résolution (96 pour le rendu final, 48 pour preview rapide)
+$fn = 64; // 96 pour rendu final, 48 pour preview rapide
 
 // ===== [1] BARRE FACIALE =====
-facial_half_span    = 50;   // mm, centre -> mire gauche/droite (50mm = specs clip actuel)
+facial_half_span    = 50;   // mm, centre -> mire gauche/droite (50mm = specs)
 bar_thickness       = 3;    // mm, épaisseur de la barre
-bar_height          = 8;    // mm, hauteur de la barre (augmentée vs v2 : rigidité anti-torsion)
+bar_height          = 8;    // mm, hauteur de la barre (rigidité anti-torsion)
 bar_margin          = 15;   // mm, dépassement au-delà des mires vers les bras
-rib_height          = 3;    // mm, nervures de rigidité sous la barre (entre les mires)
+rib_height          = 3;    // mm, nervures sous la barre (entre les mires)
 rib_thickness       = 2;    // mm, épaisseur d'une nervure
 
 // ===== [2] MIRES FACIALES (3 colinéaires + 1 hors-axe) =====
-facial_pad_outer_d   = 12;   // mm, diamètre externe (specs réelles du clip)
+facial_pad_outer_d   = 12;   // mm, diamètre externe (specs réelles)
 facial_pad_inner_d   = 10;   // mm, diamètre interne du motif étiquette
 facial_pad_thickness = 1.5;  // mm, épaisseur du plot support
-label_recess         = 0.15; // mm, renfoncement pour coller l'étiquette à plat
+label_recess         = 0.15; // mm, renfoncement pour l'étiquette
 
-// ===== [3] 4e MIRE HORS-AXE (lève la colinéarité → solvePnP stable) =====
+// ===== [3] 4e MIRE HORS-AXE (anti-colinéarité → solvePnP stable) =====
 stem_height           = 15;  // mm, hauteur du montant central
-stem_section          = 4;   // mm, section carrée du montant (renforcé vs v2)
-stem_gusset           = 6;   // mm, taille des goussets de renfort à la base
+stem_section          = 4;   // mm, section carrée du montant
+stem_gusset           = 6;   // mm, taille des goussets de renfort
+stem_x                = -12; // mm, décalage X du montant (libère la pince centrale !)
 
 // ===== [4] BRAS LATÉRAUX =====
 arm_length            = 55;  // mm, longueur du bras depuis la barre
 arm_thickness         = 3;   // mm, épaisseur du bras
-// arm_width est dérivé de la pince : 2 lèvres + canal (voir [6])
 
 // ===== [5] MIRES LATÉRALES (3 non-colinéaires, face EXTERNE) =====
-lateral_pad_d         = 6;   // mm, plot support (motif visuel = 4mm sur étiquette)
-lateral_baseline      = 35;  // mm, écart mire1-mire2 le long du bras (vs 25mm → précision)
-lateral_offset_h      = 18;  // mm, hauteur du montant de la 3e mire (hors plan du bras)
-lateral_stem_section  = 5;   // mm, section carrée du montant portant la 3e mire
-lateral_protrude      = 5;   // mm, dépassement du plot hors de la face externe du bras
+lateral_pad_d         = 6;   // mm, plot support (motif visuel = 4mm)
+lateral_baseline      = 35;  // mm, écart mire1-mire2 le long du bras
+lateral_offset_h      = 18;  // mm, hauteur du montant de la 3e mire
+lateral_stem_section  = 5;   // mm, section carrée du montant latéral
+lateral_protrude      = 5;   // mm, dépassement du plot hors de la face externe
 lateral_start         = 12;  // mm, distance première mire depuis le début du bras
 
-// ===== [6] PINCE EN U (canal ouvert vers le haut, sans vis) =====
+// ===== [6] PINCE EN U (canal, sans vis) =====
 clamp_len             = 12;  // mm, longueur du canal (le long du bras)
-clamp_gap             = 3.2; // mm, — À MESURER — épaisseur réelle de la branche/charnière
+clamp_gap             = 3.2; // mm, — À MESURER — épaisseur bord monture/branche
 clamp_lip_thickness   = 1.2; // mm, épaisseur des lèvres flexibles
 clamp_lip_height      = 6;   // mm, hauteur des lèvres au-dessus de la base
+
+// ===== [7] PINCES DE BARRE (fixation sur le bord supérieur de la monture) =====
+frame_clamp_len       = 12;  // mm, longueur du canal (le long de la barre)
+frame_clamp_depth     = 8;   // mm, descente sous la barre (couvre le bord monture)
+frame_clamp_positions = [-45, 0, 45]; // mm, positions X des pinces sur la barre
 
 // ============================================================
 // MODULES
 // ============================================================
 
-// Plot support d'étiquette avec chanfrein de base (fusionné) + renfoncement
-// ⚠️ Cône tronqué (d1 > d2) au lieu d'un tore : le chanfrein CHEVAUCHE le
-// cylindre → volume unique garanti (le tore rotate_extrude ne faisait que
-// toucher le cylindre → CGAL comptait des volumes séparés !)
+// Plot support d'étiquette : chanfrein de base (fusionné) + renfoncement
+// ⚠️ Le creux traverse la surface supérieure (poche OUVERTE = 1 volume)
 module marker_pad(d, h, recess) {
     chamfer = 1.0;
-    // base chanfreinée (45°) : fusionne avec le plan support ET le cylindre
     cylinder(d1 = d + 2 * chamfer, d2 = d, h = chamfer);
-    // corps du plot
     translate([0, 0, chamfer]) {
         difference() {
             cylinder(d = d, h = h);
             if (recess > 0)
-                // ⚠️ Le creux doit TRAVERSER la surface supérieure (z = h - recess)
-                // → poche OUVERTE = 1 volume. Un creux interne fermé = volume CGAL séparé !
                 translate([0, 0, h - recess])
                     cylinder(d = d - 0.8, h = recess + 0.02);
         }
@@ -100,6 +100,33 @@ module facial_ribs() {
             cube([rib_thickness, bar_height, rib_height]);
 }
 
+// Pince de barre : s'accroche au bord supérieur de la monture
+// Canal vertical ouvert vers le BAS, lèvres en Y qui pincent par flexion.
+// Le haut du bloc pénètre dans la barre (SINK) → fusion CGAL.
+module frame_clamp() {
+    w = 2 * clamp_lip_thickness + clamp_gap;
+    total_h = frame_clamp_depth + bar_thickness + 0.8;  // +0.8 sink dans la barre
+    translate([-frame_clamp_len / 2, -w / 2, -frame_clamp_depth])
+        difference() {
+            cube([frame_clamp_len, w, total_h]);
+            // canal vertical, ouvert vers le bas (part de z=bar_thickness-0.2)
+            translate([-0.05, clamp_lip_thickness, bar_thickness - 0.2])
+                cube([frame_clamp_len + 0.1, clamp_gap, total_h - bar_thickness + 0.2]);
+        }
+}
+
+// Pince en U en bout de bras (canal ouvert vers le haut)
+module hinge_clamp() {
+    w = 2 * clamp_lip_thickness + clamp_gap;
+    total_h = arm_thickness + clamp_lip_height;
+    translate([0, -w / 2, 0])
+        difference() {
+            cube([clamp_len, w, total_h]);
+            translate([-0.05, clamp_lip_thickness, arm_thickness])
+                cube([clamp_len + 0.1, clamp_gap, clamp_lip_height + 0.05]);
+        }
+}
+
 module facial_assembly() {
     union() {
         // barre continue
@@ -109,52 +136,33 @@ module facial_assembly() {
         // nervures de rigidité
         facial_ribs();
 
-        // 3 mires colinéaires (gauche, centre, droite)
-        // z = bar_thickness - SINK : la base pénètre dans la barre →
-        // intersection volumique CGAL (une pose à fleur ne fusionne pas)
+        // 3 pinces de barre (fixation monture) — sink dans la barre
+        for (x = frame_clamp_positions)
+            translate([x, 0, 0])
+                frame_clamp();
+
+        // 3 mires colinéaires (gauche, centre, droite) — sink 0.6
         for (x = [-facial_half_span, 0, facial_half_span])
             translate([x, 0, bar_thickness - 0.6])
                 marker_pad(facial_pad_outer_d, facial_pad_thickness, label_recess);
 
-        // montant central + 4e mire hors-axe (anti-colinéarité)
-        // ⚠️ Le montant part SOUS la surface de la barre (z = -SINK) →
-        // pénètre dans la barre → fusion CGAL (à fleur = volume séparé)
-        translate([-stem_section / 2, -stem_section / 2, -0.8])
+        // montant de la 4e mire (décalé en X → ne bouche pas la pince centrale)
+        translate([stem_x - stem_section / 2, -stem_section / 2, -0.8])
             union() {
                 cube([stem_section, stem_section, stem_height + 0.8]);
-                // 4 goussets de renfort à la base (partent du fond de la barre)
                 for (a = [0, 90, 180, 270])
                     rotate([0, 0, a])
                         translate([0, -stem_section / 2, 0])
                             linear_extrude(height = stem_gusset * 0.6)
                                 polygon([[0, 0], [stem_gusset, 0], [0, stem_gusset]]);
             }
-        // 4e mire : base enfoncée dans le sommet du montant
-        // (le montant part de z=-0.8, sa hauteur totale = stem_height)
-        translate([0, 0, stem_height - 0.6])
+        // 4e mire au sommet du montant
+        translate([stem_x, 0, stem_height - 0.6])
             marker_pad(facial_pad_outer_d, facial_pad_thickness, label_recess);
     }
 }
 
-// Pince en U : base pleine (= bras) + 2 lèvres, canal ouvert vers le haut
-// La branche (en Z) traverse le canal ; les lèvres en Y pincent par flexion.
-module hinge_clamp() {
-    w = 2 * clamp_lip_thickness + clamp_gap;   // largeur totale de la pince
-    total_h = arm_thickness + clamp_lip_height;
-    translate([0, -w / 2, 0])
-        difference() {
-            cube([clamp_len, w, total_h]);
-            // évidement du canal (ouvert vers le haut, base = arm_thickness)
-            translate([-0.05, clamp_lip_thickness, arm_thickness])
-                cube([clamp_len + 0.1, clamp_gap, clamp_lip_height + 0.05]);
-        }
-}
-
-// Plot latéral : cylindre dont l'axe est Y (perpendiculaire au bras).
-// La face plane de l'étiquette regarde ±Y = vers l'EXTÉRIEUR du bras
-// (visible de FACE sur la photo de profil, pas de biais).
-// rotate([90,0,0]) : axe Z → axe Y.
-// SINK : base enfoncée dans le bras → fusion CGAL (pose à fleur = volume séparé)
+// Plot latéral : axe Y (perpendiculaire au bras), étiquette vers l'extérieur
 module lateral_plot(sink = 0.6) {
     translate([0, -sink, 0])
         rotate([90, 0, 0])
@@ -164,21 +172,16 @@ module lateral_plot(sink = 0.6) {
 module side_arm() {
     x0 = facial_half_span + bar_margin;
     w = 2 * clamp_lip_thickness + clamp_gap;
-    // ⚠️ Le bras part SOUS la surface (x0 - SINK) → pénètre dans la barre
-    // (à fleur = contact surfacique = volume CGAL séparé)
 
-    // bras
+    // bras (pénètre dans la barre : sink 0.8)
     translate([x0 - 0.8, -w / 2, 0])
         cube([arm_length + 0.8, w, arm_thickness]);
 
-    // pince en bout de bras (canal ouvert vers le haut)
+    // pince en bout de bras
     translate([x0 + arm_length - clamp_len, 0, 0])
         hinge_clamp();
 
-    // 3 mires latérales non-colinéaires sur la face externe
-    //  - mire 1 et 2 : dans le plan du bras, espacées de lateral_baseline
-    //  - mire 3 : portée par un MONTANT (au-dessus du bras) → triangle 3D
-    //    ⚠️ v2 bug : la 3e mire était posée dans le vide (z=+18mm), sans support
+    // 2 mires latérales dans le plan du bras
     translate([x0 + lateral_start, 0, arm_thickness]) {
         translate([0, w / 2, 0])
             lateral_plot();
@@ -186,11 +189,10 @@ module side_arm() {
             lateral_plot();
     }
 
-    // montant de la 3e mire : part du FOND du bras (z=0) → fusionne avec le bras
+    // montant de la 3e mire (part du fond du bras → fusionne)
     translate([x0 + lateral_start + lateral_baseline / 2 - lateral_stem_section / 2,
                w / 2 - lateral_stem_section, 0]) {
         cube([lateral_stem_section, lateral_stem_section, arm_thickness + lateral_offset_h]);
-        // 3e mire au sommet du montant, face d'étiquette vers l'extérieur (+Y)
         translate([lateral_stem_section / 2, lateral_stem_section / 2, arm_thickness + lateral_offset_h])
             lateral_plot();
     }
@@ -198,8 +200,7 @@ module side_arm() {
 
 // ============================================================
 // ASSEMBLAGE — pièce unique, rigide, bilatérale
-// mirror([1,0,0]) : inverse X seulement → Y,Z préservés →
-// le triangle latéral est identique des 2 côtés (1 seule calibration)
+// mirror([1,0,0]) : inverse X seul → triangle latéral identique des 2 côtés
 // ============================================================
 union() {
     facial_assembly();
