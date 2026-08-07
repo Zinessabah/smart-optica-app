@@ -63,15 +63,15 @@ lateral_stem_section  = 5;   // mm, section carrée du montant latéral
 lateral_protrude      = 5;   // mm, dépassement du plot hors de la face externe
 lateral_start         = 12;  // mm, distance première mire depuis le début du bras
 
-// ===== [6] PINCE EN U (canal, sans vis) =====
-clamp_len             = 12;  // mm, longueur du canal (le long du bras)
+// ===== [6] PINCE EN U (canal, sans vis) — TYPE UNIQUE facial/latéral =====
+clamp_len             = 12;  // mm, longueur du canal
 clamp_gap             = 3.2; // mm, — À MESURER — épaisseur bord monture/branche
 clamp_lip_thickness   = 1.2; // mm, épaisseur des lèvres flexibles
 clamp_lip_height      = 6;   // mm, hauteur des lèvres au-dessus de la base
 
 // ===== [7] PINCES DE BARRE (fixation sur le bord supérieur de la monture) =====
-frame_clamp_len       = 12;  // mm, longueur du canal (le long de la barre)
-frame_clamp_depth     = 8;   // mm, descente sous la barre (couvre le bord monture)
+// ⚠️ MÊME TYPE que les pinces latérales : réutilise hinge_clamp(), retourné
+// (canal vers le bas). Clamp_gap, lèvres et dimensions IDENTIQUES.
 frame_clamp_positions = [-45, 0, 45]; // mm, positions X des pinces sur la barre
 
 // ============================================================
@@ -100,22 +100,11 @@ module facial_ribs() {
             cube([rib_thickness, bar_height, rib_height]);
 }
 
-// Pince de barre : s'accroche au bord supérieur de la monture
-// Canal vertical ouvert vers le BAS, lèvres en Y qui pincent par flexion.
-// Le haut du bloc pénètre dans la barre (SINK) → fusion CGAL.
-module frame_clamp() {
-    w = 2 * clamp_lip_thickness + clamp_gap;
-    total_h = frame_clamp_depth + bar_thickness + 0.8;  // +0.8 sink dans la barre
-    translate([-frame_clamp_len / 2, -w / 2, -frame_clamp_depth])
-        difference() {
-            cube([frame_clamp_len, w, total_h]);
-            // canal vertical, ouvert vers le bas (part de z=bar_thickness-0.2)
-            translate([-0.05, clamp_lip_thickness, bar_thickness - 0.2])
-                cube([frame_clamp_len + 0.1, clamp_gap, total_h - bar_thickness + 0.2]);
-        }
-}
-
-// Pince en U en bout de bras (canal ouvert vers le haut)
+// Pince en U — TYPE UNIQUE pour barre et bras
+// Canal : 2 lèvres flexibles qui pincent par flexion.
+// • En bout de bras : canal ouvert vers le haut (pose sur la branche)
+// • Sous la barre : MÊME module retourné (canal ouvert vers le bas,
+//   clip sur le bord supérieur de la monture)
 module hinge_clamp() {
     w = 2 * clamp_lip_thickness + clamp_gap;
     total_h = arm_thickness + clamp_lip_height;
@@ -125,6 +114,18 @@ module hinge_clamp() {
             translate([-0.05, clamp_lip_thickness, arm_thickness])
                 cube([clamp_len + 0.1, clamp_gap, clamp_lip_height + 0.05]);
         }
+}
+
+// Pince de barre = hinge_clamp retourné à 180° (canal vers le bas)
+// + sink : la base pleine pénètre dans la barre → fusion CGAL
+module frame_clamp() {
+    // Retourne le module : la base pleine (arm_thickness) se retrouve en haut,
+    // le canal (clamp_lip_height) vers le bas.
+    // translate z = +0.8 : la base (épaisseur arm_thickness=3) pénètre de 0.8
+    // dans la barre (0..3) → intersection volumique.
+    translate([0, 0, 0.8])
+        rotate([180, 0, 0])
+            hinge_clamp();
 }
 
 module facial_assembly() {
