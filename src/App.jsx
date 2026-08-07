@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { Ruler, Camera, Upload } from 'lucide-react'
 import PhotoPicker from './PhotoPicker'
-import ProfilePhoto from './ProfilePhoto'
+import ProfileMeasure from './ProfileMeasure'
 import CalibrationOverlay from './CalibrationOverlay'
 import PupilMarker from './PupilMarker'
 import ResultCard from './ResultCard'
@@ -9,10 +9,10 @@ import { analyzeImage, checkHealth } from './services/api'
 
 // ── Écran d'accueil simplifié ──
 function HomeScreen({ onStart }) {
-  const card = "flex flex-col items-center gap-3 p-6 rounded-2xl border cursor-pointer transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]"
+  const card = "flex flex-col items-center rounded-2xl border cursor-pointer transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]"
   return (
-    <div className="space-y-6 animate-fade-in max-w-sm mx-auto">
-      <div className="text-center space-y-1">
+    <div className="space-y-4 animate-fade-in">
+      <div className="text-center space-y-1 mb-2">
         <h1 className="text-xl font-bold" style={{ color: 'var(--color-text)', fontFamily: "'Playfair Display', Georgia, serif" }}>
           Smart Optica
         </h1>
@@ -23,20 +23,24 @@ function HomeScreen({ onStart }) {
 
       <button onClick={() => onStart('camera')} className={card}
         style={{ background: 'var(--color-card)', borderColor: 'var(--color-border)' }}>
-        <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: 'var(--color-gold-bg)' }}>
-          <Camera size={28} style={{ color: 'var(--color-gold)' }} />
+        <div className="flex flex-col items-center py-12 px-6" style={{ minHeight: 180 }}>
+          <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-4" style={{ background: 'var(--color-gold-bg)' }}>
+            <Camera size={28} style={{ color: 'var(--color-gold)' }} />
+          </div>
+          <span className="text-base font-medium" style={{ color: 'var(--color-text)' }}>Prendre 2 photos</span>
+          <span className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>Face + Profil avec l'appareil</span>
         </div>
-        <span className="text-sm font-semibold" style={{ color: 'var(--color-text)' }}>Prendre 2 photos</span>
-        <span className="text-[11px]" style={{ color: 'var(--color-text-muted)' }}>Face + Profil avec l'appareil</span>
       </button>
 
       <button onClick={() => onStart('upload')} className={card}
         style={{ background: 'var(--color-card)', borderColor: 'var(--color-border)' }}>
-        <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: 'var(--color-gold-bg)' }}>
-          <Upload size={28} style={{ color: 'var(--color-gold)' }} />
+        <div className="flex flex-col items-center py-12 px-6" style={{ minHeight: 180 }}>
+          <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-4" style={{ background: 'var(--color-gold-bg)' }}>
+            <Upload size={28} style={{ color: 'var(--color-gold)' }} />
+          </div>
+          <span className="text-base font-medium" style={{ color: 'var(--color-text)' }}>Télécharger 2 photos</span>
+          <span className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>Face + Profil depuis la galerie</span>
         </div>
-        <span className="text-sm font-semibold" style={{ color: 'var(--color-text)' }}>Télécharger 2 photos</span>
-        <span className="text-[11px]" style={{ color: 'var(--color-text-muted)' }}>Face + Profil depuis la galerie</span>
       </button>
     </div>
   )
@@ -48,7 +52,6 @@ export default function App() {
   const [measurements, setMeasurements] = useState(null)
   const [imageData, setImageData] = useState(null)
   const [profileImageUrl, setProfileImageUrl] = useState(null)
-  const [profileData, setProfileData] = useState(null)
   const [calibration, setCalibration] = useState(null)
   const [faceData, setFaceData] = useState(null)
   const [serverConnected, setServerConnected] = useState(false)
@@ -65,10 +68,10 @@ export default function App() {
     setStep('photo')
   }, [])
 
-  // Photo face → calibration (auto)
+  // Photo face → photo latérale (les 2 photos d'abord)
   const handleCapture = useCallback(async (imageUrl) => {
     setImageData(imageUrl)
-    setStep('calibrate')
+    setStep('photo-lateral')
     try {
       const blob = await (await fetch(imageUrl)).blob()
       const result = await analyzeImage(blob)
@@ -76,30 +79,33 @@ export default function App() {
     } catch { /* API hors-ligne toléré */ }
   }, [])
 
-  // Calibration → profil
-  const handleCalibrated = useCallback((scale) => { setCalibration(scale); setStep('photo-profile') }, [])
-  const handleSkipCalibration = useCallback(() => { setCalibration(null); setStep('photo-profile') }, [])
-
-  // Profil → centrage
-  const handleProfileCapture = useCallback(({ data, imageUrl }) => {
-    setProfileData(data); setProfileImageUrl(imageUrl); setStep('pupils')
+  // Photo latérale → calibration
+  const handleProfileCapture = useCallback((imageUrl) => {
+    setProfileImageUrl(imageUrl)
+    setStep('calibrate')
   }, [])
-  const handleProfileSkip = useCallback(() => { setProfileData(null); setProfileImageUrl(null); setStep('pupils') }, [])
 
-  // Centrage → résultat
+  // Calibration → mesures faciales
+  const handleCalibrated = useCallback((scale) => { setCalibration(scale); setStep('pupils') }, [])
+  const handleSkipCalibration = useCallback(() => { setCalibration(null); setStep('pupils') }, [])
+
+  // Mesures faciales → mesures latérales
   const handlePupilsConfirmed = useCallback((data) => {
-    if (profileData) {
-      data.pantoscopicAngle = profileData.pantoscopic_angle
-      data.vertexDistance = profileData.vertex_distance
-    }
     setMeasurements(data)
+    setStep(profileImageUrl ? 'profile-measure' : 'result')
+  }, [profileImageUrl])
+
+  // Mesures latérales → résultat
+  const handleProfileMeasured = useCallback((profileData) => {
+    setMeasurements(prev => prev ? { ...prev, pantoscopicAngle: profileData.pantoscopic_angle, vertexDistance: profileData.vertex_distance } : prev)
     setStep('result')
-  }, [profileData])
+  }, [])
+  const handleProfileSkip = useCallback(() => { setStep('result') }, [])
 
   // Reset complet
   const handleReset = useCallback(() => {
     setStep('home'); setMeasurements(null); setImageData(null)
-    setProfileImageUrl(null); setProfileData(null); setCalibration(null)
+    setProfileImageUrl(null); setCalibration(null)
     setFaceData(null); setPhotoSource(null)
   }, [])
 
@@ -126,7 +132,7 @@ export default function App() {
         )}
       </header>
 
-      <main className="flex-1 max-w-2xl mx-auto px-4 py-4 w-full animate-fade-in">
+      <main className={`flex-1 w-full px-4 py-4 animate-fade-in ${step === 'home' ? '' : 'max-w-2xl mx-auto'}`}>
         {step === 'home' && <HomeScreen onStart={handleStart} />}
 
         {step === 'photo' && (
@@ -143,6 +149,20 @@ export default function App() {
           </div>
         )}
 
+        {step === 'photo-lateral' && (
+          <div className="space-y-4">
+            <div className="text-center">
+              <h2 className="text-lg font-semibold" style={{ color: 'var(--color-text)', fontFamily: "'Playfair Display', Georgia, serif" }}>
+                Photo de PROFIL (côté DROIT)
+              </h2>
+              <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+                Patient de profil — angle pantoscopique & vertex
+              </p>
+            </div>
+            <PhotoPicker onCapture={handleProfileCapture} onCancel={() => setStep('photo')} initialMode={photoSource === 'camera' ? 'camera' : 'upload'} />
+          </div>
+        )}
+
         {step === 'calibrate' && imageData && (
           <CalibrationOverlay
             imageUrl={imageData}
@@ -150,16 +170,6 @@ export default function App() {
             onSkip={handleSkipCalibration}
             onRetake={handleReset}
             initialPoints={faceData?.calibration}
-          />
-        )}
-
-        {step === 'photo-profile' && (
-          <ProfilePhoto
-            initialMode={photoSource === 'camera' ? 'camera' : 'upload'}
-            calibrationScale={calibration?.scalePxToMm}
-            onCapture={handleProfileCapture}
-            onSkip={handleProfileSkip}
-            onBack={() => setStep('calibrate')}
           />
         )}
 
@@ -176,12 +186,21 @@ export default function App() {
           />
         )}
 
+        {step === 'profile-measure' && profileImageUrl && (
+          <ProfileMeasure
+            imageUrl={profileImageUrl}
+            calibrationScale={calibration?.scalePxToMm}
+            onCapture={handleProfileMeasured}
+            onSkip={handleProfileSkip}
+            onBack={() => setStep('pupils')}
+          />
+        )}
+
         {step === 'result' && measurements && (
           <ResultCard
             measurements={measurements}
             imageUrl={imageData}
             profileImageUrl={profileImageUrl}
-            profileData={profileData}
             onRetake={handleReset}
           />
         )}

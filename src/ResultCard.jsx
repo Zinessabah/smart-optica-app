@@ -1,6 +1,6 @@
-import { RotateCcw, FileText, CheckCircle2, AlertTriangle, AlertCircle, UserRound } from 'lucide-react'
+import { RotateCcw, FileText, CheckCircle2, AlertTriangle, AlertCircle, UserRound, Ruler } from 'lucide-react'
 
-export default function ResultCard({ measurements, imageUrl, profileImageUrl, profileData, onRetake }) {
+export default function ResultCard({ measurements, imageUrl, profileImageUrl, onRetake }) {
   // --- Validation des mesures ---
   const validation = (() => {
     const issues = []
@@ -35,10 +35,10 @@ export default function ResultCard({ measurements, imageUrl, profileImageUrl, pr
   })()
   const getConfianceColor = (level) => {
     switch (level) {
-      case 'haute': return 'var(--color-green)'
-      case 'moyenne': return 'var(--color-gold)'
-      case 'faible': return 'var(--color-red)'
-      default: return 'var(--color-text-muted)'
+      case 'haute': return '#15803d'
+      case 'moyenne': return '#b45309'
+      case 'faible': return '#dc2626'
+      default: return '#9ca3af'
     }
   }
 
@@ -73,10 +73,10 @@ export default function ResultCard({ measurements, imageUrl, profileImageUrl, pr
       const margin = 12
 
       // Page unique : photo client réduite en haut + carte des mesures en dessous
-      // On capture d'abord la carte des mesures
+      // On capture d'abord la carte des mesures (fond clair)
       const measureCanvas = await html2canvas(el, {
         scale: 2,
-        backgroundColor: '#0f0f12',
+        backgroundColor: '#ffffff',
         useCORS: true,
         logging: false,
       })
@@ -181,31 +181,31 @@ export default function ResultCard({ measurements, imageUrl, profileImageUrl, pr
 <title>Smart Optica — Mesure DP</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: 'Inter', system-ui, sans-serif; background: #0f0f12; color: #e8e6e0; padding: 20px; max-width: 600px; margin: auto; }
-  .card { background: #1a1a20; border-radius: 16px; padding: 24px; border: 1px solid #2a2a32; margin-bottom: 16px; }
+  body { font-family: 'Inter', system-ui, sans-serif; background: #ffffff; color: #1f2937; padding: 20px; max-width: 600px; margin: auto; }
+  .card { background: #f9fafb; border-radius: 16px; padding: 24px; border: 1px solid #e5e7eb; margin-bottom: 16px; }
   .brand { display: flex; align-items: center; gap: 12px; }
-  .brand-icon { width: 32px; height: 32px; border-radius: 8px; background: linear-gradient(135deg, #c9a05a, #a8863a); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; color: #0f0f12; }
+  .brand-icon { width: 32px; height: 32px; border-radius: 8px; background: linear-gradient(135deg, #c9a05a, #a8863a); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; color: #ffffff; }
   .brand-text { font-family: 'Playfair Display', Georgia, serif; font-size: 18px; font-weight: 600; }
-  .brand-text span { display: block; font-size: 10px; color: #c9a05a; text-transform: uppercase; letter-spacing: 1px; font-family: 'Inter', sans-serif; }
+  .brand-text span { display: block; font-size: 10px; color: #b45309; text-transform: uppercase; letter-spacing: 1px; font-family: 'Inter', sans-serif; }
   .photo { width: 100%; border-radius: 12px; margin-bottom: 16px; aspect-ratio: 4/3; object-fit: cover; }
-  .dp-main { text-align: center; padding: 20px; background: #0f0f12; border-radius: 12px; margin-bottom: 16px; border: 1px solid #2a2a32; }
-  .dp-main .value { font-size: 56px; font-weight: 700; letter-spacing: -1px; color: #e8e6e0; }
-  .dp-main .unit { font-size: 20px; color: #555; margin-left: 2px; }
-  .dp-main .label { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
-  .dp-main .conf { font-size: 10px; color: #22c55e; margin-top: 4px; }
+  .dp-main { text-align: center; padding: 20px; background: #f3f4f6; border-radius: 12px; margin-bottom: 16px; border: 1px solid #e5e7eb; }
+  .dp-main .value { font-size: 56px; font-weight: 700; letter-spacing: -1px; color: #111827; }
+  .dp-main .unit { font-size: 20px; color: #9ca3af; margin-left: 2px; }
+  .dp-main .label { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+  .dp-main .conf { font-size: 10px; color: #15803d; margin-top: 4px; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
-  .grid .box { text-align: center; padding: 14px; background: #0f0f12; border-radius: 10px; border: 1px solid #2a2a32; }
-  .grid .box .val { font-size: 28px; font-weight: 600; color: #e8e6e0; }
-  .grid .box .lbl { font-size: 10px; color: #888; text-transform: uppercase; }
-  .meta { display: flex; gap: 16px; font-size: 11px; color: #888; padding: 12px; background: #1a1a20; border-radius: 10px; }
-  .meta strong { color: #e8e6e0; }
-  .footer { text-align: center; font-size: 10px; color: #555; padding: 12px; }
-  .section-title { font-size: 11px; color: #8b5cf6; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .grid .box { text-align: center; padding: 14px; background: #f3f4f6; border-radius: 10px; border: 1px solid #e5e7eb; }
+  .grid .box .val { font-size: 28px; font-weight: 600; color: #111827; }
+  .grid .box .lbl { font-size: 10px; color: #6b7280; text-transform: uppercase; }
+  .meta { display: flex; gap: 16px; font-size: 11px; color: #6b7280; padding: 12px; background: #f9fafb; border-radius: 10px; }
+  .meta strong { color: #1f2937; }
+  .footer { text-align: center; font-size: 10px; color: #9ca3af; padding: 12px; }
+  .section-title { font-size: 11px; color: #7c3aed; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
   .dim-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 14px; }
-  .dim-item { display: flex; justify-content: space-between; padding: 6px 10px; background: #0f0f12; border-radius: 6px; font-size: 11px; }
-  .dim-item .lbl { color: #888; }
-  .dim-item .val { color: #8b5cf6; font-weight: 600; }
-  .dim-item .val.green { color: #22c55e; }
+  .dim-item { display: flex; justify-content: space-between; padding: 6px 10px; background: #ffffff; border-radius: 6px; font-size: 11px; }
+  .dim-item .lbl { color: #6b7280; }
+  .dim-item .val { color: #7c3aed; font-weight: 600; }
+  .dim-item .val.green { color: #15803d; }
   @media print { body { background: #fff; } }
 </style>
 </head>
@@ -261,22 +261,22 @@ export default function ResultCard({ measurements, imageUrl, profileImageUrl, pr
     </div>` : ''}
 
     ${measurements.pont != null ? `
-    <div style="text-align:center;padding:10px;background:#1a2a1a;border-radius:10px;margin-bottom:14px;border:1px solid #2a3a2a">
-      <div style="font-size:10px;color:#888;text-transform:uppercase">Écart inter-verres (Pont)</div>
-      <div style="font-size:22px;font-weight:600;color:#22c55e">${measurements.pont} mm</div>
+    <div style="text-align:center;padding:10px;background:#f0fdf4;border-radius:10px;margin-bottom:14px;border:1px solid #bbf7d0">
+      <div style="font-size:10px;color:#6b7280;text-transform:uppercase">Écart inter-verres (Pont)</div>
+      <div style="font-size:22px;font-weight:600;color:#15803d">${measurements.pont} mm</div>
     </div>` : ''}
 
     ${measurements.pantoscopicAngle != null ? `
-    <div style="text-align:center;padding:10px;background:#1a1a2e;border-radius:10px;margin-bottom:14px;border:1px solid #2a2a4e">
+    <div style="text-align:center;padding:10px;background:#faf5ff;border-radius:10px;margin-bottom:14px;border:1px solid #e9d5ff">
       <div style="display:flex;gap:16px;justify-content:center">
         <div>
-          <div style="font-size:10px;color:#888;text-transform:uppercase">Angle pantoscopique</div>
-          <div style="font-size:20px;font-weight:600;color:#8b5cf6">${measurements.pantoscopicAngle}°</div>
+          <div style="font-size:10px;color:#6b7280;text-transform:uppercase">Angle pantoscopique</div>
+          <div style="font-size:20px;font-weight:600;color:#7c3aed">${measurements.pantoscopicAngle}°</div>
         </div>
         ${measurements.vertexDistance != null ? `
         <div>
-          <div style="font-size:10px;color:#888;text-transform:uppercase">Distance Vertex (D'L)</div>
-          <div style="font-size:20px;font-weight:600;color:#8b5cf6">${measurements.vertexDistance} mm</div>
+          <div style="font-size:10px;color:#6b7280;text-transform:uppercase">Distance Vertex (D'L)</div>
+          <div style="font-size:20px;font-weight:600;color:#7c3aed">${measurements.vertexDistance} mm</div>
         </div>` : ''}
       </div>
     </div>` : ''}
@@ -324,23 +324,24 @@ export default function ResultCard({ measurements, imageUrl, profileImageUrl, pr
         </div>
       )}
 
-      {/* Results card */}
-      <div id="result-card-content" className="rounded-2xl p-6 border" style={{ background: 'var(--color-card)', borderColor: 'var(--color-border)' }}>
-        <h3 className="text-xs uppercase tracking-wider mb-4 flex items-center gap-2" style={{ color: 'var(--color-gold)' }}>
+      {/* Results card — fond clair pour impression/PDF */}
+      <div id="result-card-content" className="rounded-2xl p-6 border" style={{ background: '#ffffff', borderColor: '#d1d5db' }}>
+        <h3 className="text-xs uppercase tracking-wider mb-1 flex items-center gap-2" style={{ color: '#b45309' }}>
           <CheckCircle2 size={14} />
           Résultat de la mesure
         </h3>
+        <div className="text-[10px] mb-4" style={{ color: '#9ca3af' }}>
+          Smart Optica · {new Date().toLocaleDateString('fr-FR')}
+        </div>
 
         {/* Validation banner */}
         {!validation.valid && (
-          <div className={`rounded-xl px-4 py-3 mb-4 flex items-start gap-2 text-xs ${
-            validation.level === 'error' ? 'border' : 'border'
-          }`}
-          style={{
-            background: validation.level === 'error' ? 'var(--color-red-bg)' : 'var(--color-gold-bg)',
-            borderColor: validation.level === 'error' ? 'var(--color-red)' : 'var(--color-gold)',
-            color: validation.level === 'error' ? 'var(--color-red)' : 'var(--color-gold)',
-          }}>
+          <div className="rounded-xl px-4 py-3 mb-4 flex items-start gap-2 text-xs border"
+            style={{
+              background: validation.level === 'error' ? '#fef2f2' : '#fffbeb',
+              borderColor: validation.level === 'error' ? '#f87171' : '#fbbf24',
+              color: validation.level === 'error' ? '#dc2626' : '#b45309',
+            }}>
             {validation.level === 'error' ? <AlertCircle size={14} className="shrink-0 mt-0.5" /> : <AlertTriangle size={14} className="shrink-0 mt-0.5" />}
             <div className="space-y-0.5">
               <span className="font-medium">Mesure suspecte</span>
@@ -351,115 +352,117 @@ export default function ResultCard({ measurements, imageUrl, profileImageUrl, pr
           </div>
         )}
 
-        {/* Main PD */}
-        <div className="text-center py-5 mb-4 rounded-xl" style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)' }}>
-          <div className="text-xs mb-1" style={{ color: 'var(--color-text-muted)' }}>Distance Pupillaire Binoculaire</div>
-          <div className="text-5xl font-bold tracking-tight" style={{ color: 'var(--color-text)' }}>
-            {measurements.pd}
-            <span className="text-xl ml-1" style={{ color: 'var(--color-text-dim)' }}>mm</span>
+        {/* ══ SECTION 1 : DONNÉES CLIENT ══ */}
+        <div className="mb-4">
+          <div className="text-[10px] uppercase tracking-wide font-bold mb-2 pb-1 border-b flex items-center gap-1.5" style={{ color: '#7c3aed', borderColor: '#e5e7eb' }}>
+            <UserRound size={12} /> Données client
           </div>
-          <div className="text-[10px] mt-1" style={{ color: getConfianceColor(measurements.confiance) }}>
-            {getConfianceLabel(measurements.confiance)}
+
+          {/* Main PD */}
+          <div className="text-center py-4 mb-3 rounded-xl" style={{ background: '#f9fafb', border: '1px solid #e5e7eb' }}>
+            <div className="text-xs mb-1" style={{ color: '#6b7280' }}>Distance Pupillaire Binoculaire</div>
+            <div className="text-5xl font-bold tracking-tight" style={{ color: '#111827' }}>
+              {measurements.pd}
+              <span className="text-xl ml-1" style={{ color: '#9ca3af' }}>mm</span>
+            </div>
+            <div className="text-[10px] mt-1" style={{ color: getConfianceColor(measurements.confiance) }}>
+              {getConfianceLabel(measurements.confiance)}
+            </div>
           </div>
+
+          {/* Monocular */}
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            <div className="text-center py-3 rounded-xl" style={{ background: '#f9fafb', border: '1px solid #e5e7eb' }}>
+              <div className="text-xs mb-1" style={{ color: '#6b7280' }}>Œil Gauche (OG)</div>
+              <div className="text-2xl font-semibold" style={{ color: '#b45309' }}>
+                {measurements.pdMonoculaireGauche}
+                <span className="text-sm ml-1" style={{ color: '#9ca3af' }}>mm</span>
+              </div>
+              {measurements.pontPlace && (
+                <div className="text-[9px] mt-0.5" style={{ color: '#15803d' }}>Pont → OG</div>
+              )}
+            </div>
+            <div className="text-center py-3 rounded-xl" style={{ background: '#f9fafb', border: '1px solid #e5e7eb' }}>
+              <div className="text-xs mb-1" style={{ color: '#6b7280' }}>Œil Droit (OD)</div>
+              <div className="text-2xl font-semibold" style={{ color: '#1d4ed8' }}>
+                {measurements.pdMonoculaireDroit}
+                <span className="text-sm ml-1" style={{ color: '#9ca3af' }}>mm</span>
+              </div>
+              {measurements.pontPlace && (
+                <div className="text-[9px] mt-0.5" style={{ color: '#15803d' }}>Pont → OD</div>
+              )}
+            </div>
+          </div>
+
+          {/* Vertex (client) */}
+          {measurements.vertexDistance != null && (
+            <div className="flex justify-between items-center px-4 py-2.5 rounded-xl text-xs mb-2" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}>
+              <span style={{ color: '#4b5563' }}>Distance Vertex (D'L)</span>
+              <span className="font-semibold" style={{ color: '#15803d' }}>{measurements.vertexDistance} mm</span>
+            </div>
+          )}
         </div>
 
-        {/* Monocular */}
-        <div className="grid grid-cols-2 gap-3 mb-4">
-          <div className="text-center py-3 rounded-xl" style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)' }}>
-            <div className="text-xs mb-1" style={{ color: 'var(--color-text-muted)' }}>Œil Gauche (OG)</div>
-            <div className="text-2xl font-semibold" style={{ color: 'var(--color-gold)' }}>
-              {measurements.pdMonoculaireGauche}
-              <span className="text-sm ml-1" style={{ color: 'var(--color-text-dim)' }}>mm</span>
-            </div>
-            {measurements.pontPlace && (
-              <div className="text-[9px] mt-0.5" style={{ color: 'var(--color-green)' }}>Pont → OG</div>
-            )}
+        {/* ══ SECTION 2 : DONNÉES MONTURE ══ */}
+        <div>
+          <div className="text-[10px] uppercase tracking-wide font-bold mb-2 pb-1 border-b flex items-center gap-1.5" style={{ color: '#7c3aed', borderColor: '#e5e7eb' }}>
+            <Ruler size={12} /> Données monture
           </div>
-          <div className="text-center py-3 rounded-xl" style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)' }}>
-            <div className="text-xs mb-1" style={{ color: 'var(--color-text-muted)' }}>Œil Droit (OD)</div>
-            <div className="text-2xl font-semibold" style={{ color: '#3b82f6' }}>
-              {measurements.pdMonoculaireDroit}
-              <span className="text-sm ml-1" style={{ color: 'var(--color-text-dim)' }}>mm</span>
+
+          {/* Bridge */}
+          {measurements.pont != null && (
+            <div className="flex justify-between items-center px-4 py-2.5 rounded-xl text-xs mb-2" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}>
+              <span style={{ color: '#4b5563' }}>Écart inter-verres (Pont)</span>
+              <span className="font-semibold" style={{ color: '#15803d' }}>{measurements.pont} mm</span>
             </div>
-            {measurements.pontPlace && (
-              <div className="text-[9px] mt-0.5" style={{ color: 'var(--color-green)' }}>Pont → OD</div>
-            )}
-          </div>
+          )}
+
+          {/* Boxing dimensions */}
+          {measurements.frameOk && (
+            <div className="rounded-xl px-4 py-3 mb-2 text-xs space-y-1.5" style={{ background: '#faf5ff', border: '1px solid #e9d5ff' }}>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                <div className="flex justify-between">
+                  <span style={{ color: '#6b7280' }}>H. Calibre :</span>
+                  <span className="font-semibold" style={{ color: '#7c3aed' }}>{measurements.hauteurCalibre} mm</span>
+                </div>
+                <div className="flex justify-between">
+                  <span style={{ color: '#6b7280' }}>L. Calibre OD/OG :</span>
+                  <span className="font-semibold" style={{ color: '#7c3aed' }}>{measurements.largeurOD} / {measurements.largeurOG} mm</span>
+                </div>
+                <div className="flex justify-between">
+                  <span style={{ color: '#6b7280' }}>H. Montage OD :</span>
+                  <span className="font-semibold" style={{ color: '#7c3aed' }}>{measurements.hauteurMontageOG} mm</span>
+                </div>
+                <div className="flex justify-between">
+                  <span style={{ color: '#6b7280' }}>H. Montage OG :</span>
+                  <span className="font-semibold" style={{ color: '#7c3aed' }}>{measurements.hauteurMontageOD} mm</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Pantoscopic angle (monture) */}
+          {measurements.pantoscopicAngle != null && (
+            <div className="flex justify-between items-center px-4 py-2.5 rounded-xl text-xs mb-2" style={{ background: '#faf5ff', border: '1px solid #e9d5ff' }}>
+              <span style={{ color: '#4b5563' }}>Angle pantoscopique</span>
+              <span className="font-semibold" style={{ color: '#7c3aed' }}>{measurements.pantoscopicAngle}°</span>
+            </div>
+          )}
+          {(measurements.pantoscopicAngle != null && (measurements.pantoscopicAngle < 5 || measurements.pantoscopicAngle > 15)) && (
+            <div className="flex items-center gap-1 mb-2 text-[9px]" style={{ color: '#b45309' }}>
+              <AlertTriangle size={10} />
+              Angle pantoscopique hors norme (8-12°)
+            </div>
+          )}
         </div>
-
-        {/* Bridge */}
-        {measurements.pont != null && (
-          <div className="text-center py-2 mb-3 rounded-lg" style={{ background: 'var(--color-green-bg)', border: '1px solid var(--color-border)' }}>
-            <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Écart inter-verres (Pont)</div>
-            <div className="text-lg font-semibold" style={{ color: 'var(--color-green)' }}>{measurements.pont} mm</div>
-          </div>
-        )}
-
-        {/* Boxing dimensions */}
-        {measurements.frameOk && (
-          <div className="rounded-xl p-3 mb-3 space-y-2 text-xs"
-            style={{ background: 'var(--color-purple-bg)', border: '1px solid var(--color-border)' }}>
-            <div className="text-[10px] uppercase tracking-wide font-medium" style={{ color: 'var(--color-purple)' }}>
-              📐 Dimensions calibre (boxing)
-            </div>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-              <div className="flex justify-between">
-                <span style={{ color: 'var(--color-text-muted)' }}>H. Calibre :</span>
-                <span style={{ color: 'var(--color-purple)' }}>{measurements.hauteurCalibre} mm</span>
-              </div>
-              <div className="flex justify-between">
-                <span style={{ color: 'var(--color-text-muted)' }}>L. Calibre OD/OG :</span>
-                <span style={{ color: 'var(--color-purple)' }}>{measurements.largeurOD} / {measurements.largeurOG} mm</span>
-              </div>
-              <div className="flex justify-between">
-                <span style={{ color: 'var(--color-text-muted)' }}>H. Montage OD :</span>
-                <span style={{ color: 'var(--color-purple)' }}>{measurements.hauteurMontageOG} mm</span>
-              </div>
-              <div className="flex justify-between">
-                <span style={{ color: 'var(--color-text-muted)' }}>H. Montage OG :</span>
-                <span style={{ color: 'var(--color-purple)' }}>{measurements.hauteurMontageOD} mm</span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* 3D Measurements: Pantoscopic angle + Vertex */}
-        {(measurements.pantoscopicAngle != null || measurements.vertexDistance != null) && (
-          <div className="rounded-xl p-3 mb-3 space-y-2 text-xs"
-            style={{ background: 'var(--color-purple-bg)', border: '1px solid var(--color-border)' }}>
-            <div className="text-[10px] uppercase tracking-wide font-medium flex items-center gap-1.5" style={{ color: 'var(--color-purple)' }}>
-              <UserRound size={12} /> Mesures 3D (photo de profil)
-            </div>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-              <div className="flex justify-between">
-                <span style={{ color: 'var(--color-text-muted)' }}>Angle pantoscopique :</span>
-                <span style={{ color: 'var(--color-purple)' }}>
-                  {measurements.pantoscopicAngle != null ? `${measurements.pantoscopicAngle}°` : '—'}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span style={{ color: 'var(--color-text-muted)' }}>Distance Vertex (D'L) :</span>
-                <span style={{ color: 'var(--color-purple)' }}>
-                  {measurements.vertexDistance != null ? `${measurements.vertexDistance} mm` : '—'}
-                </span>
-              </div>
-            </div>
-            {(measurements.pantoscopicAngle != null && (measurements.pantoscopicAngle < 5 || measurements.pantoscopicAngle > 15)) && (
-              <div className="flex items-center gap-1 mt-1 text-[9px]" style={{ color: 'var(--color-gold)' }}>
-                <AlertTriangle size={10} />
-                Angle pantoscopique hors norme (8-12°)
-              </div>
-            )}
-          </div>
-        )}
 
         {/* Calibration details */}
         {measurements.calibration && (
-          <div className="rounded-xl p-3 text-xs space-y-1" style={{ background: 'var(--color-green-bg)', border: '1px solid var(--color-border)' }}>
-            <div className="font-medium" style={{ color: 'var(--color-green)' }}>
+          <div className="rounded-xl px-3 py-2 mt-4 text-[10px] space-y-0.5" style={{ background: '#f9fafb', border: '1px solid #e5e7eb' }}>
+            <div className="font-medium" style={{ color: '#15803d' }}>
               🎯 Calibration active
             </div>
-            <div style={{ color: 'var(--color-text-muted)' }}>
+            <div style={{ color: '#9ca3af' }}>
               Échelle : 1 px = {measurements.calibration.scalePxToMm} mm · Variation : {measurements.calibration.variation}%
             </div>
           </div>
