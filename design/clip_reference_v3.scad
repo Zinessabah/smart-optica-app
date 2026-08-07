@@ -100,11 +100,10 @@ module facial_ribs() {
             cube([rib_thickness, bar_height, rib_height]);
 }
 
-// Pince en U — TYPE UNIQUE pour barre et bras
-// Canal : 2 lèvres flexibles qui pincent par flexion.
-// • En bout de bras : canal ouvert vers le haut (pose sur la branche)
-// • Sous la barre : MÊME module retourné (canal ouvert vers le bas,
-//   clip sur le bord supérieur de la monture)
+// Pince en U — TYPE UNIQUE, TOUTES orientées canal vers le bas
+// quand la barre est horizontale (clip posé sur la monture).
+// • Sous la barre : clip sur le bord supérieur de la monture
+// • En bout de bras : clip sur le bord de la monture / charnière
 module hinge_clamp() {
     w = 2 * clamp_lip_thickness + clamp_gap;
     total_h = arm_thickness + clamp_lip_height;
@@ -116,13 +115,11 @@ module hinge_clamp() {
         }
 }
 
-// Pince de barre = hinge_clamp retourné à 180° (canal vers le bas)
-// + sink : la base pleine pénètre dans la barre → fusion CGAL
+// Pince retournée à 180° (canal vers le bas) + sink dans le support :
+// la base pleine (arm_thickness) pénètre de 0.8 dans la barre/bras →
+// fusion CGAL. UTILISÉE PARTOUT (barre + bras) → pinces toutes identiques
+// et toutes orientées vers le bas quand la barre est horizontale.
 module frame_clamp() {
-    // Retourne le module : la base pleine (arm_thickness) se retrouve en haut,
-    // le canal (clamp_lip_height) vers le bas.
-    // translate z = +0.8 : la base (épaisseur arm_thickness=3) pénètre de 0.8
-    // dans la barre (0..3) → intersection volumique.
     translate([0, 0, 0.8])
         rotate([180, 0, 0])
             hinge_clamp();
@@ -137,7 +134,7 @@ module facial_assembly() {
         // nervures de rigidité
         facial_ribs();
 
-        // 3 pinces de barre (fixation monture) — sink dans la barre
+        // 3 pinces de barre (fixation monture) — canal vers le bas
         for (x = frame_clamp_positions)
             translate([x, 0, 0])
                 frame_clamp();
@@ -178,9 +175,10 @@ module side_arm() {
     translate([x0 - 0.8, -w / 2, 0])
         cube([arm_length + 0.8, w, arm_thickness]);
 
-    // pince en bout de bras
+    // pince en bout de bras — MÊME TYPE, canal vers le bas
+    // (clip sur le bord de la monture / charnière quand la barre est horizontale)
     translate([x0 + arm_length - clamp_len, 0, 0])
-        hinge_clamp();
+        frame_clamp();
 
     // 2 mires latérales dans le plan du bras
     translate([x0 + lateral_start, 0, arm_thickness]) {
