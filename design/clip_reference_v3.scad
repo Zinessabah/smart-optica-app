@@ -1,5 +1,5 @@
 // ============================================================
-// Clip de référence optométrique — v3.1 (imprimable, précision améliorée)
+// Clip de référence optométrique — v3.3 (imprimable, précision améliorée)
 // ============================================================
 // Format : OpenSCAD (.scad) — fichier paramétrique, PAS un STL.
 // Pour obtenir le fichier imprimable :
@@ -9,13 +9,12 @@
 //   4. File > Export > Export as STL
 // Ligne de commande : openscad -o clip_reference_v3.stl clip_reference_v3.scad
 //
-// Changements v3.1 (retour Driss) :
-//   • 5 PINCES au lieu de 2 : 3 sur la barre faciale (au-dessus des verres
-//     et du pont) + 2 en bout de bras latéraux → fixation stable sur la monture
-//   • Montant de la 4e mire DÉCALÉ en X (stem_x = -12) pour ne pas boucher
-//     la pince centrale (à x=0, au-dessus du pont)
-//   • Pinces de barre : canal ouvert vers le bas, lèvres verticales qui
-//     pincent le bord supérieur de la monture par flexion
+// Historique des retours Driss :
+//   v3.1 — 5 PINCES au lieu de 2 (3 barre x=-45,0,+45 + 2 bras) ;
+//          montant 4e mire décalé (stem_x=-12) pour libérer la pince centrale
+//   v3.2 — pinces faciales et latérales de MÊME TYPE (module hinge_clamp unique)
+//   v3.3 — TOUTES les pinces orientées canal VERS LE BAS quand la barre
+//          est horizontale (frame_clamp = hinge_clamp retourné 180° + sink 0.8)
 //
 // Améliorations v3 (conservées) :
 //   • Mires latérales sur la FACE EXTERNE des bras → visibles de profil
