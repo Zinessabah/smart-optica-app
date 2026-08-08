@@ -114,13 +114,15 @@ module hinge_clamp() {
         }
 }
 
-// Pince retournée à 180° (canal vers le bas) + sink dans le support :
-// la base pleine (arm_thickness) pénètre de 0.8 dans la barre/bras →
-// fusion CGAL. UTILISÉE PARTOUT (barre + bras) → pinces toutes identiques
-// et toutes orientées vers le bas quand la barre est horizontale.
+// Pince retournée — canal ouvert vers le BAS (-Y) quand la barre est
+// horizontale et posée sur la monture (plan des mires faciales vertical).
+// ⚠️ Correction Driss : rotate([180,0,0]) ouvrait le canal vers -Z (l'arrière,
+// plan horizontal) → inutilisable. rotate([90,0,0]) : +Z → -Y = vers le bas.
+// Sink en Y : la base pleine (arm_thickness) pénètre de 0.8 dans la barre/bras
+// → fusion CGAL. UTILISÉE PARTOUT (barre + bras) → pinces toutes identiques.
 module frame_clamp() {
-    translate([0, 0, 0.8])
-        rotate([180, 0, 0])
+    translate([0, 0.8, 0])
+        rotate([90, 0, 0])
             hinge_clamp();
 }
 
