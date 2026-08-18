@@ -9,6 +9,23 @@ const FACE_API_MODELS_URL = 'https://justadudewhohacks.github.io/face-api.js/mod
 const FACE_API_LOADED = { tiny: false, landmarks: false }
 
 /**
+ * URI des modèles face-api.js — local d'abord (public/models), CDN en secours.
+ * En dev, `window.location.origin + '/models'` sert les fichiers copiés dans
+ * public/models ; en production, s'ils sont absents, on retombe sur le CDN.
+ */
+function getModelsUri() {
+  try {
+    const origin = window.location.origin || ''
+    const local = origin + '/models'
+    // Vérification synchrone (le manifest est servi au premier chargement) :
+    // on fait confiance au chemin local — il existe dans public/models.
+    return local
+  } catch {
+    return FACE_API_MODELS_URL
+  }
+}
+
+/**
  * Détecte visage + landmarks via API native
  * @param {HTMLImageElement} img
  * @returns {Promise<Object|null>} { leftEye, rightEye, nose } ou null
@@ -57,22 +74,31 @@ export async function detectWithNativeAPI(img) {
 }
 
 /**
- * Charge les modèles face-api.js (une seule fois)
+ * Charge les modèles face-api.js (une seule fois).
+ * Priorité : modèles locaux (public/models) → CDN en secours.
  */
 async function ensureFaceApiModels() {
   if (FACE_API_LOADED.tiny && FACE_API_LOADED.landmarks) return
 
   const fa = await import('face-api.js')
+  const localUri = getModelsUri()
 
-  if (!FACE_API_LOADED.tiny) {
-    await fa.nets.tinyFaceDetector.loadFromUri(FACE_API_MODELS_URL)
-    FACE_API_LOADED.tiny = true
-  }
-  if (!FACE_API_LOADED.landmarks) {
-    await fa.nets.faceLandmarks68Net.loadFromUri(FACE_API_MODELS_URL)
-    FACE_API_LOADED.landmarks = true
+  const loadAll = (uri) => Promise.all([
+    fa.nets.tinyFaceDetector.loadFromUri(uri),
+    fa.nets.faceLandmarks68Net.loadFromUri(uri),
+  ])
+
+  try {
+    if (!FACE_API_LOADED.tiny || !FACE_API_LOADED.landmarks) {
+      await loadAll(localUri)
+    }
+  } catch (e) {
+    console.warn('[faceDetection] Modèles locaux indisponibles, fallback CDN:', e.message)
+    await loadAll(FACE_API_MODELS_URL)
   }
 
+  FACE_API_LOADED.tiny = true
+  FACE_API_LOADED.landmarks = true
   return fa
 }
 

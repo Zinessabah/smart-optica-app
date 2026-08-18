@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { RotateCcw, Check, SkipForward, AlertTriangle, Loader2, Settings2, Camera } from 'lucide-react'
 import { analyzeCalibration } from './services/api'
+import { calculateScale } from './core/optics'
 
 export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onRetake, initialPoints }) {
   const [points, setPoints] = useState([])
@@ -62,6 +63,19 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
     setAutoFailed(false)
     cancelAutoRef.current = false
 
+    // Repli sur les repères estimés par /api/analyze (via App → faceData.calibration)
+    const applyEstimated = () => {
+      if (initialPoints && initialPoints.length === 3) {
+        setPoints(initialPoints)
+        setAutoDetecting(false)
+        const scaleInfo = calculateScale(initialPoints, markerSpacing)
+        setDebugInfo({ ...scaleInfo, source: 'estimé (/api/analyze)' })
+        backendScaleRef.current = null
+        return true
+      }
+      return false
+    }
+
     ;(async () => {
       await new Promise(r => setTimeout(r, 200))
       if (cancelAutoRef.current) { setAutoDetecting(false); setAutoFailed(true); return }
@@ -72,7 +86,9 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
         const blob = await resp.blob()
         if (cancelAutoRef.current) { setAutoDetecting(false); setAutoFailed(true); return }
         const apiResult = await analyzeCalibration(blob)
-        if (!cancelAutoRef.current && apiResult.markers && apiResult.markers.length === 3) {
+        if (cancelAutoRef.current) return
+
+        if (apiResult.markers && apiResult.markers.length === 3) {
           setPoints(apiResult.markers)
           setAutoDetecting(false)
           // Utiliser l'échelle calculée par le backend — plus de recalcul frontal
@@ -88,17 +104,27 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
           backendScaleRef.current = scaleInfo  // stocker pour confirmCalibration
           return
         }
+
+        // 2) Backend a répondu sans triplet exploitable → ne pas rester bloqué sur « Analyse… »
+        if (!applyEstimated()) {
+          setAutoDetecting(false)
+          setAutoFailed(true)
+          setDebugInfo({ error: 'Détection automatique sans résultat — placement manuel' })
+        }
       } catch (e) {
         console.error('Calibration API échouée:', e.message)
         if (!cancelAutoRef.current) {
-          setAutoDetecting(false)
-          setAutoFailed(true)
-          setDebugInfo({ error: 'API indisponible — vérifiez la connexion au serveur' })
+          // 3) API hors-ligne → repères estimés si dispo, sinon manuel
+          if (!applyEstimated()) {
+            setAutoDetecting(false)
+            setAutoFailed(true)
+            setDebugInfo({ error: 'API indisponible — vérifiez la connexion au serveur' })
+          }
         }
         return
       }
     })()
-  }, [imageUrl, markerSpacing])
+  }, [imageUrl, markerSpacing, initialPoints])
 
   const handleContainerPointerDown = (e) => {
     // Walk up DOM to find a calibration marker
@@ -389,34 +415,4 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
       )}
     </div>
   )
-}
-
-function calculateScale(points, spacing = 50) {
-  // Calcul de la distance géométrique directe entre le repère Gauche (0) et le repère Droite (2)
-  const dTotal = Math.hypot(points[2].x - points[0].x, points[2].y - points[0].y)
-  
-  // L'échelle absolue en mm/pixel calculée sur les 100mm totaux du clip (spacing * 2)
-  const totalSpacingMm = spacing * 2
-  const finalScale = totalSpacingMm / dTotal
-
-  // Pour l'analyse de symétrie (rotation ou inclinaison de la tête du patient)
-  const d1 = Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y) // gauche -> centre
-  const d2 = Math.hypot(points[2].x - points[1].x, points[2].y - points[1].y) // centre -> droite
-  const ratio = Math.abs(d1 - d2) / ((d1 + d2) / 2)
-  const headRotationAngle = Math.round(ratio * 100)
-
-  // Qualité de centrage basée sur la symétrie
-  let poseAssessment = 'Excellente (Centrage 100%)'
-  if (headRotationAngle > 4) poseAssessment = 'Bonne (Légère inclinaison ' + headRotationAngle + '%)'
-  if (headRotationAngle > 10) poseAssessment = 'Correction requise (Tête tournée à ' + headRotationAngle + '%)'
-
-  return {
-    scalePxToMm: finalScale,
-    pixelDist1: Math.round(d1),
-    pixelDist2: Math.round(d2),
-    scaleVariation: 0, // Option chirurgicale demandée : 0% d'erreur sur l'échelle de mesure
-    headRotation: headRotationAngle,
-    poseAssessment: poseAssessment,
-    totalSpanMm: totalSpacingMm
-  }
 }

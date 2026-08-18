@@ -1,36 +1,19 @@
 import { RotateCcw, FileText, CheckCircle2, AlertTriangle, AlertCircle, UserRound, Ruler } from 'lucide-react'
+import { validateMeasurements } from './core/validation'
 
 export default function ResultCard({ measurements, imageUrl, profileImageUrl, onRetake }) {
-  // --- Validation des mesures ---
+  // --- Validation des mesures (core/validation.js — testée, seuils cliniques) ---
   const validation = (() => {
-    const issues = []
-    const pd = measurements.pd
-    const pdOG = measurements.pdMonoculaireGauche
-    const pdOD = measurements.pdMonoculaireDroit
-    const pont = measurements.pont
-
-    // DP binoculaire : normale entre 50mm et 75mm (adulte)
-    if (pd != null) {
-      if (pd < 50) issues.push('DP binoculaire anormalement basse (< 50mm)')
-      else if (pd > 75) issues.push('DP binoculaire anormalement haute (> 75mm)')
-    }
-
-    // DP monoculaires : somme ≈ DP binoculaire
-    if (pdOG != null && pdOD != null && pd != null) {
-      const sum = pdOG + pdOD
-      const diff = Math.abs(sum - pd)
-      if (diff > 3) issues.push(`Somme des monoculaires (${sum}mm) incohérente avec la DP (${pd}mm)`)
-    }
-
-    // Pont : valeurs réalistes (10-30mm)
-    if (pont != null && (pont < 5 || pont > 40)) {
-      issues.push('Écart inter-verres (pont) hors norme')
-    }
-
+    const raw = validateMeasurements({
+      pd: measurements.pd,
+      pdMonoculaireGauche: measurements.pdMonoculaireGauche,
+      pdMonoculaireDroit: measurements.pdMonoculaireDroit,
+      pont: measurements.pont,
+    })
     return {
-      valid: issues.length === 0,
-      issues,
-      level: issues.length === 0 ? 'ok' : issues.some(i => i.includes('incohérente')) ? 'warning' : 'error',
+      valid: raw.valid,
+      level: raw.level,
+      issues: raw.issues.map(i => i.message),
     }
   })()
   const getConfianceColor = (level) => {

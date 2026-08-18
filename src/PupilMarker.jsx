@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { ChevronLeft, RotateCcw, Camera, Check, Loader2 } from 'lucide-react'
+import { ChevronLeft, RotateCcw, Camera, Check, Loader2, AlertTriangle } from 'lucide-react'
 import BoxingRect from './BoxingRect'
+import { detectFace } from './core/faceDetection'
+import { calculateMonocularPD, calculatePont, calculateBoxingDimensions, getDefaultBoxSize as coreDefaultBoxSize, mirrorBox } from './core/optics'
 
 export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, onRetake, initialLeftEye, initialRightEye, initialBridge }) {
   const [imageSize, setImageSize] = useState(null)
@@ -17,22 +19,14 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   const containerRef = useRef(null)
   const cancelAutoFaceRef = useRef(false)
 
-  // Helper: convertit un point ou un tableau de points en {x,y} image coords
-  const c = (pt) => {
-    if (Array.isArray(pt)) {
-      const avgX = pt.reduce((s, p) => s + (p.x ?? p), 0) / pt.length
-      const avgY = pt.reduce((s, p) => s + (p.y ?? p), 0) / pt.length
-      return { x: Math.round(avgX), y: Math.round(avgY) }
-    }
-    return { x: Math.round(pt.x), y: Math.round(pt.y) }
-  }
-
   useEffect(() => {
     const img = new Image(); img.src = imageUrl
     img.onload = () => setImageSize({ width: img.naturalWidth, height: img.naturalHeight })
   }, [imageUrl])
 
   // --- Auto-détection faciale ---
+  const [faceEstimate, setFaceEstimate] = useState(false) // true = repères estimés par proportions, à vérifier
+
   useEffect(() => {
     if (!imageSize) return
 
@@ -41,6 +35,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       setLeftEye(initialLeftEye)
       setRightEye(initialRightEye)
       setBridge(initialBridge)
+      setFaceEstimate(false)
       setFaceDetectStatus('success')
       return
     }
@@ -53,69 +48,27 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
         const img = new Image(); img.src = imageUrl
         await new Promise(r => { img.onload = r })
         if (cancelled || cancelAutoFaceRef.current) return
-        let eyesFound = false
 
-        // 1) FaceDetector API native (Safari iPadOS 16.4+)
-        if (typeof window.FaceDetector !== 'undefined') {
-          const faces = await new window.FaceDetector({ maxDetectedFaces: 1, fastMode: false }).detect(await createImageBitmap(img))
-          if (!cancelled && faces.length > 0) {
-            const f = faces[0]
-            if (f.landmarks) {
-              const eyes = f.landmarks.filter(l => l.type === 'eye')
-              const nose = f.landmarks.filter(l => l.type === 'nose')
-              if (eyes.length >= 2) {
-                setLeftEye(c(eyes[0].locations)); setRightEye(c(eyes[1].locations))
-                eyesFound = true
-              }
-              if (nose.length > 0) {
-                const nc = c(nose[0].locations)
-                setBridge({ x: nc.x, y: nc.y })
-              }
-              if (eyesFound) { setFaceDetectStatus('success'); return }
-            }
-            // Fallback bounding box proportions
-            const b = f.boundingBox?.box || f.boundingBox
-            const cx = b.x + b.width * 0.50, cy = b.y + b.height * 0.62
-            setLeftEye({ x: b.x + b.width * 0.29, y: b.y + b.height * 0.42 })
-            setRightEye({ x: b.x + b.width * 0.71, y: b.y + b.height * 0.42 })
-            setBridge({ x: cx, y: cy })
-            setFaceDetectStatus('success'); return
-          }
+        // Cascade unifiée (core/faceDetection) :
+        // API native → face-api.js (modèles locaux) → proportions
+        const detected = await detectFace(img, imageSize)
+        if (cancelled || cancelAutoFaceRef.current) return
+
+        if (detected) {
+          setLeftEye(detected.leftEye)
+          setRightEye(detected.rightEye)
+          if (detected.nose) setBridge(detected.nose)
+          setFaceEstimate(detected.method === 'proportions')
+          setFaceDetectStatus('success')
+        } else {
+          setFaceEstimate(false)
+          setFaceDetectStatus('failed')
         }
-
-        // 2) face-api.js (modèles locaux)
-        try {
-          const fa = await import('face-api.js')
-          const modelPath = window.location.origin + '/models'
-          await Promise.all([
-            fa.nets.tinyFaceDetector.loadFromUri(modelPath),
-            fa.nets.faceLandmarks68Net.loadFromUri(modelPath)
-          ])
-          if (cancelled || cancelAutoFaceRef.current) return
-          const d = await fa.detectSingleFace(img, new fa.TinyFaceDetectorOptions()).withFaceLandmarks()
-          if (!cancelled && d?.landmarks) {
-            setLeftEye(c(d.landmarks.getLeftEye())); setRightEye(c(d.landmarks.getRightEye()))
-            const nose = d.landmarks.getNose()
-            if (nose && nose.length >= 3) {
-              const nc = c(nose.slice(0, 4))
-              setBridge({ x: nc.x, y: nc.y })
-            }
-            setFaceDetectStatus('success'); return
-          }
-        } catch {}
-
-        // 3) Proportion estimate
-        if (!cancelled && !cancelAutoFaceRef.current) {
-          const mx = img.width / 2, my = img.height * 0.42, d = img.width * 0.12
-          setLeftEye({ x: mx - d, y: my }); setRightEye({ x: mx + d, y: my })
-          setBridge({ x: mx, y: my + d * 0.9 })
-          setFaceDetectStatus('success'); return
-        }
-
-        // Tous les niveaux ont échoué
-        if (!cancelled) setFaceDetectStatus('failed')
       } catch {
-        if (!cancelled) setFaceDetectStatus('failed')
+        if (!cancelled) {
+          setFaceEstimate(false)
+          setFaceDetectStatus('failed')
+        }
       }
     })()
 
@@ -123,6 +76,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     const timeoutId = setTimeout(() => {
       if (!cancelled) {
         cancelAutoFaceRef.current = true
+        setFaceEstimate(false)
         setFaceDetectStatus('failed')
       }
     }, 15000)
@@ -131,7 +85,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       cancelled = true
       clearTimeout(timeoutId)
     }
-  }, [imageUrl, imageSize, calibration])
+  }, [imageUrl, imageSize, calibration, initialLeftEye, initialRightEye, initialBridge])
 
   const getImageDisplayRect = useCallback(() => {
     if (!containerRef.current || !imageSize) return null
@@ -162,11 +116,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     return { x: (cx / dr.width) * imageSize.width, y: (cy / dr.height) * imageSize.height }
   }, [imageSize, getImageDisplayRect])
 
-  const getDefaultBoxSize = useCallback(() => {
-    const scale = calibration?.scalePxToMm
-    if (scale && scale > 0) return { width: Math.round(45 / scale), height: Math.round(35 / scale) }
-    return { width: 72, height: 56 }
-  }, [calibration])
+  const getDefaultBoxSize = useCallback(() => coreDefaultBoxSize(calibration?.scalePxToMm), [calibration])
 
   const undo = () => {
     switch (activeMarker) {
@@ -178,7 +128,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     }
   }
 
-  // --- Calculs ---
+  // --- Calculs (logique centralisée dans core/optics.js — testée) ---
   const result = (() => {
     if (!imageSize) return null
     // Échelle : exclusivement depuis la calibration backend
@@ -187,62 +137,30 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     const pontOk = !!bridge
     const pupilsOk = !!(leftEye && rightEye)
 
-    let pdBinoc = null, pdOG = null, pdOD = null
-    if (pupilsOk && scale) {
-      pdBinoc = Math.round(Math.abs(rightEye.x - leftEye.x) * scale * 10) / 10
-    }
-    if (pontOk && pupilsOk && scale) {
-      pdOD = Math.round(Math.abs(leftEye.x - bridge.x) * scale * 10) / 10
-      pdOG = Math.round(Math.abs(rightEye.x - bridge.x) * scale * 10) / 10
-    } else if (pdBinoc) {
-      pdOG = Math.round((pdBinoc / 2) * 10) / 10
-      pdOD = Math.round((pdBinoc / 2) * 10) / 10
+    // DP monoculaires + binoculaire — distance euclidienne (core)
+    const { pdOD, pdOG, pdBinoc } = calculateMonocularPD(leftEye, rightEye, bridge, scale)
+
+    // Sans pont posé : repli historique = moitié de la DP binoculaire
+    let monoOG = pdOG ?? null
+    let monoOD = pdOD ?? null
+    if (monoOG == null && monoOD == null && pdBinoc) {
+      monoOG = Math.round((pdBinoc / 2) * 10) / 10
+      monoOD = monoOG
     }
 
     const boxOGOk = boxOG && boxOG.width > 0 && boxOG.height > 0
     const boxODOk = boxOD && boxOD.width > 0 && boxOD.height > 0
     const frameOk = boxOGOk || boxODOk
 
-    // Le Pont (EIV) se calcule sur le Boxing (Bord nasal OG - Bord nasal OD)
-    let pontMm = null
-    if (boxOGOk && boxODOk) {
-      // boxOG = gauche image (verre OD), boxOD = droite image (verre OG)
-      const nasalOD = boxOG.x + boxOG.width
-      const nasalOG = boxOD.x
-      const gapPx = Math.abs(nasalOG - nasalOD)
-      pontMm = Math.round(gapPx * scale * 10) / 10
-    }
-
-    let largeurOG = null, largeurOD = null
-    let hauteurCalibre = null
-    let hauteurMontageOG = null, hauteurMontageOD = null
-
-    if (boxOGOk) {
-      largeurOD = Math.round(boxOG.width * scale * 10) / 10
-      if (leftEye) {
-        const bottomY = boxOG.y + boxOG.height / 2
-        hauteurMontageOG = Math.round(Math.abs(bottomY - leftEye.y) * scale * 10) / 10
-      }
-    }
-    if (boxODOk) {
-      largeurOG = Math.round(boxOD.width * scale * 10) / 10
-      if (rightEye) {
-        const bottomY = boxOD.y + boxOD.height / 2
-        hauteurMontageOD = Math.round(Math.abs(bottomY - rightEye.y) * scale * 10) / 10
-      }
-    }
-    if (boxOGOk && boxODOk) {
-      hauteurCalibre = Math.round(((boxOG.height + boxOD.height) / 2) * scale * 10) / 10
-    } else if (boxOGOk) {
-      hauteurCalibre = Math.round(boxOG.height * scale * 10) / 10
-    } else if (boxODOk) {
-      hauteurCalibre = Math.round(boxOD.height * scale * 10) / 10
-    }
+    // Pont (EIV) + dimensions boxing — core, testé
+    const pontMm = calculatePont(boxOG, boxOD, scale)
+    const { largeurOD, largeurOG, hauteurCalibre, hauteurMontageOG, hauteurMontageOD } =
+      calculateBoxingDimensions(boxOG, boxOD, leftEye, rightEye, scale)
 
     return {
       pd: pdBinoc || 0,
-      pdMonoculaireGauche: pdOG ?? 0,
-      pdMonoculaireDroit: pdOD ?? 0,
+      pdMonoculaireGauche: monoOG ?? 0,
+      pdMonoculaireDroit: monoOD ?? 0,
       pont: pontMm,
       pontOk, pupilsOk, frameOk,
       largeurOG, largeurOD, hauteurCalibre, hauteurMontageOG, hauteurMontageOD,
@@ -273,18 +191,13 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   const [, setLockVersion] = useState(0)
   const toggleLock = (id) => {
     // Duplication rectangle si on verrouille un box et que l'autre n'existe pas encore
+    // Miroir par rapport au centre du nez — logique core (mirrorBox), testée.
     if (id === 'boxOG' && boxOG && !boxOD && !boxDuplicated.current) {
-      const bridgeCenterX = WestCenterX(bridge, boxOG)
-      const offset = boxOG.x - bridgeCenterX
-      const mirrorX = bridgeCenterX - offset
-      setBoxOD({ x: mirrorX, y: boxOG.y, width: boxOG.width, height: boxOG.height })
+      setBoxOD(mirrorBox(bridge, boxOG))
       boxDuplicated.current = true
     }
     if (id === 'boxOD' && boxOD && !boxOG && !boxDuplicated.current) {
-      const bridgeCenterX = WestCenterX(bridge, boxOD)
-      const offset = boxOD.x - bridgeCenterX
-      const mirrorX = bridgeCenterX - offset
-      setBoxOG({ x: mirrorX, y: boxOD.y, width: boxOD.width, height: boxOD.height })
+      setBoxOG(mirrorBox(bridge, boxOD))
       boxDuplicated.current = true
     }
     const next = new Set(lockedRef.current)
@@ -303,11 +216,6 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   }
   // isLocked n'a pas besoin de useCallback — lockVersion dans la closure force recalcul
   const isLocked = (id) => lockedRef.current.has(id)
-
-  const WestCenterX = (bridgePt, fallbackBox) => {
-    if (bridgePt) return bridgePt.x
-    return fallbackBox.x
-  }
 
   // ── Drag state for markers ──
   const [dragMarker, setDragMarker] = useState(null)
@@ -538,6 +446,13 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
         <div className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
           style={{ background: 'var(--color-red-bg)', color: 'var(--color-red)', border: '1px solid rgba(255,107,107,0.25)' }}>
           <span>Détection automatique impossible — Placez les repères manuellement</span>
+        </div>
+      )}
+      {faceDetectStatus === 'success' && faceEstimate && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
+          style={{ background: 'rgba(201,160,90,0.12)', color: 'var(--color-gold)', border: '1px solid rgba(201,160,90,0.25)' }}>
+          <AlertTriangle size={14} />
+          <span>Repères estimés par proportion (aucun visage détecté) — repositionnez-les précisément</span>
         </div>
       )}
 

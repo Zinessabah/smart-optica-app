@@ -6,6 +6,7 @@ POST /api/analyze  →  reçoit une image, retourne les coordonnées des repère
 
 import io
 import logging
+import math
 import numpy as np
 import cv2
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
@@ -86,10 +87,21 @@ class ProfileResult(BaseModel):
     height: int
     lateral_markers: list  # 2 points [(x1,y1), (x2,y2)]
     scale_mm_per_px: float
+    # Échelle de MESURE du profil : auto-calibrée sur les 2 mires latérales
+    # (25.0 mm entre leurs centres). L'échelle frontale ne sert qu'à guider
+    # la détection — les 2 photos peuvent avoir des échelles différentes.
+    scale_source: str = "lateral_markers"
+    frontal_scale_mm_per_px: Optional[float] = None  # échelle frontale reçue (guide détection)
+    scale_delta_pct: Optional[float] = None          # écart % entre les 2 échelles
+    lateral_spacing_mm: Optional[float] = None       # espacement réel des mires détectées (35/25)
     pantoscopic_angle: Optional[float] = None  # degrés
     vertex_distance: Optional[float] = None  # mm
     face_detected: bool = False
     temple_angle: Optional[float] = None  # degrés, angle de la branche
+    temple_line: Optional[list] = None  # segment branche [(x1,y1),(x2,y2)] — placement auto UI
+    lens_line: Optional[list] = None  # segment plan du verre (⊥ aux mires) — placement auto UI
+    cornea: Optional[dict] = None  # position iris (pixels) — placement auto UI
+    vertex_line: Optional[list] = None  # segment cornée→face arrière verre [(x1,y1),(x2,y2)]
 
 
 def decode_image(data: bytes) -> np.ndarray:
@@ -110,12 +122,219 @@ def to_px(pt, w, h):
 CALIB_MARKER_SPACING_MM = 50.0
 
 
+def _checkerboard_score_at(integral, w, h, cx, cy, quadrant_offset, sample_size):
+    """Score du motif damier 2×2 centré sur (cx, cy).
+
+    Motif : NW=noir, NE=blanc, SW=blanc, SE=noir → NW≈SE sombres, NE≈SW claires.
+    Retourne max(0, contraste_adjacent − contraste_diagonal/2), et 0 si le motif
+    n'a pas 2 quadrants sombres + 2 clairs (rejette les bords de disques pleins).
+    """
+    def rect_mean(px, py, size):
+        px0 = max(0, min(w, px - size))
+        px1 = min(w, px + size + 1)
+        py0 = max(0, min(h, py - size))
+        py1 = min(h, py + size + 1)
+        area = (px1 - px0) * (py1 - py0)
+        if area <= 0:
+            return 128.0
+        total = (integral[py1, px1] - integral[py0, px1] -
+                 integral[py1, px0] + integral[py0, px0])
+        return total / area
+
+    nw = rect_mean(cx - quadrant_offset, cy - quadrant_offset, sample_size)
+    ne = rect_mean(cx + quadrant_offset, cy - quadrant_offset, sample_size)
+    sw = rect_mean(cx - quadrant_offset, cy + quadrant_offset, sample_size)
+    se = rect_mean(cx + quadrant_offset, cy + quadrant_offset, sample_size)
+
+    # Un vrai damier est BIMODAL : 2 quadrants sombres + 2 clairs, bien séparés.
+    vals = sorted([nw, ne, sw, se])
+    median = (vals[1] + vals[2]) / 2
+    dark = sum(1 for v in (nw, ne, sw, se) if v < median - 15)
+    bright = sum(1 for v in (nw, ne, sw, se) if v > median + 15)
+    if dark < 2 or bright < 2:
+        return 0.0
+
+    # Corrélation normalisée avec le motif damier (NW≈SE sombres, NE≈SW claires).
+    # Un vrai damier → |corr| ≈ 1 ; un bord de disque ou un gradient (0,67,182,240)
+    # → corr ≈ 0. Le signe tolère l'étiquette imprimée inversée.
+    c = np.array([nw, ne, sw, se], dtype=np.float64) - (nw + ne + sw + se) / 4.0
+    n = np.linalg.norm(c)
+    if n == 0:
+        return 0.0
+    corr = float(np.dot(c, np.array([-1.0, 1.0, 1.0, -1.0]))) / (n * 2.0)
+    if abs(corr) < 0.7:  # vrai damier ≈ 1 même flouté ; bord de disque ≤ ~0.5
+        return 0.0
+
+    diag1 = abs(nw - se)
+    diag2 = abs(ne - sw)
+    diag = diag1 + diag2
+    adj = abs(nw - ne) + abs(nw - sw) + abs(se - ne) + abs(se - sw)
+    return max(0.0, adj - diag * 0.5)
+
+
+def _scan_calibration_scores(gray, integral, w, h, x0, x1, clip_y,
+                             quadrant_offset, y_margin=0):
+    """Corrélation damier le long d'une bande horizontale.
+
+    Pour chaque X, on retient le MAX vertical sur la fenêtre
+    [clip_y − y_margin, clip_y + y_margin] : robuste au placement vertical
+    du clip (le niveau des sourcils n'est qu'une approximation).
+    """
+    sample_size = max(2, quadrant_offset // 3)
+    strip_h = max(3, quadrant_offset)
+    half_h = strip_h // 2
+    n = x1 - x0
+    scores = np.zeros(n, dtype=np.float32)
+    step = max(1, quadrant_offset // 2)
+    y_offsets = list(range(-y_margin, y_margin + 1, step))
+    if not y_offsets:
+        y_offsets = [0]
+
+    for i in range(n):
+        cx = x0 + i
+        best = 0.0
+        for off in y_offsets:
+            cy = clip_y + off
+            s, cnt = 0.0, 0
+            for dy in range(-half_h, half_h + 1):
+                v = _checkerboard_score_at(integral, w, h, cx, cy + dy,
+                                           quadrant_offset, sample_size)
+                if v > 0:
+                    s += v
+                    cnt += 1
+            if cnt:
+                v = s / cnt
+                if v > best:
+                    best = v
+        scores[i] = best
+    return scores
+
+
+def _find_calibration_triple(peaks, expected_spacing, max_peaks=15):
+    """Meilleur triplet de 3 pics espacés de ≈ expected_spacing."""
+    if len(peaks) < 3:
+        return None
+    top = sorted(peaks, key=lambda p: p["score"], reverse=True)[:max_peaks]
+    best, best_total = None, 0
+    for i in range(len(top)):
+        for j in range(i + 1, len(top)):
+            for k in range(j + 1, len(top)):
+                a, b, c = sorted([top[i], top[j], top[k]], key=lambda p: p["x"])
+                d1 = b["x"] - a["x"]
+                d2 = c["x"] - b["x"]
+                if d1 < 5 or d2 < 5:
+                    continue
+                spacing_err = abs(d1 - expected_spacing) + abs(d2 - expected_spacing)
+                spacing_score = max(0, 200 - spacing_err)
+                total = a["score"] + b["score"] + c["score"] + spacing_score * 2
+                if total > best_total:
+                    best_total = total
+                    best = [a, b, c]
+    return best
+
+
+def _refine_marker_y(integral, w, h, x, y0, quadrant_offset, sample_size, search):
+    """Y donnant le meilleur score damier autour de y0 (placement vertical précis)."""
+    best_y, best_v = y0, -1.0
+    for cy in range(max(0, y0 - search), min(h - 1, y0 + search) + 1):
+        v = _checkerboard_score_at(integral, w, h, x, cy, quadrant_offset, sample_size)
+        if v > best_v:
+            best_v, best_y = v, cy
+    return best_y
+
+
+def _find_calibration_triple_2d(cands: list, exp_px):
+    """Triplet de 3 candidats COLINÉAIRES et ÉQUIDISTANTS (≈ exp_px entre chacun)."""
+    best, best_score = None, float("inf")
+    for i in range(len(cands)):
+        for j in range(i + 1, len(cands)):
+            for k in range(j + 1, len(cands)):
+                a, b, c = sorted([cands[i], cands[j], cands[k]], key=lambda p: p["x"])
+                d1 = math.hypot(b["x"] - a["x"], b["y"] - a["y"])
+                d2 = math.hypot(c["x"] - b["x"], c["y"] - b["y"])
+                # Espacement plausible (50 mm à une échelle réaliste) + équidistance
+                if d1 < 60 or d2 < 60 or d1 > 500 or d2 > 500:
+                    continue
+                if abs(d1 - d2) > max(d1, d2) * 0.15:
+                    continue
+                # Colinéarité : distance perpendiculaire du point central à la
+                # droite (a,c) < 8% de l'envergure (tolère une légère courbure)
+                cross = ((c["x"] - a["x"]) * (b["y"] - a["y"]) -
+                         (c["y"] - a["y"]) * (b["x"] - a["x"]))
+                span = math.hypot(c["x"] - a["x"], c["y"] - a["y"])
+                if span > 0 and abs(cross) / span > span * 0.08:
+                    continue
+                score = abs(d1 - d2)
+                score -= (a["score"] + b["score"] + c["score"]) / 300.0
+                if score < best_score:
+                    best_score = score
+                    best = [a, b, c]
+    return best
+
+
+def _detect_calibration_checkerboards(gray: np.ndarray, integral, w: int, h: int):
+    """Scan damier 2D complet → triplet de 3 mires faciales (sans visage requis).
+
+    Les 3 mires faciales (damier 2×2, 50 mm entre chacune) sont cherchées sur
+    toute l'image, à plusieurs tailles de motif. Retourne [(x,y)×3] triés par X
+    ou [] si aucun triplet colinéaire n'est trouvé.
+    """
+    best = None  # (markers, score_total)
+    for qo in (6, 8, 10, 12):
+        step = max(3, qo // 2)
+        pts = _scan_checkerboard_grid(gray, integral, w, h, 0, 0, w, h, qo, step)
+        if len(pts) < 3:
+            continue
+        merge_r = qo + step
+        cands = []
+        for cx, cy, v in pts:
+            found = False
+            for c in cands:
+                if abs(cx - c["x"]) <= merge_r and abs(cy - c["y"]) <= merge_r:
+                    if v > c["score"]:
+                        c["x"], c["y"], c["score"] = cx, cy, v
+                    found = True
+                    break
+            if not found:
+                cands.append({"x": cx, "y": cy, "score": v})
+        if len(cands) < 3:
+            continue
+        triple = _find_calibration_triple_2d(cands, None)
+        if triple:
+            total = sum(c["score"] for c in triple)
+            if best is None or total > best[1]:
+                best = (sorted(triple, key=lambda p: p["x"]), total)
+    if not best:
+        return []
+    return best[0]  # [{"x","y","score"} ×3], triés par X
+
+
+def _finalize_calibration(markers: list, w: int, h: int, face_used: bool = True) -> dict:
+    """Construit la réponse standard à partir de 3 marqueurs (envergure 100 mm)."""
+    total_px = math.hypot(markers[2]["x"] - markers[0]["x"],
+                          markers[2]["y"] - markers[0]["y"])
+    scale = (CALIB_MARKER_SPACING_MM * 2) / total_px if total_px > 0 else 0
+    avg_spacing = total_px / 2
+    conf_sum = sum(m.get("score", 0) for m in markers)
+    confidence = min(1.0, conf_sum / 1800.0) if conf_sum else 0.7
+    return {
+        "markers": [{"x": int(m["x"]), "y": int(m["y"])} for m in markers],
+        "scale_mm_per_px": round(scale, 6),
+        "spacing_px": round(avg_spacing, 1),
+        "detection_confidence": round(confidence, 3),
+        "face_used": face_used,
+        "width": w,
+        "height": h,
+    }
+
+
 def detect_calibration_markers(image: np.ndarray) -> dict:
     """
     Détecte les 3 mires de calibration (damier 2×2) sur le clip frontal.
     
-    Approche 1D : corrélation directe du motif damier le long d'une bande horizontale.
-    On connaît les dimensions exactes : Ø intérieur 10mm, offset quadrants 2.5mm, espacement 50mm.
+    Approche 1D : corrélation directe du motif damier le long d'une bande horizontale
+    (guidée par le visage si présent). Sans visage : scan damier 2D complet, puis
+    fallback Hough/contours. Dimensions connues : Ø intérieur 10mm, espacement 50mm.
     """
     h, w = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -127,7 +346,10 @@ def detect_calibration_markers(image: np.ndarray) -> dict:
     face_detected = bool(face_result.face_landmarks)
 
     if not face_detected:
-        log.info("Calibration: no face detected, falling back")
+        log.info("Calibration: pas de visage — scan damier 2D, puis Hough")
+        markers = _detect_calibration_checkerboards(gray, cv2.integral(gray), w, h)
+        if len(markers) == 3:
+            return _finalize_calibration(markers, w, h, face_used=False)
         return _fallback_hough(gray, h, w)
 
     landmarks = face_result.face_landmarks[0]
@@ -162,199 +384,110 @@ def detect_calibration_markers(image: np.ndarray) -> dict:
             left_eye = landmarks[468] if count > 468 else landmarks[33]
             right_eye = landmarks[473] if count > 473 else landmarks[263]
 
-    # ── 2. Échelle via IPD ──
+    # ── 2. Échelle via IPD — multi-hypothèses (56–70 mm, DP adulte) ──
+    # La DP réelle varie (50–75 mm) : au lieu de supposer 63 mm fixes, on teste
+    # plusieurs échelles et on garde le meilleur triplet obtenu.
     ipd_px = abs(right_eye.x - left_eye.x) * w
-    mm_per_px = 63.0 / ipd_px if ipd_px > 20 else 0.3
-
-    # Dimensions connues en pixels
-    quadrant_offset = max(3, int(2.5 / mm_per_px))   # 2.5mm → px
-    expected_spacing = int(50.0 / mm_per_px)           # 50mm → px
+    if ipd_px > 20:
+        ipd_candidates = [56.0, 60.0, 63.0, 66.0, 70.0]
+    else:
+        ipd_candidates = [None]  # IPD illisible → échelle par défaut
 
     # Position Y : niveau des sourcils
     brow_y = min(
         landmarks[105].y if count > 105 else landmarks[33].y,
         landmarks[334].y if count > 334 else landmarks[263].y,
     )
-    clip_y = int(brow_y * h) - quadrant_offset
 
-    # Plage X : entre les tempes
+    # Plage X : entre les tempes (élargie pour capturer les marqueurs extérieurs)
     temple_l = landmarks[234].x if count > 234 else landmarks[33].x
     temple_r = landmarks[454].x if count > 454 else landmarks[263].x
-    x0 = max(0, int(temple_l * w))
-    x1 = min(w, int(temple_r * w))
-
-    # Marge : on élargit pour capturer les marqueurs extérieurs
-    x0 = max(0, x0 - int(expected_spacing * 0.2))
-    x1 = min(w, x1 + int(expected_spacing * 0.2))
-
-    log.info(f"Calibration 1D: scale={mm_per_px:.4f}mm/px offset={quadrant_offset}px "
-             f"spacing={expected_spacing}px strip_y={clip_y} x=[{x0},{x1}]")
-
-    # ── 3. Corrélation 1D le long de la bande horizontale ──
-    # On scanne chaque position X et on calcule le score damier
-    strip_h = max(4, quadrant_offset)  # on moyenne sur une petite hauteur
-    half_h = strip_h // 2
-    scores = np.zeros(x1 - x0, dtype=np.float32)
 
     integral = cv2.integral(gray)
-    def rect_mean(px, py, size):
-        px0 = max(0, px - size)
-        px1 = min(w, px + size + 1)
-        py0 = max(0, py - size)
-        py1 = min(h, py + size + 1)
-        area = (px1 - px0) * (py1 - py0)
-        if area <= 0:
-            return 128.0
-        total = (integral[py1, px1] - integral[py0, px1] -
-                 integral[py1, px0] + integral[py0, px0])
-        return total / area
+    best_result = None
+    best_conf = 0.0
 
-    sample_size = max(2, quadrant_offset // 3)
+    for ipd_mm in ipd_candidates:
+        mm_per_px = (ipd_mm / ipd_px) if ipd_mm else 0.3
+        quadrant_offset = max(3, int(2.5 / mm_per_px))   # 2.5mm → px
+        expected_spacing = int(50.0 / mm_per_px)          # 50mm → px
+        clip_y = int(brow_y * h) - quadrant_offset
+        y_margin = max(8, quadrant_offset * 2)            # bande verticale de recherche
 
-    for i in range(len(scores)):
-        cx = x0 + i
-        cy_base = clip_y
+        x0 = max(0, int(temple_l * w) - int(expected_spacing * 0.2))
+        x1 = min(w, int(temple_r * w) + int(expected_spacing * 0.2))
 
-        # Moyenner verticalement sur strip_h pixels
-        score_sum = 0.0
-        count_y = 0
-        for dy in range(-half_h, half_h + 1):
-            cy = cy_base + dy
-            nw = rect_mean(cx - quadrant_offset, cy - quadrant_offset, sample_size)
-            ne = rect_mean(cx + quadrant_offset, cy - quadrant_offset, sample_size)
-            sw = rect_mean(cx - quadrant_offset, cy + quadrant_offset, sample_size)
-            se = rect_mean(cx + quadrant_offset, cy + quadrant_offset, sample_size)
+        log.info(f"Calibration 1D (IPD {ipd_mm or 63.0:.0f}mm): scale={mm_per_px:.4f}mm/px "
+                 f"offset={quadrant_offset}px spacing={expected_spacing}px "
+                 f"strip_y={clip_y}±{y_margin} x=[{x0},{x1}]")
 
-            # Motif : NW=noir, NE=blanc, SW=blanc, SE=noir
-            # → NW≈SE (sombres), NE≈SW (claires), adjacents contrastés
-            diag = abs(nw - se) + abs(ne - sw)
-            adj  = abs(nw - ne) + abs(nw - sw) + abs(se - ne) + abs(se - sw)
-            contrast = adj - diag * 0.5
-            if contrast > 0:
-                score_sum += contrast
-                count_y += 1
+        scores = _scan_calibration_scores(gray, integral, w, h, x0, x1,
+                                          clip_y, quadrant_offset, y_margin)
+        # Lissage 1D (cv2 — évite la dépendance scipy)
+        smoothed = cv2.GaussianBlur(scores.reshape(1, -1), (0, 0),
+                                    quadrant_offset / 4)[0]
 
-        if count_y > 0:
-            scores[i] = score_sum / count_y
+        peaks = []
+        for i in range(1, len(smoothed) - 1):
+            if smoothed[i] > smoothed[i - 1] and smoothed[i] >= smoothed[i + 1]:
+                if smoothed[i] > 5:  # seuil minimal
+                    peaks.append({"x": x0 + i, "score": float(smoothed[i])})
 
-    # ── 3. Trouver les 3 pics espacés de ~expected_spacing ──
-    # Lissage de la courbe de score
-    from scipy.ndimage import gaussian_filter1d
-    smoothed = gaussian_filter1d(scores.astype(np.float64), sigma=quadrant_offset / 4)
+        triple = _find_calibration_triple(peaks, expected_spacing)
+        if not triple:
+            log.info(f"  IPD {ipd_mm or 63.0:.0f}mm: pas de triplet valide")
+            continue
 
-    # Trouver tous les maxima locaux
-    peaks = []
-    for i in range(1, len(smoothed) - 1):
-        if smoothed[i] > smoothed[i-1] and smoothed[i] >= smoothed[i+1]:
-            if smoothed[i] > 5:  # seuil minimal
-                peaks.append({"x": x0 + i, "score": float(smoothed[i])})
+        triple.sort(key=lambda p: p["x"])
+        avg_spacing = ((triple[1]["x"] - triple[0]["x"]) +
+                       (triple[2]["x"] - triple[1]["x"])) / 2
+        total_px = triple[2]["x"] - triple[0]["x"]
+        scale = (CALIB_MARKER_SPACING_MM * 2) / total_px if total_px > 0 else 0
+        confidence = min(1.0, sum(m["score"] for m in triple) / 400)
 
-    if len(peaks) < 3:
-        log.info(f"Calibration: only {len(peaks)} peaks, falling back")
-        return _fallback_hough(gray, h, w)
+        if confidence > best_conf:
+            best_conf = confidence
+            best_result = {
+                "markers": [{"x": int(m["x"]), "y": clip_y, "score": m["score"]}
+                            for m in triple],
+                "avg_spacing": avg_spacing,
+                "total_px": total_px,
+                "scale": scale,
+                "confidence": confidence,
+                "quadrant_offset": quadrant_offset,
+            }
 
-    # Trier par score décroissant
-    peaks.sort(key=lambda p: p["score"], reverse=True)
-    top_peaks = peaks[:15]
+        if confidence >= 0.8:  # bonne détection → on s'arrête là
+            break
 
-    # Chercher le meilleur triplet avec espacement ≈ expected_spacing
-    best_triple = None
-    best_score = 0
-    for i in range(len(top_peaks)):
-        for j in range(i + 1, len(top_peaks)):
-            for k in range(j + 1, len(top_peaks)):
-                a, b, c = sorted([top_peaks[i], top_peaks[j], top_peaks[k]], key=lambda p: p["x"])
-                d1 = b["x"] - a["x"]
-                d2 = c["x"] - b["x"]
-                if d1 < 5 or d2 < 5:
-                    continue
-                # Pénaliser l'écart à l'espacement attendu
-                spacing_err = abs(d1 - expected_spacing) + abs(d2 - expected_spacing)
-                spacing_score = max(0, 200 - spacing_err)
-                quality = a["score"] + b["score"] + c["score"]
-                total = quality + spacing_score * 2
-                if total > best_score:
-                    best_score = total
-                    best_triple = [a, b, c]
-
-    if not best_triple:
-        log.info("Calibration: no valid triple")
+    if best_result is None:
+        log.info("Calibration: aucun triplet valide (multi-IPD) — scan damier 2D, puis Hough")
+        markers2d = _detect_calibration_checkerboards(gray, integral, w, h)
+        if len(markers2d) == 3:
+            return _finalize_calibration(markers2d, w, h, face_used=True)
         return _fallback_hough(gray, h, w)
 
     # ── 4. Résultat ──
-    best_triple.sort(key=lambda p: p["x"])
-    # Ajuster Y au niveau du pic pour chaque marqueur
-    for m in best_triple:
-        m["y"] = clip_y
+    # Placement Y précis : recherche locale du meilleur score damier par mire
+    qo = best_result["quadrant_offset"]
+    sample_size = max(2, qo // 3)
+    for m in best_result["markers"]:
+        m["y"] = _refine_marker_y(integral, w, h, m["x"], m["y"], qo,
+                                  sample_size, search=qo * 2)
 
-    avg_spacing = ((best_triple[1]["x"] - best_triple[0]["x"]) +
-                   (best_triple[2]["x"] - best_triple[1]["x"])) / 2
-    total_px = best_triple[2]["x"] - best_triple[0]["x"]
-    scale = (CALIB_MARKER_SPACING_MM * 2) / total_px if total_px > 0 else 0
-    confidence = min(1.0, sum(m["score"] for m in best_triple) / 400)
-
-    log.info(f"Calibration DONE: markers={[(m['x'],m['y']) for m in best_triple]} "
-             f"span={total_px}px spacing={avg_spacing:.0f}px scale={scale:.4f}mm/px conf={confidence:.2f}")
+    log.info(f"Calibration DONE: markers={[(m['x'], m['y']) for m in best_result['markers']]} "
+             f"span={best_result['total_px']}px spacing={best_result['avg_spacing']:.0f}px "
+             f"scale={best_result['scale']:.4f}mm/px conf={best_result['confidence']:.2f}")
 
     return {
-        "markers": [{"x": int(m["x"]), "y": int(m["y"])} for m in best_triple],
-        "scale_mm_per_px": round(scale, 6),
-        "spacing_px": round(avg_spacing, 1),
-        "detection_confidence": round(confidence, 3),
+        "markers": [{"x": m["x"], "y": m["y"]} for m in best_result["markers"]],
+        "scale_mm_per_px": round(best_result["scale"], 6),
+        "spacing_px": round(best_result["avg_spacing"], 1),
+        "detection_confidence": round(best_result["confidence"], 3),
         "face_used": True,
         "width": w,
         "height": h,
     }
-
-
-def _find_best_triple(candidates: list, estimated=None) -> list:
-    """Trouve le meilleur triplet de 3 marqueurs : alignés horizontalement, écartement uniforme."""
-    if len(candidates) < 3:
-        return []
-    candidates.sort(key=lambda c: c["score"], reverse=True)
-    top = candidates[:15]
-    sorted_x = sorted(top, key=lambda c: c["x"])
-
-    best_triple = None
-    best_score = 0
-
-    for i in range(len(sorted_x)):
-        for j in range(i + 1, len(sorted_x)):
-            for k in range(j + 1, len(sorted_x)):
-                a, b, c = sorted_x[i], sorted_x[j], sorted_x[k]
-
-                # Alignement vertical strict
-                y_mean = (a["y"] + b["y"] + c["y"]) / 3
-                y_dev = abs(a["y"] - y_mean) + abs(b["y"] - y_mean) + abs(c["y"] - y_mean)
-                if y_dev > 25:
-                    continue
-                if not (a["x"] < b["x"] < c["x"]):
-                    continue
-
-                d1 = b["x"] - a["x"]   # gauche→centre
-                d2 = c["x"] - b["x"]   # centre→droite
-                if d1 < 8 or d2 < 8:
-                    continue
-
-                # Contrainte d'espacement uniforme (50mm entre chaque)
-                d_avg = (d1 + d2) / 2
-                spacing_ratio = max(d1, d2) / max(1, min(d1, d2)) if min(d1, d2) > 0 else 999
-                if spacing_ratio > 1.6:  # trop déséquilibré
-                    continue
-
-                alignment_score = max(0, 50 - y_dev * 2)
-                spacing_score = max(0, 150 - abs(d1 - d2) * 3)  # pénalise l'écart
-                quality_score = a["score"] + b["score"] + c["score"]
-                composite = quality_score + spacing_score * 2 + alignment_score
-
-                if composite > best_score:
-                    best_score = composite
-                    best_triple = [a, b, c]
-
-    if best_triple:
-        best_triple.sort(key=lambda p: p["x"])
-        return best_triple
-    return []
 
 
 def _fallback_hough(gray: np.ndarray, h: int, w: int) -> dict:
@@ -667,46 +800,262 @@ async def analyze(file: UploadFile = File(...)):
     )
 
 
-# ── Détection des 2 marqueurs latéraux du clip ──
+# ── Détection des mires latérales du clip ──
+# Clip ACTUEL (celui utilisé) : 3 mires faciales (damier, 50 mm) + 2 mires
+# latérales = 2 CERCLES NOIRS OPAQUES, Ø 4 mm, distance entre centres = 25 mm.
+# Chemin de détection PRINCIPAL : cercles noirs (BlobDetector + contours/Otsu).
+# Nouveau design (design/clip_reference_v3/v4.scad) : mires latérales damier 2×2
+# à 35 mm le long du bras — conservé en secours.
 LATERAL_MARKER_DIAMETER_MM = 4.0
-LATERAL_MARKER_SPACING_MM = 25.0
-MARKER_AREA_RATIO = (LATERAL_MARKER_DIAMETER_MM ** 2) / (LATERAL_MARKER_SPACING_MM ** 2)
-# Ratio attendu : diamètre / espacement ≈ 4/25 = 0.16
+LATERAL_MARKER_SPACING_MM = 25.0      # clip actuel : 2 cercles noirs, centres à 25 mm
+LATERAL_MARKER_SPACING_MM_NEW = 35.0  # nouveau design v3/v4 : 35 mm le long du bras
+# Règle métrologique : si l'échelle auto (mires latérales) s'écarte de plus de ce
+# % par rapport à l'échelle manuelle (calibration frontale cliquée), la détection
+# latérale est jugée non fiable → on mesure avec l'ÉCHELLE MANUELLE.
+SCALE_MISMATCH_THRESHOLD_PCT = 15.0
 
 
-def detect_lateral_markers(image: np.ndarray, known_scale: Optional[float] = None) -> list:
+def _scan_checkerboard_grid(gray, integral, w, h, x0, y0, x1, y1,
+                            quadrant_offset, step):
+    """Score damier 2×2 sur une grille 2D dans une ROI.
+
+    Retourne une liste de (cx, cy, score) pour les points au-dessus du seuil.
     """
-    Détecte les 2 cercles noirs (4mm, espacés de 25mm) sur la face latérale du clip.
+    sample_size = max(2, quadrant_offset // 3)
+    pts = []
+    for cy in range(y0, y1, step):
+        for cx in range(x0, x1, step):
+            v = _checkerboard_score_at(integral, w, h, cx, cy,
+                                       quadrant_offset, sample_size)
+            if v > 8:
+                pts.append((cx, cy, float(v)))
+    return pts
 
-    Si known_scale est fourni (mm/px depuis la calibration frontale),
-    la recherche est contrainte à la taille et l'espacement attendus.
 
-    Retourne [(x1, y1), (x2, y2)] en pixels, ordonnés du haut vers le bas.
-    Retourne [] si la détection échoue.
+def _find_best_checkerboard_pair(cands: list, exp_px):
+    """Meilleure paire de mires damier : distance ≈ attendue, scores élevés."""
+    best_pair, best_score = None, float("inf")
+    for i in range(len(cands)):
+        for j in range(i + 1, len(cands)):
+            d = math.hypot(cands[i]["x"] - cands[j]["x"],
+                           cands[i]["y"] - cands[j]["y"])
+            if exp_px:
+                if abs(d - exp_px) > exp_px * 0.35:  # tolérance ±35%
+                    continue
+                score = abs(d - exp_px) / exp_px
+            else:
+                if d < 15:
+                    continue
+                score = 0.0
+            # Bonus pour des scores damier élevés (normalisé)
+            score -= (cands[i]["score"] + cands[j]["score"]) / 400.0
+            if score < best_score:
+                best_score = score
+                best_pair = (cands[i], cands[j])
+    return best_pair
+
+
+def _detect_lateral_checkerboard_pair(gray, integral, w, h, roi, scale,
+                                      spacings=None):
+    """Détecte une paire de mires DAMIER 2×2 dans la ROI (segment du bras).
+
+    Essaie plusieurs tailles de motif (quadrant_offset) et plusieurs espacements
+    (35 mm design actuel, 25 mm legacy). Retourne (markers, spacing_mm) ou (None, None).
     """
-    h, w = image.shape[:2]
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-    # Dimensions attendues si l'échelle est connue
-    if known_scale and known_scale > 0:
-        expected_spacing = int(25.0 / known_scale)
-        expected_radius = int(2.0 / known_scale)   # rayon = 2mm
-        log.info(f"  Marqueurs latéraux: scale={known_scale:.4f}mm/px spacing={expected_spacing}px r={expected_radius}px")
+    x0, y0, x1, y1 = roi
+    if scale and scale > 0:
+        # Motif latéral Ø 4 mm → quadrants de 2 mm → décalage d'échantillonnage
+        # = 1 mm (demi-quadrant), comme pour les mires faciales (2.5 mm).
+        qo_list = [max(3, int(1.0 / scale))]
     else:
-        expected_spacing = None
-        expected_radius = None
+        qo_list = [3, 4, 6, 8, 10]             # taille inconnue → scan multi-échelle
+    if spacings is None:
+        spacings = [LATERAL_MARKER_SPACING_MM, LATERAL_MARKER_SPACING_MM_NEW]  # 25, 35
 
-    # ROI : le clip latéral est sur la tempe droite, dans la moitié droite de l'image
-    # ── Photo de profil droit : visage à gauche, tempe/clip à droite ──
-    roi_x0 = int(w * 0.55)   # 55% depuis la gauche
-    roi_x1 = int(w * 0.90)   # 90%
-    roi_y0 = int(h * 0.20)   # 20% depuis le haut
-    roi_y1 = int(h * 0.65)   # 65%
+    best = None  # (markers, spacing_mm, score_total)
+    for qo in qo_list:
+        step = max(2, qo // 2)
+        pts = _scan_checkerboard_grid(gray, integral, w, h, x0, y0, x1, y1, qo, step)
+        if len(pts) < 2:
+            continue
+        # NMS local : ne garder que le meilleur score par cellule. Le rayon couvre
+        # la période du motif (2×qo) pour fusionner les « sous-centres » des coins.
+        merge_r = qo + step
+        cands = []
+        for cx, cy, v in pts:
+            found = False
+            for c in cands:
+                if abs(cx - c["x"]) <= merge_r and abs(cy - c["y"]) <= merge_r:
+                    if v > c["score"]:
+                        c["x"], c["y"], c["score"] = cx, cy, v
+                    found = True
+                    break
+            if not found:
+                cands.append({"x": cx, "y": cy, "score": v})
+        if len(cands) < 2:
+            continue
+        for spacing_mm in spacings:
+            exp_px = (spacing_mm / scale) if scale and scale > 0 else None
+            pair = _find_best_checkerboard_pair(cands, exp_px)
+            if pair and (best is None or pair[0]["score"] + pair[1]["score"] > best[2]):
+                markers = [(pair[0]["x"], pair[0]["y"]), (pair[1]["x"], pair[1]["y"])]
+                best = (markers, spacing_mm, pair[0]["score"] + pair[1]["score"])
+    if not best:
+        return None, None
+    # Espacement réel : le plus proche de la distance mesurée (anti-aliasing)
+    markers = best[0]
+    d = math.hypot(markers[1][0] - markers[0][0], markers[1][1] - markers[0][1])
+    if scale and scale > 0:
+        est_mm = round(d * scale, 2)
+        # Privilégie le clip actuel (25 mm) en cas d'égalité
+        spacing_mm = min((LATERAL_MARKER_SPACING_MM, LATERAL_MARKER_SPACING_MM_NEW),
+                         key=lambda s: (abs(s - est_mm),
+                                        s != LATERAL_MARKER_SPACING_MM))
+    else:
+        spacing_mm = best[1]
+    return markers, spacing_mm
 
-    gray_roi = gray[roi_y0:roi_y1, roi_x0:roi_x1]
-    roi_h, roi_w = gray_roi.shape
 
-    # Seuillage adaptatif pour les points noirs sur fond clair
+def _perpendicular_lens_line(markers: list, w: int, h: int, half_len: int = 90):
+    """Ligne du PLAN DU VERRE : perpendiculaire au segment des 2 mires, au milieu.
+
+    Les mires latérales sont le long du bras (≈ parallèle à la branche) : le plan
+    du verre, vu de profil, est perpendiculaire à ce segment.
+    Retourne [(x1,y1),(x2,y2)] clampé à l'image.
+    """
+    mx = (markers[0][0] + markers[1][0]) / 2
+    my = (markers[0][1] + markers[1][1]) / 2
+    dx = markers[1][0] - markers[0][0]
+    dy = markers[1][1] - markers[0][1]
+    norm = math.hypot(dx, dy) or 1.0
+    px, py = -dy / norm, dx / norm  # direction perpendiculaire
+    p1 = (int(max(0, min(w - 1, mx - px * half_len))),
+          int(max(0, min(h - 1, my - py * half_len))))
+    p2 = (int(max(0, min(w - 1, mx + px * half_len))),
+          int(max(0, min(h - 1, my + py * half_len))))
+    return [p1, p2]
+
+
+def _detect_dark_circle_candidates(gray: np.ndarray, roi: tuple,
+                                   expected_radius=None, min_contrast: float = 25.0):
+    """Filtre adapté : cercles sombres sur fond plus clair (robuste aux textures).
+
+    Pour chaque rayon, on calcule le contraste (moyenne anneau − moyenne disque) par
+    convolution ; les maxima locaux forts sont les candidats. Retourne
+    [{x, y, radius, score}] avec x/y dans l'image (ROI décalée), NMS appliqué.
+    """
+    x0, y0, x1, y1 = roi
+    g = gray[y0:y1, x0:x1].astype(np.float32)
+    rh, rw = g.shape
+    if expected_radius:
+        radii = [max(2, expected_radius - 1), expected_radius, expected_radius + 1]
+    else:
+        radii = [3, 4, 5, 6, 8]
+
+    cands = []
+    for r in radii:
+        s = r + 7
+        if 2 * s + 1 > min(rw, rh):
+            continue
+        disc = np.zeros((2 * s + 1, 2 * s + 1), np.uint8)
+        cv2.circle(disc, (s, s), r, 1, -1)
+        ring = np.zeros((2 * s + 1, 2 * s + 1), np.uint8)
+        cv2.circle(ring, (s, s), r + 7, 1, -1)
+        cv2.circle(ring, (s, s), r + 3, 0, -1)
+        dmean = cv2.filter2D(g, -1, disc.astype(np.float32) / disc.sum())
+        rmean = cv2.filter2D(g, -1, ring.astype(np.float32) / ring.sum())
+        contrast = rmean - dmean
+        maxf = cv2.dilate(contrast, np.ones((7, 7), np.uint8))
+        mask = (contrast == maxf) & (contrast > min_contrast)
+        ys, xs = np.nonzero(mask)
+        margin = s + 2
+        for x, y in zip(xs, ys):
+            if x < margin or x >= rw - margin or y < margin or y >= rh - margin:
+                continue
+            cands.append({"x": int(x) + x0, "y": int(y) + y0, "radius": r,
+                          "score": float(contrast[y, x])})
+
+    # NMS par distance ≥ somme des rayons
+    cands.sort(key=lambda c: c["score"], reverse=True)
+    out = []
+    for c in cands:
+        if all((c["x"] - o["x"]) ** 2 + (c["y"] - o["y"]) ** 2 >
+               (c["radius"] + o["radius"] + 3) ** 2 for o in out):
+            out.append(c)
+    return out
+
+
+def _find_best_lateral_pair(candidates: list, expected_spacing, expected_radius):
+    """Meilleure paire de mires latérales.
+
+    Contraintes : alignées verticalement, espacement ≈ attendu (si échelle connue),
+    rayons cohérents entre eux (les 2 mires ont le même Ø 4 mm) et proches de la
+    taille attendue quand l'échelle frontale est connue. Les candidats issus du
+    filtre adapté portent un `score` (contraste) qui départage les paires.
+    """
+    if len(candidates) < 2:
+        return None
+    candidates.sort(key=lambda c: c["y"])
+    best_pair, best_score = None, float("inf")
+    for i in range(len(candidates)):
+        for j in range(i + 1, len(candidates)):
+            dy = candidates[j]["y"] - candidates[i]["y"]
+            dx = abs(candidates[j]["x"] - candidates[i]["x"])
+
+            # Alignement : la paire doit être PLUS VERTICALE qu'horizontale.
+            # Le plan latéral (13 mm) peut être légèrement incliné dans la photo,
+            # d'où un dx non nul toléré (ex. mires à 25 mm → dy~50, dx≤50).
+            if dx > dy:
+                continue
+
+            d = math.hypot(dx, dy)
+
+            # Contrainte d'espacement si échelle connue (distance euclidienne)
+            if expected_spacing:
+                spacing_err = abs(d - expected_spacing)
+                if spacing_err > expected_spacing * 0.40:  # max ±40% d'erreur
+                    continue
+                score = spacing_err / expected_spacing
+            else:
+                # Fallback : ratio diamètre/espacement (Ø 4mm, espacement 25mm)
+                avg_radius = (candidates[i]["radius"] + candidates[j]["radius"]) / 2
+                if avg_radius == 0:
+                    continue
+                spacing_ratio = d / (2 * avg_radius)
+                score = abs(spacing_ratio - 6.25)
+
+            # Cohérence de taille entre les 2 mires (même Ø physique)
+            rmin = min(candidates[i]["radius"], candidates[j]["radius"])
+            rmax = max(candidates[i]["radius"], candidates[j]["radius"])
+            if rmax > 0:
+                score += (rmax - rmin) / rmax * 2.0
+
+            # Taille attendue quand l'échelle frontale est connue
+            if expected_radius:
+                avg_radius = (candidates[i]["radius"] + candidates[j]["radius"]) / 2
+                score += abs(avg_radius - expected_radius) / max(1.0, expected_radius)
+
+            # Bonus : contraste des candidats (vraies mires > bruit de texture)
+            score -= (candidates[i].get("score", 0) + candidates[j].get("score", 0)) / 200.0
+
+            if score < best_score:
+                best_score = score
+                best_pair = (candidates[i], candidates[j])
+
+    if best_pair is None or best_score > 4:
+        return None
+    return best_pair
+
+
+def _detect_marker_pair_in_roi(gray: np.ndarray, roi: tuple, expected_radius,
+                               expected_spacing, w: int, h: int) -> list:
+    """Détecte une paire de mires latérales dans une ROI.
+
+    BlobDetector calibré si l'échelle est connue, sinon contours avec seuils
+    fixes + Otsu (robuste à l'éclairage). Retourne [(x1,y1),(x2,y2)] ou [].
+    """
+    x0, y0, x1, y1 = roi
+    gray_roi = gray[y0:y1, x0:x1]
     blurred = cv2.GaussianBlur(gray_roi, (3, 3), 0)
 
     # Nettoyage morphologique léger
@@ -714,7 +1063,13 @@ def detect_lateral_markers(image: np.ndarray, known_scale: Optional[float] = Non
     kernel_open = np.ones((2, 2), np.uint8)
 
     candidates = []
-    
+
+    # ── 1. Filtre adapté : cercles sombres sur fond clair (robuste aux textures) ──
+    for c in _detect_dark_circle_candidates(gray, roi, expected_radius, min_contrast=25):
+        candidates.append({"x": c["x"], "y": c["y"], "radius": c["radius"],
+                           "score": c["score"], "area": np.pi * c["radius"] ** 2,
+                           "circularity": 0.9})
+
     if expected_radius and expected_radius >= 2:
         # ── SimpleBlobDetector calibré pour cercles NOIRS de 4mm ──
         params = cv2.SimpleBlobDetector_Params()
@@ -730,29 +1085,36 @@ def detect_lateral_markers(image: np.ndarray, known_scale: Optional[float] = Non
         params.filterByConvexity = True
         params.minConvexity = 0.5
         params.filterByInertia = False
-        
+
         detector = cv2.SimpleBlobDetector_create(params)
-        keypoints = detector.detect(blurred)
-        
-        log.info(f"  BlobDetector: {len(keypoints)} blobs dans ROI")
-        
-        for kp in keypoints:
-            cx = int(kp.pt[0]) + roi_x0
-            cy = int(kp.pt[1]) + roi_y0
+        for kp in detector.detect(blurred):
+            cx = int(kp.pt[0]) + x0
+            cy = int(kp.pt[1]) + y0
             r = int(kp.size / 2)
-            candidates.append({"x": cx, "y": cy, "radius": r, "area": np.pi * r * r, "circularity": 0.8})
-    
+            candidates.append({"x": cx, "y": cy, "radius": r, "score": 40.0,
+                               "area": np.pi * r * r, "circularity": 0.8})
+
     if len(candidates) < 2:
-        # Fallback contour si BlobDetector n'a rien trouvé
+        # ── Fallback contour : seuils fixes + Otsu ──
         min_area = max(2, int((expected_radius ** 2) * 0.3) if expected_radius else 3)
         max_area = min(300, int((expected_radius ** 2) * 6) if expected_radius else 500)
-        
-        for thresh_val in [35, 50, 70]:
+
+        thresholds = [35, 50, 70]
+        if blurred.size:
+            _, otsu_val = cv2.threshold(blurred, 0, 255,
+                                        cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            if np.ndim(otsu_val) > 0:  # certaines versions d'OpenCV renvoient un array
+                otsu_val = float(np.asarray(otsu_val).ravel()[0])
+            if otsu_val not in thresholds:
+                thresholds.append(otsu_val)
+
+        for thresh_val in thresholds:
             _, thresh = cv2.threshold(blurred, thresh_val, 255, cv2.THRESH_BINARY_INV)
             thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_close)
             thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel_open)
-            
-            contours_fb, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            contours_fb, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL,
+                                              cv2.CHAIN_APPROX_SIMPLE)
             for cnt in contours_fb:
                 area = cv2.contourArea(cnt)
                 if area < min_area or area > max_area:
@@ -766,68 +1128,111 @@ def detect_lateral_markers(image: np.ndarray, known_scale: Optional[float] = Non
                 M = cv2.moments(cnt)
                 if M["m00"] == 0:
                     continue
-                cx = int(M["m10"] / M["m00"]) + roi_x0
-                cy = int(M["m01"] / M["m00"]) + roi_y0
+                cx = int(M["m10"] / M["m00"]) + x0
+                cy = int(M["m01"] / M["m00"]) + y0
                 radius = int(np.sqrt(area / np.pi))
-                if expected_radius and (radius < max(1, expected_radius * 0.2) or radius > expected_radius * 3):
+                if expected_radius and (radius < max(1, expected_radius * 0.2)
+                                        or radius > expected_radius * 3):
                     continue
                 dup = False
                 for existing in candidates:
                     if abs(existing["x"] - cx) < 4 and abs(existing["y"] - cy) < 4:
-                        dup = True; break
+                        dup = True
+                        break
                 if not dup:
-                    candidates.append({"x": cx, "y": cy, "radius": radius, "area": area, "circularity": circularity})
+                    candidates.append({"x": cx, "y": cy, "radius": radius,
+                                       "area": area, "circularity": circularity,
+                                       "score": 30.0 + circularity * 20.0})
 
     if len(candidates) < 2:
         return []
 
-    # Trier du haut vers le bas
-    candidates.sort(key=lambda c: c["y"])
+    pair = _find_best_lateral_pair(candidates, expected_spacing, expected_radius)
 
-    # Chercher la meilleure paire verticale
-    best_pair = None
-    best_score = float("inf")
-
-    for i in range(len(candidates)):
-        for j in range(i + 1, len(candidates)):
-            dy = candidates[j]["y"] - candidates[i]["y"]
-            dx = abs(candidates[j]["x"] - candidates[i]["x"])
-
-            # Doivent être grossièrement alignés verticalement
-            if dx > dy * 0.6:
-                continue
-
-            # Contrainte d'espacement si échelle connue
-            if expected_spacing:
-                spacing_err = abs(dy - expected_spacing)
-                if spacing_err > expected_spacing * 0.40:  # max ±40% d'erreur
-                    continue
-                score = spacing_err / expected_spacing  # erreur normalisée
-            else:
-                # Fallback : ratio diamètre/espacement
-                avg_radius = (candidates[i]["radius"] + candidates[j]["radius"]) / 2
-                if avg_radius == 0:
-                    continue
-                spacing_ratio = dy / (2 * avg_radius)
-                score = abs(spacing_ratio - 6.25)
-
-            if score < best_score:
-                best_score = score
-                best_pair = (candidates[i], candidates[j])
-
-    if best_pair is None or best_score > 4:
-        # Fallback : si les marqueurs ne sont pas dans le ratio attendu,
-        # prendre les 2 plus grandes zones circulaires alignées verticalement
+    if pair is None:
+        # Dernier recours : les 2 plus grandes zones circulaires alignées verticalement
+        candidates.sort(key=lambda c: c["y"])
         top2 = candidates[:2]
         dy = top2[1]["y"] - top2[0]["y"]
         dx = abs(top2[1]["x"] - top2[0]["x"])
         if dx < dy and dy > 20:
-            best_pair = (top2[0], top2[1])
+            pair = (top2[0], top2[1])
 
-    if best_pair is None:
+    if pair is None:
         return []
 
-    return [(best_pair[0]["x"], best_pair[0]["y"]), (best_pair[1]["x"], best_pair[1]["y"])]
+    return [(pair[0]["x"], pair[0]["y"]), (pair[1]["x"], pair[1]["y"])]
+
+
+def detect_lateral_markers(image: np.ndarray, known_scale: Optional[float] = None) -> tuple:
+    """
+    Détecte les 2 mires latérales du clip.
+
+    Clip ACTUEL (celui utilisé) : 2 CERCLES NOIRS OPAQUES, Ø 4 mm, centres à
+    25 mm — chemin de détection principal (BlobDetector + contours/Otsu).
+    Nouveau design (clip_reference_v3/v4.scad) : étiquettes damier 2×2 à 35 mm
+    le long du bras — conservé en secours (scan 2D, espacements 25/35 mm).
+
+    Si known_scale est fourni (mm/px frontal), il guide la taille attendue.
+
+    Retourne (markers, spacing_mm) avec markers = [(x1,y1),(x2,y2)] en pixels,
+    ou ([], None) si la détection échoue.
+    """
+    h, w = image.shape[:2]
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    # Dimensions attendues si l'échelle est connue (cercles noirs : Ø 4mm, 25mm)
+    if known_scale and known_scale > 0:
+        expected_spacing = int(LATERAL_MARKER_SPACING_MM / known_scale)
+        expected_radius = int(2.0 / known_scale)   # rayon = 2mm
+        log.info(f"  Marqueurs latéraux: scale={known_scale:.4f}mm/px "
+                 f"spacing={expected_spacing}px r={expected_radius}px")
+    else:
+        expected_spacing = None
+        expected_radius = None
+
+    # ── ROIs progressives (cadrage nominal → élargi → quasi complet) ──
+    rois = [
+        (int(w * 0.55), int(h * 0.20), int(w * 0.90), int(h * 0.65)),  # cadrage nominal
+        (int(w * 0.30), int(h * 0.10), int(w * 0.95), int(h * 0.75)),  # élargi
+        (max(0, int(w * 0.03)), max(0, int(h * 0.05)),
+         min(w, int(w * 0.98)), min(h, int(h * 0.90))),                # quasi complet
+    ]
+
+    # ── 1. Clip actuel : 2 cercles noirs opaques (Ø 4mm, centres à 25mm) ──
+    for roi in rois:
+        markers = _detect_marker_pair_in_roi(gray, roi, expected_radius,
+                                             expected_spacing, w, h)
+        if markers:
+            # Espacement réel dérivé de la distance mesurée (25 mm clip actuel,
+            # 35 mm nouveau design) — jamais codé en dur
+            d_px = math.hypot(markers[1][0] - markers[0][0],
+                              markers[1][1] - markers[0][1])
+            if known_scale and known_scale > 0:
+                est_mm = round(d_px * known_scale, 2)
+                # Privilégie le clip actuel (25 mm) en cas d'égalité
+                spacing_mm = min((LATERAL_MARKER_SPACING_MM,
+                                  LATERAL_MARKER_SPACING_MM_NEW),
+                                 key=lambda s: (abs(s - est_mm),
+                                                s != LATERAL_MARKER_SPACING_MM))
+            else:
+                spacing_mm = LATERAL_MARKER_SPACING_MM
+            log.info(f"  Mires latérales (cercles noirs {spacing_mm:.0f}mm) trouvées "
+                     f"(ROI {roi}): {markers}")
+            return markers, spacing_mm
+
+    # ── 2. Secours : mires damier 2×2 (nouveau design v3/v4, 35mm) ──
+    integral = cv2.integral(gray)
+    for roi in rois:
+        markers, spacing_mm = _detect_lateral_checkerboard_pair(
+            gray, integral, w, h, roi, known_scale)
+        if markers:
+            log.info(f"  Mires latérales (damier {spacing_mm:.0f}mm) trouvées "
+                     f"(ROI {roi}): {markers}")
+            return markers, spacing_mm
+
+    log.info("  Marqueurs latéraux: aucune paire trouvée")
+    return [], None
 
 
 def detect_temple_angle(image: np.ndarray, roi_x0: int, roi_x1: int, roi_y0: int, roi_y1: int) -> Optional[float]:
@@ -908,12 +1313,13 @@ def compute_pantoscopic_angle(markers_px: list, scale_known: Optional[float] = N
         return round(max(0.0, 90.0 - lens_angle_from_horiz), 1)
 
 
-def estimate_vertex_distance(image: np.ndarray, markers: list, scale_mm_per_px: float) -> Optional[float]:
+def estimate_vertex_distance(image: np.ndarray, markers: list, scale_mm_per_px: float) -> tuple:
     """
     Estime la distance vertex (D'L) à partir de la photo de profil
     et des landmarks MediaPipe.
 
-    Retourne la distance en mm, ou None si le visage n'est pas détecté.
+    Retourne (vertex_mm, cornea_px) où cornea_px = {"x", "y"} en pixels,
+    ou (None, None) si le visage n'est pas détecté.
     """
     h, w, _ = image.shape
 
@@ -923,7 +1329,7 @@ def estimate_vertex_distance(image: np.ndarray, markers: list, scale_mm_per_px: 
     result = landmarker.detect(mp_img)
 
     if not result.face_landmarks:
-        return None
+        return None, None
 
     landmarks = result.face_landmarks[0]
     count = len(landmarks)
@@ -936,7 +1342,7 @@ def estimate_vertex_distance(image: np.ndarray, markers: list, scale_mm_per_px: 
     elif count > 468:
         cornea = landmarks[468]  # œil gauche (peut-être partiellement visible)
     else:
-        return None
+        return None, None
 
     # Position de la tempe / bord du visage
     # 234 = tempe gauche, 454 = tempe droite
@@ -974,7 +1380,8 @@ def estimate_vertex_distance(image: np.ndarray, markers: list, scale_mm_per_px: 
     # On applique un facteur de correction empirique
     vertex_mm *= 0.85  # correction : le clip est déporté sur le côté
 
-    return round(max(vertex_mm, 5.0), 1)  # minimum 5mm
+    cornea_px = {"x": round(cornea_x_px), "y": round(cornea_y_px)}
+    return round(max(vertex_mm, 5.0), 1), cornea_px  # minimum 5mm
 
 
 # ── Endpoints profil ──
@@ -1032,19 +1439,41 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
     else:
         log.info(f"Analyse profil: image {w}×{h} (sans échelle calibration)")
 
-    # 1. Détection des 2 marqueurs latéraux (guidée par l'échelle si dispo)
-    markers_px = detect_lateral_markers(img, known_scale=scale_mm_per_px)
+    # 1. Détection des 2 mires latérales (cercles noirs Ø4mm/25mm → damier en secours)
+    markers_px, lateral_spacing_mm = detect_lateral_markers(img, known_scale=scale_mm_per_px)
 
     if len(markers_px) < 2:
-        raise HTTPException(422, detail="Impossible de détecter les 2 marqueurs latéraux. "
+        raise HTTPException(422, detail="Impossible de détecter les 2 mires latérales. "
                                          "Vérifiez que le clip est bien visible sur la photo de profil.")
 
-    # 2. Échelle — priorité à l'échelle calibration frontale
-    if scale_mm_per_px:
-        scale = scale_mm_per_px
-    else:
-        d_px = np.linalg.norm(np.array(markers_px[0]) - np.array(markers_px[1]))
-        scale = LATERAL_MARKER_SPACING_MM / d_px
+    # 2. Échelle de MESURE — auto-calibrée sur le segment des 2 mires latérales :
+    #    distance réelle entre les CENTRES = espacement du clip détecté
+    #    (35 mm design actuel, 25 mm legacy). L'échelle frontale ne sert qu'à
+    #    guider la DÉTECTION — les 2 photos peuvent avoir des échelles différentes.
+    spacing_mm = lateral_spacing_mm or LATERAL_MARKER_SPACING_MM
+    d_px = float(np.linalg.norm(np.array(markers_px[0]) - np.array(markers_px[1])))
+    scale = spacing_mm / d_px if d_px > 0 else 0.0
+    scale_source = "lateral_markers"  # défaut : échelle auto-calibrée sur les mires latérales
+
+    # Contrôle de cohérence : l'échelle profil doit être proche de l'échelle frontale
+    # (même distance de prise de vue). Un écart important signale soit des photos à
+    # des distances différentes, soit une mauvaise paire de mires.
+    # RÈGLE MÉTROLOGIQUE (Driss) : si l'échelle auto (latérale) n'est PAS en accord
+    # avec l'échelle manuelle (frontale), on utilise l'ÉCHELLE MANUELLE — la
+    # calibration frontale cliquée par l'opticien est la référence de confiance.
+    scale_delta_pct = None
+    if scale_mm_per_px and scale > 0:
+        scale_delta_pct = round(abs(scale - scale_mm_per_px) / scale_mm_per_px * 100, 1)
+        if scale_delta_pct > SCALE_MISMATCH_THRESHOLD_PCT:
+            log.warning(f"  Échelle auto latérale ({scale:.4f} mm/px) ≠ échelle manuelle "
+                        f"frontale ({scale_mm_per_px:.4f} mm/px) → écart {scale_delta_pct}% "
+                        f"> seuil {SCALE_MISMATCH_THRESHOLD_PCT}% → utilisation de l'échelle "
+                        f"MANUELLE (détection latérale non fiable)")
+            scale = scale_mm_per_px
+            scale_source = "manual"
+        else:
+            log.info(f"  Échelles auto/manuelle en accord (écart {scale_delta_pct}%) "
+                     f"→ échelle auto latérale conservée")
 
     # 3. Détection de l'angle de la branche (temple)
     # La branche est dans la zone droite de l'image, autour du niveau des marqueurs
@@ -1055,11 +1484,42 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
     temple_angle = detect_temple_angle(img, temple_x0, temple_x1, temple_y0, temple_y1)
     log.info(f"  Branche: angle détecté = {temple_angle}° (ROI x=[{temple_x0},{temple_x1}] y=[{temple_y0},{temple_y1}])")
 
-    # 4. Angle pantoscopique — méthode relative branche↔plan verre
-    pantoscopic = compute_pantoscopic_angle(markers_px, scale, temple_angle)
+    # ── Segments prêts pour le placement auto dans l'UI (ProfileMeasure) ──
+    # Plan du verre vu de profil :
+    #  - segment des mires ≈ VERTICAL → le segment est le plan du verre (ancien clip) ;
+    #  - segment ≈ HORIZONTAL (mires le long du bras, nouveau design) → le plan du verre
+    #    est PERPENDICULAIRE au segment.
+    dx_m = markers_px[1][0] - markers_px[0][0]
+    dy_m = markers_px[1][1] - markers_px[0][1]
+    if abs(dy_m) >= abs(dx_m):
+        lens_line = [list(markers_px[0]), list(markers_px[1])]
+    else:
+        lens_line = _perpendicular_lens_line(markers_px, w, h)
+
+    # 4. Angle pantoscopique — méthode relative branche↔plan du verre
+    pantoscopic = compute_pantoscopic_angle(lens_line, scale, temple_angle)
 
     # 4. Distance vertex (D'L) — via MediaPipe
-    vertex = estimate_vertex_distance(img, markers_px, scale)
+    vertex, cornea_px = estimate_vertex_distance(img, markers_px, scale)
+
+    # Branche : à partir de la charnière (juste à gauche du clip), le long de l'angle détecté
+    temple_line = None
+    if temple_angle is not None and len(markers_px) >= 2:
+        rad = math.radians(temple_angle)
+        dirx, diry = math.cos(rad), math.sin(rad)
+        mid_y = (markers_px[0][1] + markers_px[1][1]) / 2
+        hinge_x = min(markers_px[0][0], markers_px[1][0]) - 8
+        p1 = (int(hinge_x - dirx * 50), int(mid_y - diry * 50))
+        p2 = (int(hinge_x + dirx * 170), int(mid_y + diry * 170))
+        p1 = (max(0, min(w, p1[0])), max(0, min(h, p1[1])))
+        p2 = (max(0, min(w, p2[0])), max(0, min(h, p2[1])))
+        temple_line = [p1, p2]
+
+    # Vertex : cornée (iris) → projection sur la ligne du plan du verre (face arrière)
+    vertex_line = None
+    if cornea_px is not None and lens_line is not None:
+        lens_x = int((lens_line[0][0] + lens_line[1][0]) / 2)
+        vertex_line = [(cornea_px["x"], cornea_px["y"]), (lens_x, cornea_px["y"])]
 
     # 5. Détection faciale
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -1067,17 +1527,25 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
     face_result = landmarker.detect(mp_img)
     face_detected = bool(face_result.face_landmarks)
 
-    log.info(f"Profil: scale={scale:.4f} mm/px, angle_pantoscopique={pantoscopic}°, vertex={vertex}mm, face={face_detected}")
+    log.info(f"Profil: scale={scale:.4f} mm/px (source={scale_source}), angle_pantoscopique={pantoscopic}°, vertex={vertex}mm, face={face_detected}")
 
     return ProfileResult(
         width=w,
         height=h,
         lateral_markers=markers_px,
         scale_mm_per_px=round(scale, 6),
+        scale_source=scale_source,
+        frontal_scale_mm_per_px=round(scale_mm_per_px, 6) if scale_mm_per_px else None,
+        scale_delta_pct=scale_delta_pct,
+        lateral_spacing_mm=spacing_mm,
         pantoscopic_angle=pantoscopic,
         vertex_distance=vertex,
         face_detected=face_detected,
         temple_angle=round(temple_angle, 1) if temple_angle is not None else None,
+        temple_line=temple_line,
+        lens_line=lens_line,
+        cornea=cornea_px,
+        vertex_line=vertex_line,
     )
 
 
