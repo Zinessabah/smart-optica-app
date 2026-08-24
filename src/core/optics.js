@@ -221,3 +221,17 @@ export function computeAllMeasurements(state) {
     })
   }
 }
+/** Ø de verre par défaut (ébauche courante) quand l'opticien active le cercle sans avoir dragé. */
+export const DEFAULT_LENS_DIAMETER_MM = 60
+
+/**
+ * Résout le Ø (mm) choisi par l'opticien (drag du cercle), centré sur la pupille.
+ * Aucune dépendance au boxing ; seul le rayon par rapport à la PUPILLE compte.
+ */
+export function resolveLensDiameter(eye, scale, chosenRadiusPx) {
+  if (!eye || !scale) return null
+  const rPx = chosenRadiusPx != null ? chosenRadiusPx : (DEFAULT_LENS_DIAMETER_MM / 2) / scale
+  const radiusMm = Math.round(rPx * scale * 10) / 10
+  const diameterMm = Math.round(2 * radiusMm * 10) / 10
+  return { rDefaultPx: (DEFAULT_LENS_DIAMETER_MM / 2) / scale, chosenRadiusPx: rPx, diameterMm }
+}
