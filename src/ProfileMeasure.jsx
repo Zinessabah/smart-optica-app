@@ -157,6 +157,32 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
   const [vertexLoading, setVertexLoading] = useState(false)
   const vertexNeedsCompute = useRef(false)
 
+  // ── Vérification du calibrage 25 mm ──
+  // L'utilisateur place 2 points (reliés par une droite) sur les 2 cercles noirs
+  // latéraux du clip : la distance mesurée doit valoir ~25 mm avec l'échelle active.
+  const [verifyActive, setVerifyActive] = useState(false)
+  const [verifyLine, setVerifyLine] = useState([])   // 2 points
+
+  const verifyResult = (() => {
+    if (verifyLine.length < 2) return null
+    const scale = profileScale || calibrationScale
+    const d = Math.hypot(verifyLine[1].x - verifyLine[0].x, verifyLine[1].y - verifyLine[0].y)
+    if (!scale || d === 0) return { px: Math.round(d), mm: null, delta: null, scale: null, impliedScale: null }
+    const mm = d * scale
+    return {
+      px: Math.round(d),
+      mm: Math.round(mm * 10) / 10,
+      delta: Math.round((mm - 25) * 10) / 10,
+      scale,
+      impliedScale: Math.round(25 / d * 10000) / 10000,
+    }
+  })()
+
+  // Échelle effective : si vérification montre delta > 15%, on force l'échelle 25mm exacte
+  const effectiveScale = (verifyResult && verifyResult.delta != null && Math.abs(verifyResult.delta) > 3.75)
+    ? verifyResult.impliedScale
+    : (profileScale || calibrationScale)
+
   const computeVertexFromAPI = useCallback(async () => {
     // Priorité : échelle auto-calibrée du profil (25 mm entre mires) → sinon échelle frontale
     // Si vérification manuelle montre delta > 15%, on force l'échelle exacte 25mm
@@ -202,32 +228,6 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
   }, [vertexLine, computeVertexFromAPI])
 
   const allDone = allAngleDone && vertexLine.length === 2
-
-  // ── Vérification du calibrage 25 mm ──
-  // L'utilisateur place 2 points (reliés par une droite) sur les 2 cercles noirs
-  // latéraux du clip : la distance mesurée doit valoir ~25 mm avec l'échelle active.
-  const [verifyActive, setVerifyActive] = useState(false)
-  const [verifyLine, setVerifyLine] = useState([])   // 2 points
-
-  const verifyResult = (() => {
-    if (verifyLine.length < 2) return null
-    const scale = profileScale || calibrationScale
-    const d = Math.hypot(verifyLine[1].x - verifyLine[0].x, verifyLine[1].y - verifyLine[0].y)
-    if (!scale || d === 0) return { px: Math.round(d), mm: null, delta: null, scale: null, impliedScale: null }
-    const mm = d * scale
-    return {
-      px: Math.round(d),
-      mm: Math.round(mm * 10) / 10,
-      delta: Math.round((mm - 25) * 10) / 10,
-      scale,
-      impliedScale: Math.round(25 / d * 10000) / 10000,
-    }
-  })()
-
-  // Échelle effective : si vérification montre delta > 15%, on force l'échelle 25mm exacte
-  const effectiveScale = (verifyResult && verifyResult.delta != null && Math.abs(verifyResult.delta) > 3.75)
-    ? verifyResult.impliedScale
-    : (profileScale || calibrationScale)
 
   const toggleVerify = useCallback(() => {
     setVerifyActive(v => {
