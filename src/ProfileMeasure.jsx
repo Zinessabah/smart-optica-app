@@ -169,22 +169,22 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     if (!imageSize) return null
     return (
       <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 10 }}>
-        {/* Ligne de calibrage cyan */}
+        {/* Ligne de calibrage cyan — fine, tirets longs */}
         {verifyLine.length >= 2 && (
           <line x1={toPct(verifyLine[0].x, imageSize.width)} y1={toPct(verifyLine[0].y, imageSize.height)}
             x2={toPct(verifyLine[1].x, imageSize.width)} y2={toPct(verifyLine[1].y, imageSize.height)}
-            stroke="#22d3ee" strokeWidth="2" strokeLinecap="round" opacity="0.8" strokeDasharray="5 3" />
+            stroke="#22d3ee" strokeWidth="1.4" strokeLinecap="round" opacity="0.75" strokeDasharray="6 4" />
         )}
-        {/* Angle : 2 segments reliés au sommet */}
+        {/* Angle : 2 segments fins reliés au sommet */}
         {anglePts.length >= 2 && (
           <>
             <line x1={toPct(anglePts[0].x, imageSize.width)} y1={toPct(anglePts[0].y, imageSize.height)}
               x2={toPct(anglePts[1].x, imageSize.width)} y2={toPct(anglePts[1].y, imageSize.height)}
-              stroke="#f59e0b" strokeWidth="2.5" strokeLinecap="round" opacity="0.9" />
+              stroke="#f59e0b" strokeWidth="1.8" strokeLinecap="round" opacity="0.85" />
             {anglePts.length >= 3 && (
               <line x1={toPct(anglePts[1].x, imageSize.width)} y1={toPct(anglePts[1].y, imageSize.height)}
                 x2={toPct(anglePts[2].x, imageSize.width)} y2={toPct(anglePts[2].y, imageSize.height)}
-                stroke="#3b9eff" strokeWidth="2.5" strokeLinecap="round" opacity="0.9" />
+                stroke="#3b9eff" strokeWidth="1.8" strokeLinecap="round" opacity="0.85" />
             )}
           </>
         )}
@@ -226,24 +226,57 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     )
   }
 
+  // ── Marqueurs : réticule de visée métrologique (SVG) ──
+  // Anneau fin + croix fine + point central. Halo pulsant sur le DERNIER point placé.
   const renderEndpoints = () => {
     if (!imageSize) return null
     const items = []
-    verifyLine.forEach((pt, i) => items.push({ pt, color: '#22d3ee', type: 'verify', i, size: 22 }))
+    verifyLine.forEach((pt, i) => items.push({ pt, color: '#22d3ee', type: 'verify', i }))
     anglePts.forEach((pt, i) => items.push({
       pt,
       color: i === 1 ? '#a78bfa' : i === 0 ? '#f59e0b' : '#3b9eff',
-      type: 'angle', i, size: i === 1 ? 26 : 22,
+      type: 'angle', i,
     }))
-    vertexLine.forEach((pt, i) => items.push({ pt, color: '#10b981', type: 'vertex', i, size: 18 }))
-    return items.map(({ pt, color, type, i, size }, k) => (
-      <div key={`${type}${k}`} data-pt-type={type} data-pt-index={i} style={{
-        position: 'absolute', left: toPct(pt.x, imageSize.width), top: toPct(pt.y, imageSize.height),
-        transform: 'translate(-50%,-50%)', width: size, height: size, borderRadius: '50%',
-        background: `${color}33`, border: `2.5px solid ${color}`, boxShadow: `0 0 8px ${color}66`,
-        cursor: 'grab', touchAction: 'none', pointerEvents: 'auto', zIndex: 15,
-      }} />
-    ))
+    vertexLine.forEach((pt, i) => items.push({ pt, color: '#10b981', type: 'vertex', i }))
+
+    const lastPlaced = (() => {
+      if (verifyLine.length === 1) return { type: 'verify', i: 0 }
+      if (verifyLine.length === 2 && anglePts.length < 3) {
+        return anglePts.length > 0 ? { type: 'angle', i: anglePts.length - 1 } : null
+      }
+      return null
+    })()
+
+    const R = 11   // rayon anneau (px écran)
+    const C = 5    // demi-longueur croix
+
+    return items.map(({ pt, color, type, i }, k) => {
+      const isLast = lastPlaced && lastPlaced.type === type && lastPlaced.i === i
+      return (
+        <div key={`${type}${k}`} data-pt-type={type} data-pt-index={i} style={{
+          position: 'absolute', left: toPct(pt.x, imageSize.width), top: toPct(pt.y, imageSize.height),
+          transform: 'translate(-50%,-50%)', width: 2 * R + 8, height: 2 * R + 8,
+          cursor: 'grab', touchAction: 'none', pointerEvents: 'auto', zIndex: 15,
+        }}>
+          <svg width="100%" height="100%" viewBox={`-${R + 4} -${R + 4} ${2 * (R + 4)} ${2 * (R + 4)}`}>
+            {/* Halo pulsant — dernier point placé uniquement */}
+            {isLast && (
+              <circle r={R + 2} fill="none" stroke={color} strokeWidth="1" opacity="0.5"
+                style={{ animation: 'reticle-pulse 1.6s ease-out infinite' }} />
+            )}
+            {/* Croix fine qui dépasse l'anneau */}
+            <line x1={-C - 3} y1="0" x2={-C} y2="0" stroke={color} strokeWidth="1.2" opacity="0.9" />
+            <line x1={C} y1="0" x2={C + 3} y2="0" stroke={color} strokeWidth="1.2" opacity="0.9" />
+            <line x1="0" y1={-C - 3} x2="0" y2={-C} stroke={color} strokeWidth="1.2" opacity="0.9" />
+            <line x1="0" y1={C} x2="0" y2={C + 3} stroke={color} strokeWidth="1.2" opacity="0.9" />
+            {/* Anneau fin */}
+            <circle r={R} fill={`${color}18`} stroke={color} strokeWidth="1.4" />
+            {/* Point central */}
+            <circle r="1.6" fill={color} />
+          </svg>
+        </div>
+      )
+    })
   }
 
   // ════════════════════════════════════
