@@ -503,46 +503,54 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
       {verifyActive && (
         <div className="rounded-xl px-4 py-3 text-xs border"
           style={{
-            background: verifyResult && verifyResult.mm != null
-              ? (Math.abs(verifyResult.delta) <= 1.5 ? 'var(--color-green-bg)'
-                : Math.abs(verifyResult.delta) <= 3 ? 'rgba(201,160,90,0.12)' : 'var(--color-red-bg)')
+            background: verifyResult && verifyResult.px != null
+              ? (Math.abs((verifyResult.scale - (25 / verifyResult.px)) / (25 / verifyResult.px) * 100) <= 5
+                  ? 'var(--color-green-bg)'
+                  : Math.abs((verifyResult.scale - (25 / verifyResult.px)) / (25 / verifyResult.px) * 100) <= 15
+                      ? 'rgba(201,160,90,0.12)'
+                      : 'var(--color-red-bg)')
               : 'var(--color-bg)',
-            borderColor: verifyResult && verifyResult.mm != null
-              ? (Math.abs(verifyResult.delta) <= 1.5 ? 'rgba(34,197,94,0.3)'
-                : Math.abs(verifyResult.delta) <= 3 ? 'rgba(201,160,90,0.3)' : 'rgba(255,107,107,0.3)')
+            borderColor: verifyResult && verifyResult.px != null
+              ? (Math.abs((verifyResult.scale - (25 / verifyResult.px)) / (25 / verifyResult.px) * 100) <= 5
+                  ? 'rgba(34,197,94,0.3)'
+                  : Math.abs((verifyResult.scale - (25 / verifyResult.px)) / (25 / verifyResult.px) * 100) <= 15
+                      ? 'rgba(201,160,90,0.3)'
+                      : 'rgba(255,107,107,0.3)')
               : 'var(--color-border)',
           }}>
-          {!verifyResult || verifyResult.mm == null ? (
+                    {!verifyResult || verifyResult.px == null ? (
             <span style={{ color: 'var(--color-text-muted)' }}>
               {verifyLine.length < 2
                 ? 'Placez 2 points (reliés par une droite cyan) sur les 2 cercles noirs latéraux.'
-                : 'Échelle indisponible — faites d’abord la calibration frontale.'}
+                : 'Échelle indisponible — faites d\'abord la calibration frontale.'}
             </span>
           ) : (
             (() => {
-              const ok = Math.abs(verifyResult.delta) <= 1.5
-              const warn = Math.abs(verifyResult.delta) <= 3
-              const color = ok ? 'var(--color-green)' : warn ? 'var(--color-gold)' : 'var(--color-red)'
+              const impliedScale = 25 / verifyResult.px
+              const delta = (verifyResult.scale - impliedScale) / impliedScale * 100
+              const color = Math.abs(delta) <= 5 ? 'var(--color-green)' : Math.abs(delta) <= 15 ? 'var(--color-gold)' : 'var(--color-red)'
               return (
                 <div className="space-y-1">
                   <div className="flex justify-between">
-                    <span style={{ color: 'var(--color-text-muted)' }}>Distance mesurée (25 mm attendus)</span>
+                    <span style={{ color: 'var(--color-text-muted)' }}>Distance réelle entre les 2 mires (fixe)</span>
+                    <span className="font-bold" style={{ color: 'var(--color-green)' }}>25.0 mm</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span style={{ color: 'var(--color-text-muted)' }}>Échelle calculée (25 mm / distance px)</span>
+                    <span style={{ color: '#22d3ee', fontWeight: 600 }}>1 px = {impliedScale.toFixed(4)} mm</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span style={{ color: 'var(--color-text-muted)' }}>Échelle auto actuelle</span>
+                    <span style={{ color: 'var(--color-text-dim)' }}>1 px = {verifyResult.scale.toFixed(4)} mm</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span style={{ color: 'var(--color-text-muted)' }}>Écart</span>
                     <span className="font-bold" style={{ color }}>
-                      {verifyResult.mm} mm{verifyResult.delta !== 0 && ` (${verifyResult.delta > 0 ? '+' : ''}${verifyResult.delta})`}
+                      {delta > 0 ? '+' : ''}{delta.toFixed(1)}%
                     </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span style={{ color: 'var(--color-text-muted)' }}>Calcul</span>
-                    <span style={{ color: 'var(--color-text-dim)' }}>
-                      {verifyResult.px} px × {verifyResult.scale.toFixed(4)} mm/px
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span style={{ color: 'var(--color-text-muted)' }}>Échelle impliquée par ta mesure</span>
-                    <span style={{ color: '#22d3ee' }}>1 px = {verifyResult.impliedScale} mm</span>
                   </div>
                   <div style={{ color }}>
-                    {ok ? '✅ Calibrage conforme (±1.5 mm)' : warn ? '⚠️ Calibrage approximatif — vérifiez le placement' : '❌ Calibrage incohérent — échelle ou placement à revoir'}
+                    {Math.abs(delta) <= 5 ? '✅ Calibrage conforme (écart ≤5%)' : Math.abs(delta) <= 15 ? '⚠️ Calibrage approximatif — l\'échelle sera forcée à 25mm exact' : '❌ Calibrage incohérent — l\'échelle SERA FORCÉE à 25mm exact'}
                   </div>
                 </div>
               )
