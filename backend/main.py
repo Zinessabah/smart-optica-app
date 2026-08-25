@@ -86,6 +86,8 @@ class ProfileResult(BaseModel):
     height: int
     lateral_markers: list  # 2 points [(x1,y1), (x2,y2)]
     scale_mm_per_px: float
+    scale_from_markers_mm_per_px: Optional[float] = None  # échelle déduite des mires seules
+    scale_consistent: bool = True  # cohérence échelle mires vs échelle frontale (±10%)
     pantoscopic_angle: Optional[float] = None  # degrés
     vertex_distance: Optional[float] = None  # mm
     face_detected: bool = False
@@ -663,171 +665,191 @@ async def analyze(file: UploadFile = File(...)):
         calibration=calibration,
         landmarks_count=count,
         interPupillaryPx=round(abs(right_eye["x"] - left_eye["x"])),
-        interPupillaryMm=63.0,  # valeur de référence
+        interPupillaryMm=None,  # non mesuré ici (valeur de référence 63mm retirée)
     )
 
 
-# ── Détection des 2 marqueurs latéraux du clip ──
+# ── Détection des mires latérales du clip ──
+# Clip v3 : mires Ø4mm espacées de 25mm (clip v4 : 35mm — passer spacing_mm à l'API)
 LATERAL_MARKER_DIAMETER_MM = 4.0
 LATERAL_MARKER_SPACING_MM = 25.0
-MARKER_AREA_RATIO = (LATERAL_MARKER_DIAMETER_MM ** 2) / (LATERAL_MARKER_SPACING_MM ** 2)
-# Ratio attendu : diamètre / espacement ≈ 4/25 = 0.16
 
-
-def detect_lateral_markers(image: np.ndarray, known_scale: Optional[float] = None) -> list:
+def detect_lateral_checkerboard(image: np.ndarray, known_scale: Optional[float] = None, marker_spacing_mm: float = LATERAL_MARKER_SPACING_MM) -> list:
     """
-    Détecte les 2 cercles noirs (4mm, espacés de 25mm) sur la face latérale du clip.
-
-    Si known_scale est fourni (mm/px depuis la calibration frontale),
-    la recherche est contrainte à la taille et l'espacement attendus.
-
-    Retourne [(x1, y1), (x2, y2)] en pixels, ordonnés du haut vers le bas.
-    Retourne [] si la détection échoue.
+    Détecte les mires latérales du clip (damier 2x2 ou 3 mires) par corrélation 1D VERTICALE.
+    Même méthode robuste que detect_calibration_markers mais sur une bande VERTICALE.
+    
+    Le clip latéral a des mires alignées VERTICALEMENT sur la tempe droite.
+    On scanne Y (vertical) au lieu de X (horizontal).
+    
+    marker_spacing_mm : espacement nominal entre mires (25mm clip v3, 35mm v4).
+    
+    Retourne [(x1,y1), (x2,y2)] - les 2 mires principales (centres) ordonnées haut->bas.
     """
     h, w = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    # Dimensions attendues si l'échelle est connue
+    # Dimensions attendues si l'échelle est connue (basées sur calibration frontale)
     if known_scale and known_scale > 0:
-        expected_spacing = int(25.0 / known_scale)
-        expected_radius = int(2.0 / known_scale)   # rayon = 2mm
-        log.info(f"  Marqueurs latéraux: scale={known_scale:.4f}mm/px spacing={expected_spacing}px r={expected_radius}px")
+        expected_spacing = int(marker_spacing_mm / known_scale)  # mires latérales
+        quadrant_offset = max(3, int(2.5 / known_scale))  # offset quadrants 2.5mm
+        log.info(f"  [lateral_checkerboard] scale={known_scale:.4f} spacing={expected_spacing}px offset={quadrant_offset}px")
     else:
+        # Sans échelle : estimation large
         expected_spacing = None
-        expected_radius = None
+        quadrant_offset = None
+        log.info(f"  [lateral_checkerboard] ⚠️ SANS échelle — recherche large")
 
-    # ROI : le clip latéral est sur la tempe droite, dans la moitié droite de l'image
-    # ── Photo de profil droit : visage à gauche, tempe/clip à droite ──
-    roi_x0 = int(w * 0.55)   # 55% depuis la gauche
-    roi_x1 = int(w * 0.90)   # 90%
-    roi_y0 = int(h * 0.20)   # 20% depuis le haut
-    roi_y1 = int(h * 0.65)   # 65%
+    # MediaPipe pour localiser la tempe droite (même logique que frontale)
+    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+    face_result = landmarker.detect(mp_img)
+    face_detected = bool(face_result.face_landmarks)
 
-    gray_roi = gray[roi_y0:roi_y1, roi_x0:roi_x1]
-    roi_h, roi_w = gray_roi.shape
-
-    # Seuillage adaptatif pour les points noirs sur fond clair
-    blurred = cv2.GaussianBlur(gray_roi, (3, 3), 0)
-
-    # Nettoyage morphologique léger
-    kernel_close = np.ones((3, 3), np.uint8)
-    kernel_open = np.ones((2, 2), np.uint8)
-
-    candidates = []
-    
-    if expected_radius and expected_radius >= 2:
-        # ── SimpleBlobDetector calibré pour cercles NOIRS de 4mm ──
-        params = cv2.SimpleBlobDetector_Params()
-        params.filterByColor = True
-        params.blobColor = 0  # 0 = dark blobs
-        params.filterByArea = True
-        min_r = max(2, expected_radius - 1)
-        max_r = expected_radius + 2
-        params.minArea = int(np.pi * min_r * min_r * 0.6)
-        params.maxArea = int(np.pi * max_r * max_r * 1.5)
-        params.filterByCircularity = True
-        params.minCircularity = 0.55
-        params.filterByConvexity = True
-        params.minConvexity = 0.5
-        params.filterByInertia = False
+    if face_detected:
+        landmarks = face_result.face_landmarks[0]
+        count = len(landmarks)
+        # Tempe droite (landmark 454) et œil droit
+        if count > 454:
+            temple_x = landmarks[454].x
+        elif count > 234:
+            temple_x = landmarks[234].x
+        else:
+            temple_x = 0.85  # fallback
         
-        detector = cv2.SimpleBlobDetector_create(params)
-        keypoints = detector.detect(blurred)
+        if count > 473:
+            eye_y = landmarks[473].y  # iris droit
+        elif count > 468:
+            eye_y = landmarks[468].y
+        else:
+            eye_y = 0.45  # fallback
         
-        log.info(f"  BlobDetector: {len(keypoints)} blobs dans ROI")
-        
-        for kp in keypoints:
-            cx = int(kp.pt[0]) + roi_x0
-            cy = int(kp.pt[1]) + roi_y0
-            r = int(kp.size / 2)
-            candidates.append({"x": cx, "y": cy, "radius": r, "area": np.pi * r * r, "circularity": 0.8})
-    
-    if len(candidates) < 2:
-        # Fallback contour si BlobDetector n'a rien trouvé
-        min_area = max(2, int((expected_radius ** 2) * 0.3) if expected_radius else 3)
-        max_area = min(300, int((expected_radius ** 2) * 6) if expected_radius else 500)
-        
-        for thresh_val in [35, 50, 70]:
-            _, thresh = cv2.threshold(blurred, thresh_val, 255, cv2.THRESH_BINARY_INV)
-            thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_close)
-            thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel_open)
+        # ROI verticale : côté droit, autour de la tempe/œil
+        roi_x0 = int(w * max(0.55, temple_x - 0.15))
+        roi_x1 = min(w, int(w * min(0.95, temple_x + 0.1)))
+        roi_y0 = int(h * max(0.15, eye_y - 0.25))
+        roi_y1 = min(h, int(h * min(0.75, eye_y + 0.25)))
+        log.info(f"  [lateral_checkerboard] ROI face-guided x=[{roi_x0},{roi_x1}] y=[{roi_y0},{roi_y1}]")
+    else:
+        # Fallback sans visage : côté droit de l'image
+        roi_x0 = int(w * 0.55)
+        roi_x1 = int(w * 0.90)
+        roi_y0 = int(h * 0.20)
+        roi_y1 = int(h * 0.65)
+        log.info(f"  [lateral_checkerboard] ROI fallback x=[{roi_x0},{roi_x1}] y=[{roi_y0},{roi_y1}]")
+
+    # Extraction de la bande VERTICALE (colonne centrale de la ROI)
+    strip_x = (roi_x0 + roi_x1) // 2
+    strip_w = max(8, quadrant_offset if quadrant_offset else 20)  # largeur de la bande
+    x0 = max(0, strip_x - strip_w // 2)
+    x1 = min(w, strip_x + strip_w // 2)
+    strip = gray[roi_y0:roi_y1, x0:x1]
+    strip_h, strip_w = strip.shape
+
+    # Integral image pour calculs rapides
+    integral = cv2.integral(gray)
+
+    def rect_mean(px, py, size):
+        px0 = max(0, px - size)
+        px1 = min(w, px + size + 1)
+        py0 = max(0, py - size)
+        py1 = min(h, py + size + 1)
+        area = (px1 - px0) * (py1 - py0)
+        if area <= 0:
+            return 128.0
+        total = (integral[py1, px1] - integral[py0, px1] -
+                 integral[py1, px0] + integral[py0, px0])
+        return total / area
+
+    sample_size = max(2, (quadrant_offset // 3) if quadrant_offset else 6)
+
+    # Scan VERTICAL (Y) - chercher le motif damier 2x2
+    # Position Y = centre vertical de chaque mire potentielle
+    scores = np.zeros(roi_y1 - roi_y0, dtype=np.float32)
+
+    for i in range(len(scores)):
+        cy = roi_y0 + i
+        cx_base = strip_x
+
+        # Moyenner horizontalement sur strip_w pixels
+        score_sum = 0.0
+        count_x = 0
+        half_w = strip_w // 2
+        for dx in range(-half_w, half_w + 1):
+            cx = cx_base + dx
             
-            contours_fb, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for cnt in contours_fb:
-                area = cv2.contourArea(cnt)
-                if area < min_area or area > max_area:
-                    continue
-                perimeter = cv2.arcLength(cnt, True)
-                if perimeter == 0:
-                    continue
-                circularity = 4 * np.pi * area / (perimeter * perimeter)
-                if circularity < 0.40:
-                    continue
-                M = cv2.moments(cnt)
-                if M["m00"] == 0:
-                    continue
-                cx = int(M["m10"] / M["m00"]) + roi_x0
-                cy = int(M["m01"] / M["m00"]) + roi_y0
-                radius = int(np.sqrt(area / np.pi))
-                if expected_radius and (radius < max(1, expected_radius * 0.2) or radius > expected_radius * 3):
-                    continue
-                dup = False
-                for existing in candidates:
-                    if abs(existing["x"] - cx) < 4 and abs(existing["y"] - cy) < 4:
-                        dup = True; break
-                if not dup:
-                    candidates.append({"x": cx, "y": cy, "radius": radius, "area": area, "circularity": circularity})
+            # 4 quadrants autour du point (cx, cy)
+            nw = rect_mean(cx - (quadrant_offset if quadrant_offset else 15), cy - (quadrant_offset if quadrant_offset else 15), sample_size)
+            ne = rect_mean(cx + (quadrant_offset if quadrant_offset else 15), cy - (quadrant_offset if quadrant_offset else 15), sample_size)
+            sw = rect_mean(cx - (quadrant_offset if quadrant_offset else 15), cy + (quadrant_offset if quadrant_offset else 15), sample_size)
+            se = rect_mean(cx + (quadrant_offset if quadrant_offset else 15), cy + (quadrant_offset if quadrant_offset else 15), sample_size)
 
-    if len(candidates) < 2:
+            # Motif damier : NW=noir, NE=blanc, SW=blanc, SE=noir
+            diag = abs(nw - se) + abs(ne - sw)
+            adj  = abs(nw - ne) + abs(nw - sw) + abs(se - ne) + abs(se - sw)
+            contrast = adj - diag * 0.5
+            if contrast > 0:
+                score_sum += contrast
+                count_x += 1
+
+        if count_x > 0:
+            scores[i] = score_sum / count_x
+
+    # Lissage gaussien
+    from scipy.ndimage import gaussian_filter1d
+    sigma = (quadrant_offset / 4) if quadrant_offset else 4
+    smoothed = gaussian_filter1d(scores.astype(np.float64), sigma=sigma)
+
+    # Trouver les pics (maxima locaux)
+    peaks = []
+    for i in range(1, len(smoothed) - 1):
+        if smoothed[i] > smoothed[i-1] and smoothed[i] >= smoothed[i+1]:
+            if smoothed[i] > 5:  # seuil
+                peaks.append({"y": roi_y0 + i, "x": strip_x, "score": float(smoothed[i])})
+
+    log.info(f"  [lateral_checkerboard] {len(peaks)} pics trouvés")
+
+    if len(peaks) < 2:
+        log.warning(f"  [lateral_checkerboard] ❌ Moins de 2 pics")
         return []
 
-    # Trier du haut vers le bas
-    candidates.sort(key=lambda c: c["y"])
+    # Trier par score descendant, puis par Y
+    peaks.sort(key=lambda p: (-p["score"], p["y"]))
 
-    # Chercher la meilleure paire verticale
-    best_pair = None
-    best_score = float("inf")
-
-    for i in range(len(candidates)):
-        for j in range(i + 1, len(candidates)):
-            dy = candidates[j]["y"] - candidates[i]["y"]
-            dx = abs(candidates[j]["x"] - candidates[i]["x"])
-
-            # Doivent être grossièrement alignés verticalement
-            if dx > dy * 0.6:
-                continue
-
-            # Contrainte d'espacement si échelle connue
-            if expected_spacing:
+    # Chercher la meilleure paire avec espacement ~expected_spacing
+    if expected_spacing:
+        # Tolérance stricte ±10% quand l'échelle frontale est fournie :
+        # l'échelle déduite des mires doit être cohérente, sinon paire rejetée
+        tol = 0.10
+        best_pair = None
+        best_score = float("inf")
+        for i in range(len(peaks)):
+            for j in range(i + 1, len(peaks)):
+                dy = abs(peaks[j]["y"] - peaks[i]["y"])
                 spacing_err = abs(dy - expected_spacing)
-                if spacing_err > expected_spacing * 0.40:  # max ±40% d'erreur
+                if spacing_err > expected_spacing * tol:
                     continue
-                score = spacing_err / expected_spacing  # erreur normalisée
-            else:
-                # Fallback : ratio diamètre/espacement
-                avg_radius = (candidates[i]["radius"] + candidates[j]["radius"]) / 2
-                if avg_radius == 0:
-                    continue
-                spacing_ratio = dy / (2 * avg_radius)
-                score = abs(spacing_ratio - 6.25)
-
-            if score < best_score:
-                best_score = score
-                best_pair = (candidates[i], candidates[j])
-
-    if best_pair is None or best_score > 4:
-        # Fallback : si les marqueurs ne sont pas dans le ratio attendu,
-        # prendre les 2 plus grandes zones circulaires alignées verticalement
-        top2 = candidates[:2]
-        dy = top2[1]["y"] - top2[0]["y"]
-        dx = abs(top2[1]["x"] - top2[0]["x"])
-        if dx < dy and dy > 20:
-            best_pair = (top2[0], top2[1])
-
-    if best_pair is None:
+                score = spacing_err / expected_spacing
+                if score < best_score:
+                    best_score = score
+                    best_pair = (peaks[i], peaks[j])
+        
+        if best_pair:
+            log.info(f"  [lateral_checkerboard] ✅ Paire espacement={marker_spacing_mm}mm (écart {best_score*100:.1f}%): ({best_pair[0]['x']},{best_pair[0]['y']}) - ({best_pair[1]['x']},{best_pair[1]['y']}) dy={abs(best_pair[1]['y']-best_pair[0]['y'])}px")
+            return [(best_pair[0]["x"], best_pair[0]["y"]), (best_pair[1]["x"], best_pair[1]["y"])]
+        log.warning(f"  [lateral_checkerboard] ❌ Aucune paire à ±{int(tol*100)}% de {marker_spacing_mm}mm — rejet (échelle frontale incohérente ou mires mal détectées)")
         return []
 
-    return [(best_pair[0]["x"], best_pair[0]["y"]), (best_pair[1]["x"], best_pair[1]["y"])]
+    # Sans échelle connue : fallback top2 pics (non garanti)
+    top2 = peaks[:2]
+    top2.sort(key=lambda p: p["y"])
+    dy = top2[1]["y"] - top2[0]["y"]
+    if dy > 20:
+        log.info(f"  [lateral_checkerboard] ⚠️ Fallback top2 SANS échelle: dy={dy}px")
+        return [(top2[0]["x"], top2[0]["y"]), (top2[1]["x"], top2[1]["y"])]
+
+    log.warning(f"  [lateral_checkerboard] ❌ Aucune paire valide")
+    return []
 
 
 def detect_temple_angle(image: np.ndarray, roi_x0: int, roi_x1: int, roi_y0: int, roi_y1: int) -> Optional[float]:
@@ -966,15 +988,12 @@ def estimate_vertex_distance(image: np.ndarray, markers: list, scale_mm_per_px: 
     # En photo de profil, la cornée est vers la gauche du clip (patient regardant vers la gauche)
     # ou vers la droite (patient regardant vers la droite)
 
-    # La distance horizontale (en mm) = distance vertex
+    # Distance géométrique brute iris → plan des mires, sans correction empirique.
+    # NB : l'iris MediaPipe approxime le plan cornée — c'est une estimation d'image,
+    # pas une mesure optique corrigée.
     vertex_mm = dx_px * scale_mm_per_px
 
-    # Ajustement : la distance entre le bord du clip et le centre de la cornée
-    # surestime légèrement le vertex (le clip est sur le côté, pas au centre du verre)
-    # On applique un facteur de correction empirique
-    vertex_mm *= 0.85  # correction : le clip est déporté sur le côté
-
-    return round(max(vertex_mm, 5.0), 1)  # minimum 5mm
+    return round(max(vertex_mm, 0.0), 1)
 
 
 # ── Endpoints profil ──
@@ -1006,15 +1025,15 @@ async def compute_vertex(req: VertexRequest):
     if dist_px < 1:
         raise HTTPException(422, detail="Points trop proches")
     
+    # Distance mesurée pure — aucun facteur de correction
     vertex_mm = round(dist_px * req.scale_mm_per_px * 10) / 10
-    vertex_mm = max(round(vertex_mm * 0.85 * 10) / 10, 5.0)
     
     log.info(f"Vertex: {dist_px:.1f}px × {req.scale_mm_per_px:.4f} = {vertex_mm}mm")
     return {"vertex_distance_mm": vertex_mm, "distance_px": round(dist_px, 1)}
 
 
 @app.post("/api/analyze-profile", response_model=ProfileResult)
-async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optional[float] = Form(None)):
+async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optional[float] = Form(None), spacing_mm: Optional[float] = Form(None)):
     """
     Analyse une photo de PROFIL DROIT du patient avec le clip de calibration.
     Détecte les 2 marqueurs latéraux (4mm, 25mm verticaux) sur la face latérale du clip.
@@ -1027,24 +1046,34 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
     img = decode_image(contents)
     h, w, _ = img.shape
 
+    log.info(f"[analyze-profile] 📥 image {w}×{h}, scale_in={scale_mm_per_px}")
     if scale_mm_per_px:
-        log.info(f"Analyse profil: échelle calibration frontale = {scale_mm_per_px:.4f} mm/px")
+        log.info(f"[analyze-profile] 📏 calibration face scale = {scale_mm_per_px:.6f} mm/px")
     else:
-        log.info(f"Analyse profil: image {w}×{h} (sans échelle calibration)")
+        log.info(f"[analyze-profile] ⚠️ PAS d'échelle calibration frontale — détection sans contrainte")
 
-    # 1. Détection des 2 marqueurs latéraux (guidée par l'échelle si dispo)
-    markers_px = detect_lateral_markers(img, known_scale=scale_mm_per_px)
+    # 1. Détection des mires latérales — méthode checkerboard 1D (robuste comme calibration frontale)
+    effective_spacing = spacing_mm if spacing_mm and spacing_mm > 0 else LATERAL_MARKER_SPACING_MM
+    markers_px = detect_lateral_checkerboard(img, known_scale=scale_mm_per_px, marker_spacing_mm=effective_spacing)
+    
+    log.info(f"[analyze-profile] 🎯 lateral_markers détectés: {markers_px}")
 
     if len(markers_px) < 2:
         raise HTTPException(422, detail="Impossible de détecter les 2 marqueurs latéraux. "
                                          "Vérifiez que le clip est bien visible sur la photo de profil.")
 
     # 2. Échelle — priorité à l'échelle calibration frontale
+    d_px = np.linalg.norm(np.array(markers_px[0]) - np.array(markers_px[1]))
+    scale_from_markers = effective_spacing / d_px
+    scale_consistent = True
     if scale_mm_per_px:
         scale = scale_mm_per_px
+        # Validation croisée : l'échelle des mires doit être cohérente avec la frontale
+        dev = abs(scale_from_markers - scale) / scale
+        scale_consistent = dev <= 0.10
+        log.info(f"[analyze-profile] échelle mires={scale_from_markers:.4f} vs frontale={scale:.4f} (écart {dev*100:.1f}%, cohérente={scale_consistent})")
     else:
-        d_px = np.linalg.norm(np.array(markers_px[0]) - np.array(markers_px[1]))
-        scale = LATERAL_MARKER_SPACING_MM / d_px
+        scale = scale_from_markers
 
     # 3. Détection de l'angle de la branche (temple)
     # La branche est dans la zone droite de l'image, autour du niveau des marqueurs
@@ -1074,6 +1103,8 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
         height=h,
         lateral_markers=markers_px,
         scale_mm_per_px=round(scale, 6),
+        scale_from_markers_mm_per_px=round(scale_from_markers, 6),
+        scale_consistent=scale_consistent,
         pantoscopic_angle=pantoscopic,
         vertex_distance=vertex,
         face_detected=face_detected,

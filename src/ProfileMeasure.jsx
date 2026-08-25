@@ -55,8 +55,8 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
       console.log('[ProfileMeasure] 🔍 Auto-détection mires latérales — pré-placement initial')
       const resp = await fetch(imageUrl)
       const blob = await resp.blob()
-      // Appel SANS calibrationScale — le backend auto-calibre sur 25mm
-      const data = await analyzeProfile(blob, null)
+      // Appel AVEC calibration frontale si dispo — validation croisée backend ±10%
+      const data = await analyzeProfile(blob, calibrationScale || null)
       console.log('[ProfileMeasure] ✅ Backend response:', JSON.stringify(data, null, 2))
       
       // Pré-placer les marqueurs cyan SUR les mires détectées
@@ -94,7 +94,7 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     } catch (e) {
       console.warn('[ProfileMeasure] Auto-détection indisponible:', e.message)
     }
-  }, [imageUrl, imageSize, vertexNeedsCompute])
+  }, [imageUrl, imageSize, vertexNeedsCompute, calibrationScale])
 
   // Lancement auto au chargement
   useEffect(() => {
