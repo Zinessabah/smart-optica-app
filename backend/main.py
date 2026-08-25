@@ -20,7 +20,7 @@ import os
 
 from lateral import (
     detect_lateral_markers as _detect_lateral,
-    LATERAL_MARKER_SPACING_MM_V3 as LATERAL_MARKER_SPACING_MM,
+    LATERAL_MARKER_SPACING_MM,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -874,13 +874,13 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
     else:
         log.info(f"[analyze-profile] ⚠️ PAS d'échelle calibration frontale — détection sans contrainte")
 
-    # 1. Détection des mires latérales — méthode checkerboard 1D (robuste comme calibration frontale)
+    # 1. Détection des mires latérales — cercles noirs (principal) puis damier (secours)
     effective_spacing = spacing_mm if spacing_mm and spacing_mm > 0 else LATERAL_MARKER_SPACING_MM
     markers_px, lateral_diag = _detect_lateral(
         img, landmarker, known_scale=scale_mm_per_px, marker_spacing_mm=effective_spacing)
-    log.info(f"  [analyze-profile] diag latéral: face={lateral_diag.face_detected} "
-             f"pics={lateral_diag.n_peaks} "
-             f"écart_espacement={lateral_diag.spacing_error_ratio}")
+    log.info(f"  [analyze-profile] diag latéral: chemin={lateral_diag.path} "
+             f"spacing_détecté={lateral_diag.spacing_mm_detected}mm "
+             f"ROI={lateral_diag.roi_used}")
     
     log.info(f"[analyze-profile] 🎯 lateral_markers détectés: {markers_px}")
 
