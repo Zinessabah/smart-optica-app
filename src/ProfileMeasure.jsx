@@ -5,7 +5,7 @@ import { analyzeProfile } from './services/api'
 /**
  * Mesures latérales (profil D) — étape séparée après la capture de la photo.
  * Reçoit la photo latérale DÉJÀ capturée + l'échelle de calibration.
- * Segments : temple 🟠, plan verre 🟣, vertex 🟢 (cornée ↔ face arrière verre).
+ * Segments : temple 🟠, plan verre 🔵, vertex 🟢 (cornée ↔ face arrière verre).
  *
  * Détection auto : au chargement, /api/analyze-profile pré-place les 3 segments
  * (mires latérales → plan verre, Hough → branche, MediaPipe → cornée) ;
@@ -30,6 +30,7 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
   const [scaleDeltaPct, setScaleDeltaPct] = useState(null) // écart % profil vs frontale
   const [scaleSource, setScaleSource] = useState('lateral_markers') // 'lateral_markers' | 'manual'
   const [lateralSpacingMm, setLateralSpacingMm] = useState(null) // 35 (design) ou 25 (legacy)
+  const [lensOnMires, setLensOnMires] = useState(true) // true = sur les mires latérales, false = perpendiculaire (plan verre théorique)
   const autoRunRef = useRef(false)
   const forceAutoRef = useRef(false)
 
@@ -49,14 +50,18 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
       const blob = await resp.blob()
       const data = await analyzeProfile(blob, calibrationScale)
 
-      // Plan du verre : le backend renvoie la ligne du plan du verre (⊥ au segment
-      // des mires pour le design v3/v4, ou le segment lui-même pour l'ancien clip).
-      if (data?.lens_line && data.lens_line.length === 2) {
-        const lens = clampSeg(data.lens_line)
-        setLensLine(prev => (forceAutoRef.current || prev.length === 0 ? lens : prev))
-      } else if (data?.lateral_markers && data.lateral_markers.length === 2) {
+      // Plan du verre : le backend renvoie les mires latérales ET la ligne perpendiculaire.
+      // Au PREMIER affichage, on place SUR les mires latérales (pour vérification échelle ~25mm).
+      // L'opticien valide l'auto-scaling en voyant la distance entre les 2 marqueurs bleus.
+      // Si besoin, un bouton permet de basculer sur la ligne perpendiculaire (plan verre théorique).
+      if (data?.lateral_markers && data.lateral_markers.length === 2) {
         const lens = data.lateral_markers.map(([x, y]) => ({ x: Math.round(x), y: Math.round(y) }))
         setLensLine(prev => (forceAutoRef.current || prev.length === 0 ? lens : prev))
+        setLensOnMires(true) // flag: actuellement sur les mires (pas perpendiculaire)
+      } else if (data?.lens_line && data.lens_line.length === 2) {
+        const lens = clampSeg(data.lens_line)
+        setLensLine(prev => (forceAutoRef.current || prev.length === 0 ? lens : prev))
+        setLensOnMires(false)
       }
       // Branche : segment reconstruit depuis la charnière, à l'angle détecté
       if (data?.temple_line && data.temple_line.length === 2) {
@@ -293,7 +298,7 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
         {lensLine.length >= 2 && (
           <line x1={toPct(lensLine[0].x, imageSize.width)} y1={toPct(lensLine[0].y, imageSize.height)}
             x2={toPct(lensLine[1].x, imageSize.width)} y2={toPct(lensLine[1].y, imageSize.height)}
-            stroke="#8b5cf6" strokeWidth="2.5" strokeLinecap="round" opacity="0.9" />
+            stroke="#3b9eff" strokeWidth="2.5" strokeLinecap="round" opacity="0.9" />
         )}
         {vertexLine.length >= 2 && (() => {
           const [p1, p2] = vertexLine
@@ -465,6 +470,16 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
             Recommencer
           </button>
         )}
+        {autoStatus === 'success' && lensLine.length === 2 && lensOnMires !== null && (
+          <button onClick={() => setLensOnMires(v => !v)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all hover:opacity-90"
+            style={{
+              background: 'rgba(59,158,255,0.1)', color: '#3b9eff',
+              border: '1px solid rgba(59,158,255,0.3)',
+            }}>
+            {lensOnMires ? '⟳ Plan verre (⊥)' : '⟳ Mires latérales'}
+          </button>
+        )}
       </div>
 
       {verifyActive && (
@@ -524,7 +539,7 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
           <img src={imageUrl} alt="Profil" className="w-full aspect-[3/4] object-contain pointer-events-none" />
           {renderSegments()}
           {renderEndpoints(templeLine, '#f59e0b', 'temple')}
-          {renderEndpoints(lensLine, '#8b5cf6', 'lens')}
+          {renderEndpoints(lensLine, '#3b9eff', 'lens')}
           {verifyActive && renderEndpoints(verifyLine, '#22d3ee', 'verify')}
           {/* Handles vertex discrets (16px, transparents) pour le drag */}
           {vertexLine.length === 2 && vertexLine.map((pt, i) => (
@@ -557,7 +572,7 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
           </div>
           <div className="py-2 rounded-xl" style={{ background: 'var(--color-card)', border: '1px solid var(--color-border)' }}>
             <div className="text-[10px]" style={{ color: 'var(--color-text-muted)' }}>Plan verre</div>
-            <div className="text-lg font-semibold" style={{ color: '#8b5cf6' }}>{angleData.lensDeg}°</div>
+            <div className="text-lg font-semibold" style={{ color: '#3b9eff' }}>{angleData.lensDeg}°</div>
           </div>
           <div className="py-2 rounded-xl" style={{ background: 'var(--color-card)', border: '1px solid var(--color-border)' }}>
             <div className="text-[10px]" style={{ color: 'var(--color-text-muted)' }}>Pantoscopique</div>
