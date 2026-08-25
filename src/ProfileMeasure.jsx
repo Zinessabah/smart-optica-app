@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { ArrowLeft, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react'
+import { analyzeProfile } from './services/api'
 
 /**
  * Mesures latérales (profil D) — étape séparée après la capture de la photo.
@@ -16,6 +17,9 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
   const [lensLine, setLensLine] = useState([])        // 2 points plan verre (⟂ aux mires)
   const [vertexLine, setVertexLine] = useState([])    // 2 points cornée→verre
   const dragRef = useRef(null)
+
+  // vertexNeedsCompute doit être déclaré AVANT runAutoDetect qui l'utilise
+  const [vertexNeedsCompute, setVertexNeedsCompute] = useState(false)
 
   // ── Vérification manuelle du calibrage 25 mm (2 points sur les mires latérales) ──
   const [verifyActive, setVerifyActive] = useState(true) // OUVERT par défaut
@@ -41,6 +45,69 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     img.src = imageUrl
   }, [imageUrl])
 
+  // ── Auto-détection latérale (backend) pour PRÉ-PLACER les marqueurs cyan ──
+  const [autoDetected, setAutoDetected] = useState(false)
+  
+  const runAutoDetect = useCallback(async () => {
+    if (!imageUrl || !imageSize || autoDetected) return
+    setAutoDetected(true)
+    try {
+      console.log('[ProfileMeasure] 🔍 Auto-détection mires latérales — pré-placement initial')
+      const resp = await fetch(imageUrl)
+      const blob = await resp.blob()
+      // Appel SANS calibrationScale — le backend auto-calibre sur 25mm
+      const data = await analyzeProfile(blob, null)
+      console.log('[ProfileMeasure] ✅ Backend response:', JSON.stringify(data, null, 2))
+      
+      // Pré-placer les marqueurs cyan SUR les mires détectées
+      if (data?.lateral_markers && data.lateral_markers.length === 2) {
+        const verify = [
+          { x: Math.round(data.lateral_markers[0][0]), y: Math.round(data.lateral_markers[0][1]) },
+          { x: Math.round(data.lateral_markers[1][0]), y: Math.round(data.lateral_markers[1][1]) }
+        ]
+        setVerifyLine(verify)
+        setVerifyActive(true) // ouvre la vérification
+        console.log('[ProfileMeasure] 🎯 Marqueurs cyan pré-placés sur mires détectées')
+      }
+      // Pré-placer temple + lens + vertex si dispo
+      if (data?.temple_line && data.temple_line.length === 2) {
+        setTempleLine(data.temple_line.map(([x,y]) => ({x: Math.round(x), y: Math.round(y)})))
+      }
+      if (data?.lens_line && data.lens_line.length === 2) {
+        setLensLine(data.lens_line.map(([x,y]) => ({x: Math.round(x), y: Math.round(y)})))
+      } else if (data?.lateral_markers && data.lateral_markers.length === 2) {
+        // Calculer ⟂ aux mires
+        const [m1, m2] = data.lateral_markers
+        const cx = (m1[0] + m2[0]) / 2, cy = (m1[1] + m2[1]) / 2
+        const dx = m2[0] - m1[0], dy = m2[1] - m1[1]
+        const px = -dy, py = dx, len = Math.hypot(px, py) || 1
+        const halfLen = 120
+        setLensLine([
+          { x: Math.round(cx - px/len * halfLen), y: Math.round(cy - py/len * halfLen) },
+          { x: Math.round(cx + px/len * halfLen), y: Math.round(cy + py/len * halfLen) }
+        ])
+      }
+      if (data?.vertex_line && data.vertex_line.length === 2) {
+        setVertexLine(data.vertex_line.map(([x,y]) => ({x: Math.round(x), y: Math.round(y)})))
+        vertexNeedsCompute.current = true
+      }
+    } catch (e) {
+      console.warn('[ProfileMeasure] Auto-détection indisponible:', e.message)
+    }
+  }, [imageUrl, imageSize, vertexNeedsCompute])
+
+  // Lancement auto au chargement
+  useEffect(() => {
+    if (!imageSize || autoDetected) return
+    runAutoDetect()
+  }, [imageSize, runAutoDetect, autoDetected])
+
+  // Bouton relancer auto-détection
+  const handleAutoDetect = useCallback(() => {
+    setAutoDetected(false)
+    runAutoDetect()
+  }, [runAutoDetect])
+
   // ── Auto-placer le plan verre (⟂ aux mires) quand vérification faite ──
   useEffect(() => {
     if (verifyResult && lensLine.length === 0 && imageSize) {
@@ -60,8 +127,6 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     }
   }, [verifyResult, lensLine.length, imageSize])
 
-  // Auto-placer le segment vertex au centre quand le plan verre est prêt
-  const [vertexNeedsCompute, setVertexNeedsCompute] = useState(false)
   const allAngleDone = templeLine.length >= 2 && lensLine.length >= 2
   useEffect(() => {
     if (allAngleDone && vertexLine.length === 0 && imageSize) {
@@ -157,6 +222,24 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     }
   }, [imageSize, templeLine, lensLine, verifyActive, verifyLine])
 
+  // ── Calcul angle pantoscopique ──
+  const angleData = (() => {
+    if (templeLine.length < 2 || lensLine.length < 2) return null
+    const tdx = templeLine[1].x - templeLine[0].x
+    const tdy = templeLine[1].y - templeLine[0].y
+    const templeDeg = Math.atan2(tdy, tdx) * 180 / Math.PI
+    const ldx = lensLine[1].x - lensLine[0].x
+    const ldy = lensLine[1].y - lensLine[0].y
+    const lensDeg = Math.atan2(ldy, ldx) * 180 / Math.PI
+    const between = Math.abs(lensDeg - templeDeg)
+    const pantoscopic = between > 90 ? between - 90 : 90 - between
+    return {
+      templeDeg: Math.round(templeDeg * 10) / 10,
+      lensDeg: Math.round(lensDeg * 10) / 10,
+      pantoscopic: Math.round(Math.max(0, Math.min(30, pantoscopic)) * 10) / 10,
+    }
+  })()
+
   // ── Reset ──
   const resetMeasure = useCallback(() => { 
     setTempleLine([]); setLensLine([]); setVertexLine([]); setVertexMm(null); setVerifyLine([]) 
@@ -175,24 +258,6 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
       scale_mm_per_px: effectiveScale || 0,
     })
   }, [imageSize, verifyLine, templeLine, vertexLine, angleData, vertexMm, effectiveScale, onCapture])
-
-  // ── Calcul angle pantoscopique ──
-  const angleData = (() => {
-    if (templeLine.length < 2 || lensLine.length < 2) return null
-    const tdx = templeLine[1].x - templeLine[0].x
-    const tdy = templeLine[1].y - templeLine[0].y
-    const templeDeg = Math.atan2(tdy, tdx) * 180 / Math.PI
-    const ldx = lensLine[1].x - lensLine[0].x
-    const ldy = lensLine[1].y - lensLine[0].y
-    const lensDeg = Math.atan2(ldy, ldx) * 180 / Math.PI
-    const between = Math.abs(lensDeg - templeDeg)
-    const pantoscopic = between > 90 ? between - 90 : 90 - between
-    return {
-      templeDeg: Math.round(templeDeg * 10) / 10,
-      lensDeg: Math.round(lensDeg * 10) / 10,
-      pantoscopic: Math.round(Math.max(0, Math.min(30, pantoscopic)) * 10) / 10,
-    }
-  })()
 
   // ── Rendu SVG ──
   const toPct = (v, d) => `${(v / d) * 100}%`
@@ -355,6 +420,11 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
             Recommencer
           </button>
         )}
+        {/* Bouton relancer auto-détection */}
+        <button onClick={handleAutoDetect} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium hover:opacity-80"
+          style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--color-purple)', border: '1px solid rgba(139,92,246,0.3)' }}>
+          ↻ Re-détecter mires
+        </button>
       </div>
 
       {verifyActive && (
