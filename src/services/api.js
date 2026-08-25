@@ -35,9 +35,17 @@ export async function analyzeImage(imageBlob) {
   return res.json()
 }
 
-export async function analyzeProfile(imageBlob) {
+/**
+ * Analyse la photo de PROFIL — détecte les 2 mires latérales du clip,
+ * l'angle de la branche et la cornée, puis retourne les segments prêts
+ * pour le placement auto dans ProfileMeasure.
+ * @param {Blob} imageBlob
+ * @param {number|null} scaleMmPerPx - échelle mm/px de la calibration frontale (facultatif)
+ */
+export async function analyzeProfile(imageBlob, scaleMmPerPx) {
   const formData = new FormData()
   formData.append('file', imageBlob, 'profile.jpg')
+  if (scaleMmPerPx) formData.append('scale_mm_per_px', String(scaleMmPerPx))
 
   const res = await fetch('/api/analyze-profile', {
     method: 'POST',
