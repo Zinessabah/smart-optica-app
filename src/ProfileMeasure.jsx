@@ -159,7 +159,8 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
 
   const computeVertexFromAPI = useCallback(async () => {
     // Priorité : échelle auto-calibrée du profil (25 mm entre mires) → sinon échelle frontale
-    const scale = profileScale || calibrationScale
+    // Si vérification manuelle montre delta > 15%, on force l'échelle exacte 25mm
+    const scale = effectiveScale
     if (vertexLine.length < 2 || !scale) return
     setVertexLoading(true)
     try {
@@ -178,7 +179,7 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
       }
     } catch { /* silencieux */ }
     setVertexLoading(false)
-  }, [vertexLine, calibrationScale, profileScale])
+  }, [vertexLine, effectiveScale])
 
   const allAngleDone = templeLine.length >= 2 && lensLine.length >= 2
 
@@ -222,6 +223,11 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
       impliedScale: Math.round(25 / d * 10000) / 10000,
     }
   })()
+
+  // Échelle effective : si vérification montre delta > 15%, on force l'échelle 25mm exacte
+  const effectiveScale = (verifyResult && verifyResult.delta != null && Math.abs(verifyResult.delta) > 3.75)
+    ? verifyResult.impliedScale
+    : (profileScale || calibrationScale)
 
   const toggleVerify = useCallback(() => {
     setVerifyActive(v => {
@@ -293,9 +299,9 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
       pantoscopic_angle: angleData?.pantoscopic || 0,
       vertex_distance: vertexMm,
       manual: true, face_detected: false,
-      scale_mm_per_px: profileScale || calibrationScale || 0,
+      scale_mm_per_px: effectiveScale || 0,
     })
-  }, [imageSize, lensLine, templeLine, vertexLine, angleData, vertexMm, calibrationScale, profileScale, onCapture])
+  }, [imageSize, lensLine, templeLine, vertexLine, angleData, vertexMm, effectiveScale, onCapture])
 
   // ── Rendu SVG ──
   const toPct = (v, d) => `${(v / d) * 100}%`
@@ -453,6 +459,14 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
             {scaleSource === 'manual'
               ? '(échelle MANUELLE — détection latérale non fiable, calibration frontale utilisée)'
               : `(auto-calibrée sur le segment de ${lateralSpacingMm ?? 25} mm entre les 2 mires)`}
+          </span>
+        </div>
+      )}
+      {autoStatus === 'success' && effectiveScale !== profileScale && effectiveScale !== calibrationScale && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
+          style={{ background: 'rgba(59,158,255,0.1)', color: '#3b9eff', border: '1px solid rgba(59,158,255,0.3)' }}>
+          <span className="flex-1">
+            📏 Échelle FORCÉE 25mm exacte : <strong>1 px = {Math.round(effectiveScale * 1000) / 1000} mm</strong> (vérification manuelle validée)
           </span>
         </div>
       )}
