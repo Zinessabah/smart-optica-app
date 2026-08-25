@@ -129,7 +129,9 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     }
   }, [imageSize, verifyLine, anglePts])
 
-  // ── Angle pantoscopique entre les 2 segments au sommet ──
+  // ── Angle pantoscopique : écart à 90° de l'angle entre les 2 segments ──
+  // Le plan du verre est perpendiculaire à la branche → angle brut ≈ 90°.
+  // La pantoscopie est la DÉVIATION par rapport à cette perpendiculaire.
   const pantoscopic = (() => {
     if (anglePts.length < 3) return null
     const [a, v, b] = anglePts
@@ -137,7 +139,8 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     const v2 = Math.atan2(b.y - v.y, b.x - v.x) * 180 / Math.PI
     let ang = Math.abs(v2 - v1)
     if (ang > 180) ang = 360 - ang
-    return Math.round(Math.max(0, Math.min(30, ang)) * 10) / 10
+    const deviation = Math.abs(ang - 90)
+    return Math.round(Math.max(0, Math.min(30, deviation)) * 10) / 10
   })()
 
   // ── Reset ──
