@@ -1,15 +1,11 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { ArrowLeft, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react'
-import { analyzeProfile } from './services/api'
 
 /**
  * Mesures latérales (profil D) — étape séparée après la capture de la photo.
- * Reçoit la photo latérale DÉJÀ capturée + l'échelle de calibration.
+ * Pas d'auto-détection : l'opticien place manuellement les 2 points cyan sur les mires latérales (25mm fixe).
+ * L'échelle est déduite : 25mm / distance_px.
  * Segments : temple 🟠, plan verre 🔵, vertex 🟢 (cornée ↔ face arrière verre).
- *
- * Détection auto : au chargement, /api/analyze-profile pré-place les 3 segments
- * (mires latérales → plan verre, Hough → branche, MediaPipe → cornée) ;
- * tout reste ajustable à la main.
  */
 export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, onSkip, onBack }) {
   const [imageSize, setImageSize] = useState(null)
@@ -17,112 +13,25 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
 
   // Mesure manuelle
   const [templeLine, setTempleLine] = useState([])   // 2 points branche
-  const [lensLine, setLensLine] = useState([])        // 2 points plan verre
+  const [lensLine, setLensLine] = useState([])        // 2 points plan verre (⟂ aux mires)
   const [vertexLine, setVertexLine] = useState([])    // 2 points cornée→verre
   const dragRef = useRef(null)
 
-  // ── Détection auto (backend /api/analyze-profile) ──
-  const [autoStatus, setAutoStatus] = useState('idle') // idle | detecting | success | failed
-  // Échelle de MESURE du profil : auto-calibrée sur les 25 mm entre les 2 mires
-  // latérales (le backend la calcule toujours ainsi). L'échelle frontale ne sert
-  // qu'à guider la détection — les 2 photos peuvent avoir des échelles différentes.
-  const [profileScale, setProfileScale] = useState(null)
-  const [scaleDeltaPct, setScaleDeltaPct] = useState(null) // écart % profil vs frontale
-  const [scaleSource, setScaleSource] = useState('lateral_markers') // 'lateral_markers' | 'manual'
-  const [lateralSpacingMm, setLateralSpacingMm] = useState(null) // 35 (design) ou 25 (legacy)
-  const autoRunRef = useRef(false)
-  const forceAutoRef = useRef(false)
+  // ── Vérification manuelle du calibrage 25 mm (2 points sur les mires latérales) ──
+  const [verifyActive, setVerifyActive] = useState(true) // OUVERT par défaut
+  const [verifyLine, setVerifyLine] = useState([])   // 2 points sur les mires latérales
 
-  const clampSeg = useCallback((pts) => {
-    if (!imageSize) return pts
-    return pts.map(([x, y]) => ({
-      x: Math.max(0, Math.min(imageSize.width, Math.round(x))),
-      y: Math.max(0, Math.min(imageSize.height, Math.round(y))),
-    }))
-  }, [imageSize])
+  // Échelle déduite de la vérification manuelle (25mm / distance_px)
+  const verifyResult = (() => {
+    if (verifyLine.length < 2) return null
+    const d = Math.hypot(verifyLine[1].x - verifyLine[0].x, verifyLine[1].y - verifyLine[0].y)
+    if (d === 0) return { px: 0, impliedScale: null }
+    const impliedScale = 25 / d  // 25mm FIXE / distance en pixels
+    return { px: Math.round(d), impliedScale }
+  })()
 
-  const runAutoDetect = useCallback(async () => {
-    if (!imageUrl || !imageSize || autoStatus === 'detecting') return
-    setAutoStatus('detecting')
-    try {
-      const resp = await fetch(imageUrl)
-      const blob = await resp.blob()
-      const data = await analyzeProfile(blob, calibrationScale)
-
-      // Plan du verre : perpendiculaire aux mires latérales (lateral_markers).
-      // On calcule la ligne perpendiculaire passant par le centre des mires.
-      if (data?.lateral_markers && data.lateral_markers.length === 2) {
-        const [m1, m2] = data.lateral_markers
-        const cx = (m1[0] + m2[0]) / 2
-        const cy = (m1[1] + m2[1]) / 2
-        // Vecteur des mires
-        const dx = m2[0] - m1[0]
-        const dy = m2[1] - m1[1]
-        // Perpendiculaire (rotate 90°)
-        const px = -dy
-        const py = dx
-        const len = Math.hypot(px, py) || 1
-        const halfLen = 120 // demi-longueur en px
-        const lens = [
-          { x: Math.round(cx - px/len * halfLen), y: Math.round(cy - py/len * halfLen) },
-          { x: Math.round(cx + px/len * halfLen), y: Math.round(cy + py/len * halfLen) }
-        ]
-        setLensLine(prev => (forceAutoRef.current || prev.length === 0 ? lens : prev))
-        // Cyan sur les mires pour vérification échelle 25mm
-        const verify = [
-          { x: Math.round(m1[0]), y: Math.round(m1[1]) },
-          { x: Math.round(m2[0]), y: Math.round(m2[1]) }
-        ]
-        setVerifyLine(prev => (forceAutoRef.current || prev.length === 0 ? verify : prev))
-        setVerifyActive(true) // ouvre la vérification auto
-      }
-
-      // Branche : segment reconstruit depuis la charnière, à l'angle détecté
-      if (data?.temple_line && data.temple_line.length === 2) {
-        const temple = clampSeg(data.temple_line)
-        setTempleLine(prev => (forceAutoRef.current || prev.length === 0 ? temple : prev))
-      }
-      // Vertex : cornée → face arrière du verre (calculé ensuite via /api/compute-vertex)
-      if (data?.vertex_line && data.vertex_line.length === 2) {
-        const vertex = clampSeg(data.vertex_line)
-        setVertexLine(prev => (forceAutoRef.current || prev.length === 0 ? vertex : prev))
-        vertexNeedsCompute.current = true
-      }
-
-      // Échelle de mesure : le backend l'auto-calibre sur les 25 mm entre les centres
-      // des 2 mires latérales — c'est elle qui doit servir pour le vertex, pas celle
-      // de la photo de face (distances de prise de vue potentiellement différentes).
-      if (data?.scale_mm_per_px && data.scale_mm_per_px > 0) {
-        setProfileScale(data.scale_mm_per_px)
-      }
-      if (data?.scale_delta_pct != null) {
-        setScaleDeltaPct(data.scale_delta_pct)
-        if (data?.scale_source) setScaleSource(data.scale_source)
-      }
-      if (data?.lateral_spacing_mm) {
-        setLateralSpacingMm(data.lateral_spacing_mm)
-      }
-
-      forceAutoRef.current = false
-      setAutoStatus('success')
-    } catch (e) {
-      console.warn('[ProfileMeasure] Analyse auto du profil indisponible:', e.message)
-      forceAutoRef.current = false
-      setAutoStatus('failed')
-    }
-  }, [imageUrl, imageSize, calibrationScale, autoStatus, clampSeg])
-
-  // Lancement unique dès que l'image est dimensionnée
-  useEffect(() => {
-    if (!imageSize || autoRunRef.current) return
-    autoRunRef.current = true
-    runAutoDetect()
-  }, [imageSize, runAutoDetect])
-
-  const handleAutoDetect = useCallback(() => {
-    forceAutoRef.current = true // remplace les segments existants
-    runAutoDetect()
-  }, [runAutoDetect])
+  // Échelle effective = vérification manuelle OU calibration frontale (repli)
+  const effectiveScale = verifyResult?.impliedScale || calibrationScale
 
   // ── Chargement de l'image déjà capturée ──
   useEffect(() => {
@@ -132,62 +41,43 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     img.src = imageUrl
   }, [imageUrl])
 
-  // ── Calcul angle pantoscopique ──
-  const angleData = (() => {
-    if (templeLine.length < 2 || lensLine.length < 2) return null
-    const tdx = templeLine[1].x - templeLine[0].x
-    const tdy = templeLine[1].y - templeLine[0].y
-    const templeDeg = Math.atan2(tdy, tdx) * 180 / Math.PI
-    const ldx = lensLine[1].x - lensLine[0].x
-    const ldy = lensLine[1].y - lensLine[0].y
-    const lensDeg = Math.atan2(ldy, ldx) * 180 / Math.PI
-    const between = Math.abs(lensDeg - templeDeg)
-    // Pantoscopique = écart du plan verre par rapport à la verticale,
-    // après correction de l'inclinaison caméra via la branche
-    const pantoscopic = between > 90 ? between - 90 : 90 - between
-    return {
-      templeDeg: Math.round(templeDeg * 10) / 10,
-      lensDeg: Math.round(lensDeg * 10) / 10,
-      pantoscopic: Math.round(Math.max(0, Math.min(30, pantoscopic)) * 10) / 10,
+  // ── Auto-placer le plan verre (⟂ aux mires) quand vérification faite ──
+  useEffect(() => {
+    if (verifyResult && lensLine.length === 0 && imageSize) {
+      const [m1, m2] = verifyLine
+      const cx = (m1.x + m2.x) / 2
+      const cy = (m1.y + m2.y) / 2
+      const dx = m2.x - m1.x
+      const dy = m2.y - m1.y
+      const px = -dy, py = dx
+      const len = Math.hypot(px, py) || 1
+      const halfLen = 120
+      const lens = [
+        { x: Math.round(cx - px/len * halfLen), y: Math.round(cy - py/len * halfLen) },
+        { x: Math.round(cx + px/len * halfLen), y: Math.round(cy + py/len * halfLen) }
+      ]
+      setLensLine(lens)
     }
-  })()
+  }, [verifyResult, lensLine.length, imageSize])
+
+  // Auto-placer le segment vertex au centre quand le plan verre est prêt
+  const [vertexNeedsCompute, setVertexNeedsCompute] = useState(false)
+  const allAngleDone = templeLine.length >= 2 && lensLine.length >= 2
+  useEffect(() => {
+    if (allAngleDone && vertexLine.length === 0 && imageSize) {
+      const cx = Math.round(imageSize.width / 2)
+      const cy = Math.round(imageSize.height / 2)
+      setVertexLine([{ x: cx - 30, y: cy }, { x: cx + 30, y: cy }])
+      setVertexNeedsCompute(true)
+    }
+  }, [allAngleDone, vertexLine.length, imageSize])
 
   // ── Vertex → API backend ──
   const [vertexMm, setVertexMm] = useState(null)
   const [vertexLoading, setVertexLoading] = useState(false)
-  const vertexNeedsCompute = useRef(false)
-
-  // ── Vérification du calibrage 25 mm ──
-  // L'utilisateur place 2 points (reliés par une droite) sur les 2 cercles noirs
-  // latéraux du clip : la distance mesurée doit valoir ~25 mm avec l'échelle active.
-  const [verifyActive, setVerifyActive] = useState(false)
-  const [verifyLine, setVerifyLine] = useState([])   // 2 points
-
-  const verifyResult = (() => {
-    if (verifyLine.length < 2) return null
-    const scale = profileScale || calibrationScale
-    const d = Math.hypot(verifyLine[1].x - verifyLine[0].x, verifyLine[1].y - verifyLine[0].y)
-    if (!scale || d === 0) return { px: Math.round(d), mm: null, delta: null, scale: null, impliedScale: null }
-    const mm = d * scale
-    return {
-      px: Math.round(d),
-      mm: Math.round(mm * 10) / 10,
-      delta: Math.round((mm - 25) * 10) / 10,
-      scale,
-      impliedScale: Math.round(25 / d * 10000) / 10000,
-    }
-  })()
-
-  // Échelle effective : si vérification montre delta > 15%, on force l'échelle 25mm exacte
-  const effectiveScale = (verifyResult && verifyResult.delta != null && Math.abs(verifyResult.delta) > 3.75)
-    ? verifyResult.impliedScale
-    : (profileScale || calibrationScale)
 
   const computeVertexFromAPI = useCallback(async () => {
-    // Priorité : échelle auto-calibrée du profil (25 mm entre mires) → sinon échelle frontale
-    // Si vérification manuelle montre delta > 15%, on force l'échelle exacte 25mm
-    const scale = effectiveScale
-    if (vertexLine.length < 2 || !scale) return
+    if (vertexLine.length < 2 || !effectiveScale) return
     setVertexLoading(true)
     try {
       const res = await fetch('/api/compute-vertex', {
@@ -196,7 +86,7 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
         body: JSON.stringify({
           cornea_x: vertexLine[0].x, cornea_y: vertexLine[0].y,
           lens_back_x: vertexLine[1].x, lens_back_y: vertexLine[1].y,
-          scale_mm_per_px: scale,
+          scale_mm_per_px: effectiveScale,
         }),
       })
       if (res.ok) {
@@ -207,35 +97,14 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     setVertexLoading(false)
   }, [vertexLine, effectiveScale])
 
-  const allAngleDone = templeLine.length >= 2 && lensLine.length >= 2
-
-  // Auto-placer le segment vertex au centre quand le plan verre est prêt
   useEffect(() => {
-    if (allAngleDone && vertexLine.length === 0 && imageSize) {
-      const cx = Math.round(imageSize.width / 2)
-      const cy = Math.round(imageSize.height / 2)
-      setVertexLine([{ x: cx - 30, y: cy }, { x: cx + 30, y: cy }])
-      vertexNeedsCompute.current = true
-    }
-  }, [allAngleDone, vertexLine.length, imageSize])
-
-  // Appeler l'API après placement ou drag
-  useEffect(() => {
-    if (vertexLine.length === 2 && vertexNeedsCompute.current) {
-      vertexNeedsCompute.current = false
+    if (vertexLine.length === 2 && vertexNeedsCompute) {
+      setVertexNeedsCompute(false)
       computeVertexFromAPI()
     }
   }, [vertexLine, computeVertexFromAPI])
 
   const allDone = allAngleDone && vertexLine.length === 2
-
-  const toggleVerify = useCallback(() => {
-    setVerifyActive(v => {
-      const next = !v
-      if (next) setVerifyLine([])
-      return next
-    })
-  }, [])
 
   // ── Drag & drop des extrémités ──
   const handlePointerDown = useCallback((e) => {
@@ -264,36 +133,40 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     }
     const onUp = () => {
       const wasVertex = dragRef.current?.setter === setVertexLine
+      const wasVerify = dragRef.current?.setter === setVerifyLine
       dragRef.current = null
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
-      if (wasVertex) vertexNeedsCompute.current = true
+      if (wasVertex) setVertexNeedsCompute(true)
     }
     window.addEventListener('pointermove', onMove); window.addEventListener('pointerup', onUp)
   }, [imageSize])
 
-  // ── Clic pour placer temple/lens (ou les points de vérification) ──
+  // ── Clic pour placer temple/lens/verify ──
   const handleImageClick = useCallback((e) => {
     if (!imageSize) return
     if (e.target.closest('[data-seg-type]')) return
     const rect = e.currentTarget.getBoundingClientRect()
     const pt = { x: Math.round((e.clientX - rect.left) / rect.width * imageSize.width), y: Math.round((e.clientY - rect.top) / rect.height * imageSize.height) }
-    if (verifyActive) {
-      if (verifyLine.length < 2) setVerifyLine(prev => [...prev, pt])
-      return
+    if (verifyActive && verifyLine.length < 2) {
+      setVerifyLine(prev => [...prev, pt])
+    } else if (templeLine.length < 2) {
+      setTempleLine(prev => [...prev, pt])
+    } else if (lensLine.length < 2) {
+      setLensLine(prev => [...prev, pt])
     }
-    if (templeLine.length < 2) setTempleLine(prev => [...prev, pt])
-    else if (lensLine.length < 2) setLensLine(prev => [...prev, pt])
-  }, [imageSize, templeLine, lensLine, verifyActive, verifyLine.length])
+  }, [imageSize, templeLine, lensLine, verifyActive, verifyLine])
 
   // ── Reset ──
-  const resetMeasure = useCallback(() => { setTempleLine([]); setLensLine([]); setVertexLine([]); setVertexMm(null); setVerifyLine([]) }, [])
+  const resetMeasure = useCallback(() => { 
+    setTempleLine([]); setLensLine([]); setVertexLine([]); setVertexMm(null); setVerifyLine([]) 
+  }, [])
 
   // ── Validation ──
   const confirm = useCallback(() => {
     onCapture({
       width: imageSize?.width || 0, height: imageSize?.height || 0,
-      lateral_markers: [[lensLine[0].x, lensLine[0].y], [lensLine[1].x, lensLine[1].y]],
+      lateral_markers: verifyLine.length === 2 ? [[verifyLine[0].x, verifyLine[0].y], [verifyLine[1].x, verifyLine[1].y]] : null,
       temple_markers: [[templeLine[0].x, templeLine[0].y], [templeLine[1].x, templeLine[1].y]],
       vertex_markers: vertexLine.length === 2 ? [[vertexLine[0].x, vertexLine[0].y], [vertexLine[1].x, vertexLine[1].y]] : null,
       pantoscopic_angle: angleData?.pantoscopic || 0,
@@ -301,7 +174,25 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
       manual: true, face_detected: false,
       scale_mm_per_px: effectiveScale || 0,
     })
-  }, [imageSize, lensLine, templeLine, vertexLine, angleData, vertexMm, effectiveScale, onCapture])
+  }, [imageSize, verifyLine, templeLine, vertexLine, angleData, vertexMm, effectiveScale, onCapture])
+
+  // ── Calcul angle pantoscopique ──
+  const angleData = (() => {
+    if (templeLine.length < 2 || lensLine.length < 2) return null
+    const tdx = templeLine[1].x - templeLine[0].x
+    const tdy = templeLine[1].y - templeLine[0].y
+    const templeDeg = Math.atan2(tdy, tdx) * 180 / Math.PI
+    const ldx = lensLine[1].x - lensLine[0].x
+    const ldy = lensLine[1].y - lensLine[0].y
+    const lensDeg = Math.atan2(ldy, ldx) * 180 / Math.PI
+    const between = Math.abs(lensDeg - templeDeg)
+    const pantoscopic = between > 90 ? between - 90 : 90 - between
+    return {
+      templeDeg: Math.round(templeDeg * 10) / 10,
+      lensDeg: Math.round(lensDeg * 10) / 10,
+      pantoscopic: Math.round(Math.max(0, Math.min(30, pantoscopic)) * 10) / 10,
+    }
+  })()
 
   // ── Rendu SVG ──
   const toPct = (v, d) => `${(v / d) * 100}%`
@@ -324,38 +215,19 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
           const [p1, p2] = vertexLine
           const dx = p2.x - p1.x, dy = p2.y - p1.y
           const len = Math.sqrt(dx*dx + dy*dy) || 1
-          const px = -(dy / len), py = (dx / len)  // vecteur perpendiculaire
-          const tick = 8  // demi-longueur du tick
+          const px = -(dy / len), py = (dx / len)
+          const tick = 8
           return (
             <>
               <line x1={toPct(p1.x, imageSize.width)} y1={toPct(p1.y, imageSize.height)}
                 x2={toPct(p2.x, imageSize.width)} y2={toPct(p2.y, imageSize.height)}
                 stroke="#10b981" strokeWidth="1.5" strokeLinecap="round" opacity="0.8" strokeDasharray="6 3" />
-              {/* Ticks perpendiculaires aux extrémités */}
               <line x1={toPct(p1.x - px*tick, imageSize.width)} y1={toPct(p1.y - py*tick, imageSize.height)}
                 x2={toPct(p1.x + px*tick, imageSize.width)} y2={toPct(p1.y + py*tick, imageSize.height)}
                 stroke="#10b981" strokeWidth="1.5" strokeLinecap="round" opacity="0.9" />
               <line x1={toPct(p2.x - px*tick, imageSize.width)} y1={toPct(p2.y - py*tick, imageSize.height)}
                 x2={toPct(p2.x + px*tick, imageSize.width)} y2={toPct(p2.y + py*tick, imageSize.height)}
                 stroke="#10b981" strokeWidth="1.5" strokeLinecap="round" opacity="0.9" />
-            </>
-          )
-        })()}
-        {verifyLine.length >= 2 && (() => {
-          const [p1, p2] = verifyLine
-          const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2
-          const label = verifyResult?.mm != null ? `${verifyResult.mm} mm` : '25 mm ?'
-          return (
-            <>
-              <line x1={toPct(p1.x, imageSize.width)} y1={toPct(p1.y, imageSize.height)}
-                x2={toPct(p2.x, imageSize.width)} y2={toPct(p2.y, imageSize.height)}
-                stroke="#22d3ee" strokeWidth="2.5" strokeLinecap="round" opacity="0.95" />
-              <text x={toPct(mx, imageSize.width)} y={toPct(my, imageSize.height)}
-                fontSize="11" fontWeight="700" fill="#22d3ee" textAnchor="middle"
-                dominantBaseline="middle"
-                style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.9))', pointerEvents: 'none' }}>
-                {label}
-              </text>
             </>
           )
         })()}
@@ -425,140 +297,6 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
         </div>
       </div>
 
-      {/* Détection auto du profil (backend /api/analyze-profile) */}
-      {autoStatus === 'detecting' && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
-          style={{ background: 'var(--color-purple-bg)', color: 'var(--color-purple)', border: '1px solid rgba(139,92,246,0.25)' }}>
-          <Loader2 size={14} className="animate-spin" />
-          <span className="flex-1">Analyse automatique du profil en cours…</span>
-        </div>
-      )}
-      {autoStatus === 'success' && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
-          style={{ background: 'var(--color-green-bg)', color: 'var(--color-green)', border: '1px solid rgba(34,197,94,0.25)' }}>
-          <CheckCircle2 size={14} />
-          <span className="flex-1">Repères détectés automatiquement — ajustez si besoin</span>
-          <button onClick={handleAutoDetect} className="shrink-0 underline decoration-dotted hover:opacity-80">↻ Relancer</button>
-        </div>
-      )}
-      {autoStatus === 'failed' && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
-          style={{ background: 'var(--color-red-bg)', color: 'var(--color-red)', border: '1px solid rgba(255,107,107,0.25)' }}>
-          <AlertTriangle size={14} />
-          <span className="flex-1">Détection auto impossible — placement manuel</span>
-          <button onClick={handleAutoDetect} className="shrink-0 underline decoration-dotted hover:opacity-80">↻ Réessayer</button>
-        </div>
-      )}
-
-      {/* Échelle de mesure du profil — auto-calibrée ou manuelle (règle métrologique) */}
-      {autoStatus === 'success' && profileScale && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
-          style={{ background: 'rgba(201,160,90,0.08)', color: 'var(--color-gold)', border: '1px solid rgba(201,160,90,0.2)' }}>
-          <span className="flex-1">
-            Échelle du profil : <strong>1 px = {Math.round(profileScale * 1000) / 1000} mm</strong>{' '}
-            {scaleSource === 'manual'
-              ? '(échelle MANUELLE — détection latérale non fiable, calibration frontale utilisée)'
-              : `(auto-calibrée sur le segment de ${lateralSpacingMm ?? 25} mm entre les 2 mires)`}
-          </span>
-        </div>
-      )}
-      {autoStatus === 'success' && effectiveScale !== profileScale && effectiveScale !== calibrationScale && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
-          style={{ background: 'rgba(59,158,255,0.1)', color: '#3b9eff', border: '1px solid rgba(59,158,255,0.3)' }}>
-          <span className="flex-1">
-            📏 Échelle FORCÉE 25mm exacte : <strong>1 px = {Math.round(effectiveScale * 1000) / 1000} mm</strong> (vérification manuelle validée)
-          </span>
-        </div>
-      )}
-      {autoStatus === 'success' && scaleDeltaPct != null && scaleDeltaPct > 15 && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
-          style={{ background: 'var(--color-red-bg)', color: 'var(--color-red)', border: '1px solid rgba(255,107,107,0.25)' }}>
-          <AlertTriangle size={14} />
-          <span className="flex-1">
-            ⚠️ Échelle auto {scaleDeltaPct}% ≠ échelle manuelle — l'échelle MANUELLE est utilisée
-            pour la mesure (règle métrologique : la détection latérale est jugée non fiable).
-          </span>
-        </div>
-      )}
-
-      {/* Vérification du calibrage 25 mm (2 points sur les cercles noirs latéraux) */}
-      <div className="flex items-center justify-between gap-2">
-        <button onClick={toggleVerify}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-medium transition-all hover:opacity-90"
-          style={{
-            background: verifyActive ? 'rgba(34,211,238,0.15)' : 'var(--color-border)',
-            color: verifyActive ? '#22d3ee' : 'var(--color-text-muted)',
-            border: verifyActive ? '1.5px solid #22d3ee' : '1.5px solid transparent',
-          }}>
-          {verifyActive ? '✕ Fermer la vérification' : '🔍 Vérifier le calibrage 25 mm'}
-        </button>
-        {verifyActive && verifyLine.length > 0 && (
-          <button onClick={() => setVerifyLine([])} className="text-xs underline decoration-dotted hover:opacity-80"
-            style={{ color: 'var(--color-text-muted)' }}>
-            Recommencer
-          </button>
-        )}
-      </div>
-
-      {verifyActive && (
-        <div className="rounded-xl px-4 py-3 text-xs border"
-          style={{
-            background: verifyResult && verifyResult.px != null
-              ? (Math.abs((verifyResult.scale - (25 / verifyResult.px)) / (25 / verifyResult.px) * 100) <= 5
-                  ? 'var(--color-green-bg)'
-                  : Math.abs((verifyResult.scale - (25 / verifyResult.px)) / (25 / verifyResult.px) * 100) <= 15
-                      ? 'rgba(201,160,90,0.12)'
-                      : 'var(--color-red-bg)')
-              : 'var(--color-bg)',
-            borderColor: verifyResult && verifyResult.px != null
-              ? (Math.abs((verifyResult.scale - (25 / verifyResult.px)) / (25 / verifyResult.px) * 100) <= 5
-                  ? 'rgba(34,197,94,0.3)'
-                  : Math.abs((verifyResult.scale - (25 / verifyResult.px)) / (25 / verifyResult.px) * 100) <= 15
-                      ? 'rgba(201,160,90,0.3)'
-                      : 'rgba(255,107,107,0.3)')
-              : 'var(--color-border)',
-          }}>
-                    {!verifyResult || verifyResult.px == null ? (
-            <span style={{ color: 'var(--color-text-muted)' }}>
-              {verifyLine.length < 2
-                ? 'Placez 2 points (reliés par une droite cyan) sur les 2 cercles noirs latéraux.'
-                : 'Échelle indisponible — faites d\'abord la calibration frontale.'}
-            </span>
-          ) : (
-            (() => {
-              const impliedScale = 25 / verifyResult.px
-              const delta = (verifyResult.scale - impliedScale) / impliedScale * 100
-              const color = Math.abs(delta) <= 5 ? 'var(--color-green)' : Math.abs(delta) <= 15 ? 'var(--color-gold)' : 'var(--color-red)'
-              return (
-                <div className="space-y-1">
-                  <div className="flex justify-between">
-                    <span style={{ color: 'var(--color-text-muted)' }}>Distance réelle entre les 2 mires (fixe)</span>
-                    <span className="font-bold" style={{ color: 'var(--color-green)' }}>25.0 mm</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span style={{ color: 'var(--color-text-muted)' }}>Échelle calculée (25 mm / distance px)</span>
-                    <span style={{ color: '#22d3ee', fontWeight: 600 }}>1 px = {impliedScale.toFixed(4)} mm</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span style={{ color: 'var(--color-text-muted)' }}>Échelle auto actuelle</span>
-                    <span style={{ color: 'var(--color-text-dim)' }}>1 px = {verifyResult.scale.toFixed(4)} mm</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span style={{ color: 'var(--color-text-muted)' }}>Écart</span>
-                    <span className="font-bold" style={{ color }}>
-                      {delta > 0 ? '+' : ''}{delta.toFixed(1)}%
-                    </span>
-                  </div>
-                  <div style={{ color }}>
-                    {Math.abs(delta) <= 5 ? '✅ Calibrage conforme (écart ≤5%)' : Math.abs(delta) <= 15 ? '⚠️ Calibrage approximatif — l\'échelle sera forcée à 25mm exact' : '❌ Calibrage incohérent — l\'échelle SERA FORCÉE à 25mm exact'}
-                  </div>
-                </div>
-              )
-            })()
-          )}
-        </div>
-      )}
-
       <div className="rounded-2xl border overflow-hidden relative" style={{ background: 'var(--color-card)', borderColor: 'var(--color-border)' }}>
         <div className="relative select-none" style={{ touchAction: 'none' }}
           onPointerDown={handlePointerDown} onClick={handleImageClick}>
@@ -585,10 +323,69 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
         borderColor: step === 'done' ? 'rgba(16,185,129,0.25)' : step === 'vertex' ? 'rgba(16,185,129,0.2)' : 'rgba(139,92,246,0.2)',
       }}>
         {step === 'temple' && <>🟠 Placez 2 points sur la <strong>branche</strong> ({templeLine.length}/2)</>}
-        {step === 'lens' && <>🟣 Placez 2 points sur le <strong>plan du verre</strong> ({lensLine.length}/2)</>}
+        {step === 'lens' && <>🔵 Placez 2 points sur le <strong>plan du verre</strong> (auto ⟂ aux mires) ({lensLine.length}/2)</>}
         {step === 'vertex' && <>🟢 <strong>Segment vertex</strong> placé — ajustez cornée (gauche) et face arrière du verre (droite)</>}
         {step === 'done' && angleData && <>✅ Pantoscopique <strong>{angleData.pantoscopic}°</strong> | Vertex <strong>{vertexLoading ? '...' : vertexMm ? `${vertexMm} mm` : '—'}</strong></>}
       </div>
+
+      {/* Échelle de mesure — basée sur les 2 mires latérales (25mm FIXE) */}
+      {verifyResult && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
+          style={{ background: 'rgba(34,211,238,0.1)', color: '#22d3ee', border: '1px solid rgba(34,211,238,0.3)' }}>
+          <span className="flex-1">
+            📏 Calibrage manuel : <strong>25.0 mm</strong> = {verifyResult.px} px → <strong>1 px = {verifyResult.impliedScale.toFixed(4)} mm</strong>
+          </span>
+        </div>
+      )}
+
+      {/* Vérification du calibrage 25 mm (2 points sur les cercles noirs latéraux) */}
+      <div className="flex items-center justify-between gap-2">
+        <button onClick={() => setVerifyActive(v => { const n = !v; if (n) setVerifyLine([]); return n })}
+          className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-medium transition-all hover:opacity-90"
+          style={{
+            background: verifyActive ? 'rgba(34,211,238,0.15)' : 'var(--color-border)',
+            color: verifyActive ? '#22d3ee' : 'var(--color-text-muted)',
+            border: verifyActive ? '1.5px solid #22d3ee' : '1.5px solid transparent',
+          }}>
+          {verifyActive ? '✕ Fermer la vérification 25mm' : '🔍 Ouvrir la vérification 25mm'}
+        </button>
+        {verifyActive && verifyLine.length > 0 && (
+          <button onClick={() => setVerifyLine([])} className="text-xs underline decoration-dotted hover:opacity-80"
+            style={{ color: 'var(--color-text-muted)' }}>
+            Recommencer
+          </button>
+        )}
+      </div>
+
+      {verifyActive && (
+        <div className="rounded-xl px-4 py-3 text-xs border"
+          style={{
+            background: verifyResult ? 'var(--color-green-bg)' : 'var(--color-bg)',
+            borderColor: verifyResult ? 'rgba(34,197,94,0.3)' : 'var(--color-border)',
+          }}>
+          {!verifyResult ? (
+            <span style={{ color: 'var(--color-text-muted)' }}>
+              {verifyLine.length < 2
+                ? 'Placez 2 points (reliés par une droite cyan) sur les 2 cercles noirs latéraux.'
+                : 'Échelle indisponible'}
+            </span>
+          ) : (
+            <div className="space-y-1">
+              <div className="flex justify-between">
+                <span style={{ color: 'var(--color-text-muted)' }}>Distance réelle entre les 2 mires (fixe)</span>
+                <span className="font-bold" style={{ color: 'var(--color-green)' }}>25.0 mm</span>
+              </div>
+              <div className="flex justify-between">
+                <span style={{ color: 'var(--color-text-muted)' }}>Échelle calculée (25 mm / distance px)</span>
+                <span style={{ color: '#22d3ee', fontWeight: 600 }}>1 px = {verifyResult.impliedScale.toFixed(4)} mm</span>
+              </div>
+              <div style={{ color: 'var(--color-green)' }}>
+                ✅ Calibrage manuel validé — cette échelle sert pour vertex + mesures
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {allAngleDone && angleData && (
         <div className="grid grid-cols-3 gap-3 text-center">
