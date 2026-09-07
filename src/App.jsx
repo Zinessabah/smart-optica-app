@@ -1,14 +1,18 @@
-import { useState, useCallback, useEffect } from 'react'
-import { Ruler, Camera, Upload } from 'lucide-react'
+import { useState, useCallback, useEffect, useMemo } from 'react'
+import { Ruler, Camera, Upload, History, ArrowLeft } from 'lucide-react'
 import PhotoPicker from './PhotoPicker'
 import ProfileMeasure from './ProfileMeasure'
 import CalibrationOverlay from './CalibrationOverlay'
 import PupilMarker from './PupilMarker'
 import ResultCard from './ResultCard'
 import { analyzeImage, checkHealth } from './services/api'
+import AuthScreen from './components/AuthScreen'
+import HistoryPage from './pages/HistoryPage'
+import { getToken, fetchMe, clearSession } from './services/auth'
+import { serializeSession, restoreSession, isStepResumable, SESSION_KEY } from './core/sessionPersistence'
 
 // ── Écran d'accueil simplifié ──
-function HomeScreen({ onStart }) {
+function HomeScreen({ onStart, onHistory }) {
   const card = "flex flex-col items-center rounded-2xl border cursor-pointer transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]"
   return (
     <div className="space-y-4 animate-fade-in">
@@ -42,19 +46,68 @@ function HomeScreen({ onStart }) {
           <span className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>Face + Profil depuis la galerie</span>
         </div>
       </button>
+
+      <button onClick={onHistory} className={card}
+        style={{ background: 'var(--color-card)', borderColor: 'var(--color-border)' }}>
+        <div className="flex flex-col items-center py-8 px-6" style={{ minHeight: 120 }}>
+          <div className="w-12 h-12 rounded-2xl flex items-center justify-center mb-3" style={{ background: 'var(--color-gold-bg)' }}>
+            <History size={24} style={{ color: 'var(--color-gold)' }} />
+          </div>
+          <span className="text-base font-medium" style={{ color: 'var(--color-text)' }}>Historique des mesures</span>
+          <span className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>Voir les centrages enregistrés</span>
+        </div>
+      </button>
     </div>
   )
 }
 
 export default function App() {
-  const [step, setStep] = useState('home')
-  const [photoSource, setPhotoSource] = useState(null) // 'camera' | 'upload'
-  const [measurements, setMeasurements] = useState(null)
-  const [imageData, setImageData] = useState(null)
-  const [profileImageUrl, setProfileImageUrl] = useState(null)
-  const [calibration, setCalibration] = useState(null)
-  const [faceData, setFaceData] = useState(null)
+  // ── Restauration de session (une seule fois, en amont des useState) ──
+  // Évite le flash d'écran et l'écrasement d'une session en cours.
+  const restored = useMemo(() => {
+    if (typeof window === 'undefined' || !window.localStorage) return null
+    try {
+      const saved = restoreSession(window.localStorage.getItem(SESSION_KEY))
+      if (saved && isStepResumable(saved.step, saved)) return saved
+    } catch {
+      /* session illisible → on repart de zéro */
+    }
+    return null
+  }, [])
+
+  const [step, setStep] = useState(restored?.step || 'home')
+  const [photoSource, setPhotoSource] = useState(restored?.photoSource || null) // 'camera' | 'upload'
+  const [measurements, setMeasurements] = useState(restored?.measurements || null)
+  const [imageData, setImageData] = useState(restored?.imageData || null)
+  const [profileImageUrl, setProfileImageUrl] = useState(restored?.profileImageUrl || null)
+  const [calibration, setCalibration] = useState(restored?.calibration || null)
+  const [faceData, setFaceData] = useState(restored?.faceData || null)
   const [serverConnected, setServerConnected] = useState(false)
+  const [authState, setAuthState] = useState('checking') // 'checking' | 'anon' | 'auth'
+  const [view, setView] = useState('home') // 'home' | 'history'
+
+  // ── Sauvegarde continue de la session (idempotente, tolérante au quota) ──
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.localStorage) return
+    // On ne persiste que les étapes actives ; on ne sauvegarde pas le state d'auth.
+    const raw = serializeSession({
+      step, photoSource, imageData, profileImageUrl,
+      calibration, measurements, faceData,
+    })
+    if (raw) {
+      try { window.localStorage.setItem(SESSION_KEY, raw) } catch { /* quota */ }
+    }
+  }, [step, photoSource, imageData, profileImageUrl, calibration, measurements, faceData])
+
+  // Vérification de session au démarrage
+  useEffect(() => {
+    const checkAuth = async () => {
+      if (!getToken()) { setAuthState('anon'); return }
+      const user = await fetchMe()
+      setAuthState(user ? 'auth' : 'anon')
+    }
+    checkAuth()
+  }, [])
 
   useEffect(() => {
     const check = async () => setServerConnected(await checkHealth())
@@ -102,12 +155,28 @@ export default function App() {
   }, [])
   const handleProfileSkip = useCallback(() => { setStep('result') }, [])
 
-  // Reset complet
+  // Reset complet (annule aussi la session persistée)
   const handleReset = useCallback(() => {
     setStep('home'); setMeasurements(null); setImageData(null)
     setProfileImageUrl(null); setCalibration(null)
     setFaceData(null); setPhotoSource(null)
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try { window.localStorage.removeItem(SESSION_KEY) } catch { /* ignore */ }
+    }
   }, [])
+
+  // Garde d'authentification (après tous les hooks)
+  if (authState === 'checking') {
+    return (
+      <div className="min-h-screen flex items-center justify-center"
+        style={{ background: 'var(--color-bg)' }}>
+        <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Chargement…</span>
+      </div>
+    )
+  }
+  if (authState === 'anon') {
+    return <AuthScreen onAuthenticated={() => setAuthState('auth')} />
+  }
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--color-bg)' }}>
@@ -122,23 +191,36 @@ export default function App() {
             Smart Optica
           </span>
         </div>
-        {step !== 'home' && (
-          <span className="flex items-center gap-1 text-[9px] font-mono"
-            style={{ color: serverConnected ? 'var(--color-green)' : 'var(--color-red)' }}>
-            <span className="inline-block w-1.5 h-1.5 rounded-full"
-              style={{ background: serverConnected ? 'var(--color-green)' : 'var(--color-red)' }} />
-            {serverConnected ? 'API' : 'HS'}
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          {step !== 'home' && (
+            <span className="flex items-center gap-1 text-[9px] font-mono"
+              style={{ color: serverConnected ? 'var(--color-green)' : 'var(--color-red)' }}>
+              <span className="inline-block w-1.5 h-1.5 rounded-full"
+                style={{ background: serverConnected ? 'var(--color-green)' : 'var(--color-red)' }} />
+              {serverConnected ? 'API' : 'HS'}
+            </span>
+          )}
+          <button onClick={() => { clearSession(); setAuthState('anon') }}
+            className="text-[10px] px-2 py-1 rounded-md transition-opacity hover:opacity-70"
+            style={{ border: '1px solid var(--color-border)', color: 'var(--color-text-muted)' }}>
+            Déconnexion
+          </button>
+        </div>
       </header>
 
-      <main className={`flex-1 w-full px-4 py-4 animate-fade-in ${step === 'home' ? '' : 'max-w-2xl mx-auto'}`}>
-        {step === 'home' && <HomeScreen onStart={handleStart} />}
+      <main className={`flex-1 w-full px-4 py-4 animate-fade-in ${step === 'home' && view !== 'history' ? '' : 'max-w-2xl mx-auto'}`}>
+        {view === 'history' && <HistoryPage onBackToHome={() => setView('home')} />}
+
+        {step === 'home' && view !== 'history' && <HomeScreen onStart={handleStart} onHistory={() => setView('history')} />}
 
         {step === 'photo' && (
           <div className="space-y-4">
+            <button onClick={handleReset} className="flex items-center gap-1.5 text-xs font-medium transition-opacity hover:opacity-70"
+              style={{ color: 'var(--color-text-muted)' }}>
+              <ArrowLeft size={15} /> Retour à l'accueil
+            </button>
             <div className="text-center">
-              <h2 className="text-lg font-semibold" style={{ color: 'var(--color-text)', fontFamily: "'Playfair Display', Georgia, serif" }}>
+              <h2 className="text-lg font-semibold" style={{ color: 'var(--color-text)', fontFamily: "'Playfair Display', Georgia, serif'" }}>
                 Photo de FACE
               </h2>
               <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
@@ -151,8 +233,12 @@ export default function App() {
 
         {step === 'photo-lateral' && (
           <div className="space-y-4">
+            <button onClick={() => setStep('photo')} className="flex items-center gap-1.5 text-xs font-medium transition-opacity hover:opacity-70"
+              style={{ color: 'var(--color-text-muted)' }}>
+              <ArrowLeft size={15} /> Retour à la photo de face
+            </button>
             <div className="text-center">
-              <h2 className="text-lg font-semibold" style={{ color: 'var(--color-text)', fontFamily: "'Playfair Display', Georgia, serif" }}>
+              <h2 className="text-lg font-semibold" style={{ color: 'var(--color-text)', fontFamily: "'Playfair Display', Georgia, serif'" }}>
                 Photo de PROFIL (côté DROIT)
               </h2>
               <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>

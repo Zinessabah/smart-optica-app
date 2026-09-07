@@ -1,22 +1,23 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import fs from 'node:fs'
 import path from 'node:path'
+import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-// Certificat local de confiance (mkcert) — couvre localhost, 127.0.0.1 et l'IP Tailscale iPad.
-// Permet à Safari iOS d'accéder sans alerte de certificat une fois la CA mkcert installée.
-const certPath = path.resolve(__dirname, 'certs/localhost.pem')
-const keyPath = path.resolve(__dirname, 'certs/localhost-key.pem')
+// Certificat local de confiance (mkcert) — couvre localhost, 127.0.0.1 et l'IP Tailscale.
+const certPath = path.resolve(__dirname, '../certs/localhost.pem')
+const keyPath = path.resolve(__dirname, '../certs/localhost-key.pem')
 const hasCert = fs.existsSync(certPath) && fs.existsSync(keyPath)
 
 export default defineConfig({
+  root: path.resolve(__dirname, '.'),
   plugins: [react(), tailwindcss()],
   server: {
     host: '0.0.0.0',
+    port: 5174,
     https: hasCert ? {
       key: fs.readFileSync(keyPath),
       cert: fs.readFileSync(certPath),
@@ -26,4 +27,6 @@ export default defineConfig({
       '/health': 'http://localhost:8000',
     },
   },
+  preview: { host: '0.0.0.0', port: 5174 },
+  build: { outDir: path.resolve(__dirname, '../admin/dist') }
 })

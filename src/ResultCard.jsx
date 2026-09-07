@@ -1,6 +1,12 @@
-import { RotateCcw, FileText, CheckCircle2, AlertTriangle, AlertCircle, UserRound, Ruler } from 'lucide-react'
+import { RotateCcw, FileText, CheckCircle2, AlertTriangle, AlertCircle, UserRound, Ruler, Save, Check } from 'lucide-react'
+import { useState } from 'react'
+import { saveMeasurement } from './services/measurements'
+import { selectPdfPhoto, buildPdfPhotoList } from './core/pdfPhotos'
+
+const cardStyle = { background: 'var(--color-card)', border: '1px solid var(--color-border)' }
 
 export default function ResultCard({ measurements, imageUrl, profileImageUrl, onRetake }) {
+  const inputStyle = { background: 'var(--color-bg)', border: '1px solid var(--color-border)', color: 'var(--color-text)' }
   // --- Validation des mesures ---
   const validation = (() => {
     const issues = []
@@ -109,10 +115,12 @@ export default function ResultCard({ measurements, imageUrl, profileImageUrl, on
         return orientCanvas.toDataURL('image/jpeg', 0.9)
       }
 
-      // Photos en haut
-      const photoUrls = []
-      if (imageUrl) photoUrls.push({ url: imageUrl, label: 'Face' })
-      if (profileImageUrl) photoUrls.push({ url: profileImageUrl, label: 'Profil D' })
+      // Photos en haut — l'image annotée (marqueurs) est prioritaire pour la face
+      const photoUrls = buildPdfPhotoList({
+        annotatedImageUrl: measurements.annotatedImageUrl,
+        imageUrl,
+        profileImageUrl,
+      })
 
       if (photoUrls.length > 0) {
         const photoMaxH = (pageH - margin * 2) * 0.25
@@ -302,6 +310,40 @@ export default function ResultCard({ measurements, imageUrl, profileImageUrl, on
     URL.revokeObjectURL(url)
   }
 
+  // ── Sauvegarde dans l'historique (backend) ──
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [saveErr, setSaveErr] = useState(null)
+  const [client, setClient] = useState({ name: '', phone: '', email: '', frame: '', notes: '' })
+
+  const handleSave = async () => {
+    setSaving(true); setSaveErr(null); setSaved(false)
+    try {
+      const toBlob = async (dataUrl) => {
+        if (!dataUrl || !dataUrl.startsWith('data:')) return null
+        const res = await fetch(dataUrl)
+        return await res.blob()
+      }
+      const faceBlob = await toBlob(selectPdfPhoto(measurements.annotatedImageUrl, imageUrl)) || (imageUrl ? await (await fetch(imageUrl)).blob() : null)
+      const profileBlob = profileImageUrl ? await (await fetch(profileImageUrl)).blob() : null
+      await saveMeasurement({
+        results: measurements,
+        patientName: client.name || measurements.patientName || '',
+        patientPhone: client.phone,
+        patientEmail: client.email,
+        frameRef: client.frame,
+        notes: client.notes,
+        faceImage: faceBlob,
+        profileImage: profileBlob,
+      })
+      setSaved(true)
+    } catch (e) {
+      setSaveErr(e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div className="space-y-5 animate-fade-in">
       {/* Photos preview — face + profil */}
@@ -409,6 +451,21 @@ export default function ResultCard({ measurements, imageUrl, profileImageUrl, on
             <Ruler size={12} /> Données monture
           </div>
 
+          {/* Verre à commander (Ø ébauche) */}
+          {measurements.diameterCommander != null && (
+            <div className="flex justify-between items-center px-4 py-2.5 rounded-xl text-xs mb-2" style={{ background: '#eff6ff', border: '1px solid #bfdbfe' }}>
+              <span style={{ color: '#4b5563' }}>Verre à commander (Ø)</span>
+              <span className="font-semibold" style={{ color: '#1d4ed8' }}>
+                {measurements.diameterCommander} mm
+                {(measurements.lensDiameterOD != null || measurements.lensDiameterOG != null) && (
+                  <span className="text-[9px] ml-1" style={{ color: '#6b7280' }}>
+                    (OD {measurements.lensDiameterOD ?? '—'} / OG {measurements.lensDiameterOG ?? '—'})
+                  </span>
+                )}
+              </span>
+            </div>
+          )}
+
           {/* Bridge */}
           {measurements.pont != null && (
             <div className="flex justify-between items-center px-4 py-2.5 rounded-xl text-xs mb-2" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}>
@@ -469,12 +526,35 @@ export default function ResultCard({ measurements, imageUrl, profileImageUrl, on
         )}
       </div>
 
+      {/* Formulaire client (optionnel) */}
+      {!saved && (
+        <div className="rounded-2xl p-4 space-y-3" style={cardStyle}>
+          <div className="flex items-center gap-2">
+            <UserRound size={15} style={{ color: 'var(--color-gold)' }} />
+            <span className="text-sm font-medium" style={{ color: 'var(--color-text)' }}>Informations client</span>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <input value={client.name} onChange={e => setClient(c => ({ ...c, name: e.target.value }))}
+              placeholder="Nom du client" className="col-span-2 px-3 py-2 rounded-lg text-sm outline-none" style={inputStyle} />
+            <input value={client.phone} onChange={e => setClient(c => ({ ...c, phone: e.target.value }))}
+              placeholder="Téléphone" inputMode="tel" className="px-3 py-2 rounded-lg text-sm outline-none" style={inputStyle} />
+            <input value={client.email} onChange={e => setClient(c => ({ ...c, email: e.target.value }))}
+              placeholder="Email" type="email" className="px-3 py-2 rounded-lg text-sm outline-none" style={inputStyle} />
+            <input value={client.frame} onChange={e => setClient(c => ({ ...c, frame: e.target.value }))}
+              placeholder="Réf. monture" className="col-span-2 px-3 py-2 rounded-lg text-sm outline-none" style={inputStyle} />
+            <textarea value={client.notes} onChange={e => setClient(c => ({ ...c, notes: e.target.value }))}
+              placeholder="Notes (optionnel)" rows={2} className="col-span-2 px-3 py-2 rounded-lg text-sm outline-none resize-none" style={inputStyle} />
+          </div>
+        </div>
+      )}
+
       {/* Actions */}
       <div className="flex gap-3">
-        <button onClick={onRetake}
-          className="flex items-center justify-center gap-1.5 flex-1 py-3 rounded-full font-medium text-sm transition-all hover:opacity-80"
-          style={{ background: 'var(--color-border)', color: 'var(--color-text-muted)' }}>
-          <RotateCcw size={16} /> Refaire
+        <button onClick={handleSave}
+          disabled={saving || saved}
+          className="flex items-center justify-center gap-1.5 flex-1 py-3 rounded-full font-medium text-sm transition-all hover:opacity-90 disabled:opacity-70"
+          style={{ background: saved ? 'var(--color-green, #16a34a)' : 'var(--color-gold)' }}>
+          {saved ? <><Check size={16} /> Enregistré</> : saving ? '…' : <><Save size={16} /> Enregistrer</>}
         </button>
         <button onClick={handleSavePDF}
           className="flex items-center justify-center gap-1.5 flex-1 py-3 rounded-full font-medium text-sm text-white transition-all hover:opacity-90"
@@ -482,6 +562,24 @@ export default function ResultCard({ measurements, imageUrl, profileImageUrl, on
           <FileText size={16} /> Exporter PDF
         </button>
       </div>
+
+      {/* Fin de mesure / nouvelle mesure */}
+      <div className="flex gap-3">
+        <button onClick={onRetake}
+          className="flex items-center justify-center gap-1.5 flex-1 py-3 rounded-full font-medium text-sm transition-all hover:opacity-80"
+          style={{ background: 'var(--color-border)', color: 'var(--color-text-muted)' }}>
+          <RotateCcw size={16} /> Reprendre
+        </button>
+        <button onClick={onRetake}
+          className="flex items-center justify-center gap-1.5 flex-1 py-3 rounded-full font-medium text-sm text-white transition-all hover:opacity-90"
+          style={{ background: 'var(--color-gold)' }}>
+          <CheckCircle2 size={16} /> Terminer · Nouvelle mesure
+        </button>
+      </div>
+
+      {saveErr && (
+        <div className="rounded-lg px-3 py-2 text-xs text-center" style={{ background: 'rgba(239,68,68,.12)', color: '#ef4444' }}>{saveErr}</div>
+      )}
 
       <div className="text-center">
         <p className="text-xs" style={{ color: 'var(--color-text-dim)' }}>

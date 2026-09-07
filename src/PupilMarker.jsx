@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { ChevronLeft, RotateCcw, Camera, Check, Loader2, AlertTriangle } from 'lucide-react'
 import BoxingRect from './BoxingRect'
+import MeasureRuler from './components/MeasureRuler'
 import { detectFace } from './core/faceDetection'
-import { calculateMonocularPD, calculatePont, calculateBoxingDimensions, getDefaultBoxSize as coreDefaultBoxSize, mirrorBox, resolveLensDiameter, DEFAULT_LENS_DIAMETER_MM } from './core/optics'
+import { calculateMonocularPD, calculatePont, calculateBoxingDimensions, getDefaultBoxSize as coreDefaultBoxSize, mirrorBox, resolveLensDiameter, DEFAULT_LENS_DIAMETER_MM, isFrontMeasurementReady } from './core/optics'
 
 export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, onRetake, initialLeftEye, initialRightEye, initialBridge }) {
   const [imageSize, setImageSize] = useState(null)
@@ -24,6 +25,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   const panelRef = useRef(null)
   const containerRef = useRef(null)
   const cancelAutoFaceRef = useRef(false)
+  const [rulerVisible, setRulerVisible] = useState(false)
 
   useEffect(() => {
     const img = new Image(); img.src = imageUrl
@@ -179,7 +181,6 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   const renderLensCircles = () => {
     if (!imageSize) return null
     const scale = calibration?.scalePxToMm
-    const lensColor = '#3b9eff' // bleu OD — uniforme avec le segment/marqueur pupille OD
     const getRPx = (radiusState) => radiusState != null ? radiusState
       : (scale ? (DEFAULT_LENS_DIAMETER_MM / 2) / scale : Math.round(imageSize.width * 0.09))
     const getCenter = (eye, centerState) => centerState || eye
@@ -292,9 +293,9 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       : (lensOG?.diameterMm ?? lensOD?.diameterMm ?? null)
 
     return {
-      pd: pdBinoc || 0,
-      pdMonoculaireGauche: monoOG ?? 0,
-      pdMonoculaireDroit: monoOD ?? 0,
+      pd: pdBinoc ?? null,
+      pdMonoculaireGauche: monoOG ?? null,
+      pdMonoculaireDroit: monoOD ?? null,
       pont: pontMm,
       pontOk, pupilsOk, frameOk,
       largeurOG, largeurOD, hauteurCalibre, hauteurMontageOG, hauteurMontageOD,
@@ -305,12 +306,32 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     }
   })()
 
+  const measurementReady = isFrontMeasurementReady({ calibration, leftEye, rightEye, bridge, boxOG, boxOD })
+
   const confirm = async () => {
     if (!result) return
+    // Capture de l'image annotée (avec tous les marqueurs) pour l'export PDF /
+    // la sauvegarde backend. Tolérant : si la capture échoue, on continue sans.
+    let annotatedImageUrl = null
+    try {
+      const container = document.getElementById('pupil-image-container')
+      if (container) {
+        const { default: html2canvas } = await import('html2canvas')
+        const canvas = await html2canvas(container, {
+          scale: 2,
+          backgroundColor: '#0f0f12',
+          useCORS: true,
+          logging: false,
+          allowTaint: true,
+        })
+        annotatedImageUrl = canvas.toDataURL('image/png')
+      }
+    } catch { /* capture non bloquante */ }
     onConfirm({
       ...result,
       pdBinoculaire: result.pd,
       pontPlace: result.pontOk,
+      annotatedImageUrl,
       calibration: calibration ? { scalePxToMm: Math.round(calibration.scalePxToMm * 1000) / 1000, variation: calibration.scaleVariation } : undefined,
     })
   }
@@ -568,6 +589,12 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
             <Camera size={12} /> Reprendre
           </button>
         )}
+        <MeasureRuler variant="button"
+          scaleMmPerPx={calibration?.scalePxToMm}
+          imageSize={imageSize}
+          displayRect={getImageDisplayRect()}
+          visible={rulerVisible}
+          onToggle={() => setRulerVisible(v => !v)} />
       </div>
 
       {/* Bannière détection faciale */}
@@ -785,56 +812,23 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
 
               {/* Panneau live — DP / DPD / DPG en temps réel */}
               {leftEye && rightEye && (() => {
-                const scale = calibration?.scalePxToMm
-                const dx = rightEye.x - leftEye.x
-                const distPx = Math.abs(dx)
-                const dp = scale ? (distPx * scale).toFixed(1) : '—'
-                let dpd = '—', dpg = '—'
-                let pont = '—'
-                let hCal = '—', lCalG = '—', lCalD = '—', hMontG = '—', hMontD = '—', em = '—'
-                
-                const boxOGOk = boxOG && boxOG.width > 0 && boxOG.height > 0
-                const boxODOk = boxOD && boxOD.width > 0 && boxOD.height > 0
-                
-                // Le Pont (EIV) se calcule sur le Boxing (Bord nasal OG - Bord nasal OD) s'il est posé
-                if (boxOGOk && boxODOk && scale) {
-                  const nasalOD = boxOG.x + boxOG.width
-                  const nasalOG = boxOD.x
-                  pont = (Math.abs(nasalOG - nasalOD) * scale).toFixed(1)
-                }
-
-                if (bridge && scale) {
-                  // leftEye = côté gauche image = patient OD (œil droit), rightEye = côté droit image = patient OG (œil gauche)
-                  dpd = (Math.abs(leftEye.x - bridge.x) * scale).toFixed(1)  // OD (Côté gauche de l'image)
-                  dpg = (Math.abs(rightEye.x - bridge.x) * scale).toFixed(1)  // OG (Côté droit de l'image)
-                }
-                if (scale) {
-                  if (boxOG && boxOD) {
-                    hCal = (((boxOG.height + boxOD.height) / 2) * scale).toFixed(1)
-                  } else if (boxOG) {
-                    hCal = (boxOG.height * scale).toFixed(1)
-                  } else if (boxOD) {
-                    hCal = (boxOD.height * scale).toFixed(1)
-                  }
-                  // boxOG = côté gauche = Verre OD, boxOD = côté droit = Verre OG
-                  if (boxOD) lCalG = (boxOD.width * scale).toFixed(1)   // OG = œil gauche
-                  if (boxOG) lCalD = (boxOG.width * scale).toFixed(1)   // OD = œil droit
-                  // Hauteur de montage = distance du bas du calibre à la pupille
-                  if (boxOG && leftEye) {
-                    const bottomG = boxOG.y + boxOG.height / 2
-                    hMontG = (Math.abs(bottomG - leftEye.y) * scale).toFixed(1)
-                  }
-                  if (boxOD && rightEye) {
-                    const bottomD = boxOD.y + boxOD.height / 2
-                    hMontD = (Math.abs(bottomD - rightEye.y) * scale).toFixed(1)
-                  }
-                  const lCal = (lCalG !== '—' && lCalD !== '—') ? (parseFloat(lCalG) + parseFloat(lCalD)) / 2
-                    : (lCalG !== '—' ? parseFloat(lCalG) : (lCalD !== '—' ? parseFloat(lCalD) : null))
-                  const p = (pont !== '—') ? parseFloat(pont) : null
-                  if (lCal !== null && p !== null) {
-                    em = (lCal + 0.5 * p).toFixed(1)
-                  }
-                }
+                // Source unique : le panneau live affiche exactement les valeurs du moteur métier.
+                const formatMm = (value) => value == null ? '—' : Number(value).toFixed(1)
+                const dp = formatMm(result?.pd)
+                const dpd = formatMm(result?.pdMonoculaireDroit)
+                const dpg = formatMm(result?.pdMonoculaireGauche)
+                const pont = formatMm(result?.pont)
+                const hCal = formatMm(result?.hauteurCalibre)
+                const lCalG = formatMm(result?.largeurOG)
+                const lCalD = formatMm(result?.largeurOD)
+                // Nommage historique du résultat : hauteurMontageOG correspond au verre OD (gauche image).
+                const hMontG = formatMm(result?.hauteurMontageOG)
+                const hMontD = formatMm(result?.hauteurMontageOD)
+                const widths = [result?.largeurOG, result?.largeurOD].filter(v => v != null)
+                const averageWidth = widths.length ? widths.reduce((sum, v) => sum + v, 0) / widths.length : null
+                const em = averageWidth != null && result?.pont != null
+                  ? formatMm(averageWidth + result.pont / 2)
+                  : '—'
                 const containerH = (containerRef.current?.getBoundingClientRect()?.height) || 0
                 const pos = panelPos || { x: 12, y: containerH / 2 - 120 }
                 return (
@@ -912,6 +906,14 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
                   </div>
                 )
               })()}
+
+              {/* Réglette métrologique (bouton header → visible) */}
+              <MeasureRuler variant="ruler"
+                scaleMmPerPx={calibration?.scalePxToMm}
+                imageSize={imageSize}
+                displayRect={dr}
+                visible={rulerVisible}
+                onToggle={() => setRulerVisible(v => !v)} />
             </div>
           )
         })()}
@@ -992,18 +994,20 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
             <ChevronLeft size={16} /> Retour
           </button>
         )}
-        <button onClick={confirm} disabled={!result?.pupilsOk}
+        <button onClick={confirm} disabled={!measurementReady}
           className="flex items-center justify-center gap-1.5 flex-1 py-3 rounded-full font-medium text-sm text-white transition-all hover:opacity-90 disabled:opacity-40"
           style={{ background: 'var(--color-gold)' }}>
           <Check size={16} /> Valider la mesure
         </button>
       </div>
 
-      {result?.pupilsOk && (!result?.pontOk || !result?.frameOk) && (
+      {!measurementReady && (
         <div className="text-center">
           <p className="text-xs" style={{ color: 'var(--color-gold)' }}>
-            {!result.pontOk ? '💡 Placez le Centre du Nez pour la DP mono réelle. ' : ''}
-            {!result.frameOk ? '💡 Placez les rectangles boxing pour le calibre.' : ''}
+            {!calibration?.scalePxToMm ? '⚠️ Calibration physique requise pour valider des mesures en millimètres. ' : ''}
+            {calibration?.scalePxToMm && !bridge ? '💡 Placez le Centre du Nez pour la DP monoculaire. ' : ''}
+            {calibration?.scalePxToMm && (!boxOG || !boxOD) ? '💡 Placez les deux rectangles boxing. ' : ''}
+            {calibration?.scalePxToMm && boxOG && boxOD && result?.pont == null ? '⚠️ Les calibres se croisent : corrigez leur position.' : ''}
           </p>
         </div>
       )}

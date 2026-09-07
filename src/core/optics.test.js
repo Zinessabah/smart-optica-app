@@ -59,6 +59,22 @@ describe('Optics Core Functions', () => {
       expect(result.poseAssessment).toContain('Légère inclinaison')
     })
 
+    it('reflète l\'incertitude d\'échelle réelle (des mires déséquilibrées réduisent la confiance)', () => {
+      // Mires parfaitement régulières → 0% d'incertitude
+      const symmetric = calculateScale([
+        { x: 0, y: 0 }, { x: 100, y: 0 }, { x: 200, y: 0 }
+      ], 50)
+      expect(symmetric.scaleVariation).toBe(0)
+
+      // Mires déséquilibrées (d1=100, d2=150) → incertitude non nulle
+      const imbalanced = calculateScale([
+        { x: 0, y: 0 }, { x: 100, y: 0 }, { x: 250, y: 0 }
+      ], 50)
+      expect(imbalanced.scaleVariation).toBeGreaterThan(0)
+      // ratio = |100-150| / 125 = 40% → scaleVariation = 40 (pas 0 figé)
+      expect(imbalanced.scaleVariation).toBeCloseTo(40, 0)
+    })
+
     it('détecte forte inclinaison', () => {
       // d1 = 100, d2 = 150 → ratio = 50/125 = 40%
       const points = [
@@ -108,17 +124,19 @@ describe('Optics Core Functions', () => {
       expect(result.pdBinoc).toBe(50)
     })
 
-    it('gère les décalages verticaux', () => {
+    it('projette le repère nasal sur l\'axe interpupillaire (décalages verticaux ignorés)', () => {
       const leftEye = { x: 50, y: 10 }
       const rightEye = { x: 150, y: 10 }
       const bridge = { x: 100, y: 0 }
       const scale = 0.5
 
       const result = calculateMonocularPD(leftEye, rightEye, bridge, scale)
-      
-      // Distance euclidienne
-      expect(result.pdOD).toBeCloseTo(25.5, 1) // sqrt(50²+10²)*0.5
-      expect(result.pdOG).toBeCloseTo(25.5, 1)
+
+      // Projection axiale : le décalage vertical du nez (y=0) est neutralisé.
+      // Le bridge se projette à 50px du leftEye → pdOD = pdOG = 25mm, pdBinoc = 50mm
+      expect(result.pdOD).toBeCloseTo(25, 1)
+      expect(result.pdOG).toBeCloseTo(25, 1)
+      expect(result.pdBinoc).toBeCloseTo(50, 1)
     })
   })
 
@@ -147,16 +165,14 @@ describe('Optics Core Functions', () => {
       expect(pont).toBe(10)
     })
 
-    it('gère l\'ordre inversé des boxes', () => {
-      // Même calcul si boxes inversées - gap = |(120+100) - 0| = 220px * 0.5 = 110mm
-      // Mais le test attend 10mm, ce qui correspond à l'ordre normal
-      // On teste juste que ça ne crashe pas
+    it('rejette l\'ordre inversé des boxes (géométrie croisée = mesure invalide)', () => {
+      // boxOG à droite, boxOD à gauche → bords nasaux croisés
       const boxOG = { x: 120, y: 0, width: 100, height: 50 }
       const boxOD = { x: 0, y: 0, width: 100, height: 50 }
       const scale = 0.5
 
       const pont = calculatePont(boxOG, boxOD, scale)
-      expect(typeof pont).toBe('number')
+      expect(pont).toBeNull()
     })
   })
 
@@ -268,12 +284,10 @@ describe('Optics Core Functions', () => {
       const result = computeAllMeasurements(mockState)
 
       expect(result.pd).toBe(200) // |1200-800| * 0.5
-      // pdMonoculaireGauche = distance rightEye (OG) to bridge * scale
-      // rightEye.x = 1200, bridge.x = 1000, dy = 50 → sqrt(200²+50²) = 206.15 * 0.5 = 103.1
-      expect(result.pdMonoculaireGauche).toBeCloseTo(103.1, 1)
-      // pdMonoculaireDroit = distance leftEye (OD) to bridge * scale
-      // leftEye.x = 800, bridge.x = 1000, dy = 50 → sqrt(200²+50²) = 206.15 * 0.5 = 103.1
-      expect(result.pdMonoculaireDroit).toBeCloseTo(103.1, 1)
+      // Projection axiale : axe interpupillaire horizontal (dy=0), bridge à x=1000.
+      // Le bridge se projette à 200px du leftEye → pdOD = 200*0.5 = 100, pdOG = (400-200)*0.5 = 100
+      expect(result.pdMonoculaireGauche).toBeCloseTo(100, 1) // patient OG (côté droit image)
+      expect(result.pdMonoculaireDroit).toBeCloseTo(100, 1)  // patient OD (côté gauche image)
       expect(result.pont).toBe(100) // |(700+200) - 1100| * 0.5
       expect(result.largeurOD).toBe(100) // 200 * 0.5
       expect(result.largeurOG).toBe(100)
@@ -283,11 +297,16 @@ describe('Optics Core Functions', () => {
       expect(result.validation).toBeDefined()
     })
 
-    it('utilise fallback scale si pas de calibration', () => {
+    it('ne produit aucune valeur millimétrique sans calibration physique', () => {
       const stateNoCal = { ...mockState, calibration: null }
       const result = computeAllMeasurements(stateNoCal)
-      expect(result.pd).toBeGreaterThan(0)
-      expect(result.methode).toBe('marquage_manuel')
+      expect(result.pd).toBeNull()
+      expect(result.pdMonoculaireGauche).toBeNull()
+      expect(result.pdMonoculaireDroit).toBeNull()
+      expect(result.pont).toBeNull()
+      expect(result.methode).toBe('non_calibree')
+      expect(result.validation.valid).toBe(false)
+      expect(result.validation.issues[0].code).toBe('CALIBRATION_REQUIRED')
     })
 
     it('retourne null si pas d\'imageSize', () => {

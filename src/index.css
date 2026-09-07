@@ -136,3 +136,57 @@ img[alt*="Photo"] {
     max-height: 78vh !important;
   }
 }
+
+/* ===== Réglette métrologique (MeasureRuler) ===== */
+.mr-ruler {
+  background: rgba(8,8,10,0.02);
+}
+.mr-index { position: absolute; width: 0; height: 0; }
+.mr-index-tick {
+  position: absolute; left: -1px; top: 0;
+  width: 2px; height: 38px;
+  box-shadow: 0 0 4px rgba(0,0,0,.7);
+}
+.mr-index-tick.a { background: var(--color-gold-light); }
+.mr-index-tick.b { background: var(--color-blue); }
+.mr-index-tick::before {
+  content: ''; position: absolute; top: 0; left: -3px; right: -3px; height: 8px;
+  background: currentColor; opacity: 0.25;
+}
+.mr-index-tag {
+  position: absolute;
+  font-family: monospace; font-size: 10px; color: #0f0f12; font-weight: 800;
+  border-radius: 5px; padding: 0 5px; white-space: nowrap; text-align: center;
+}
+.mr-index-tag.a { background: var(--color-gold-light); }
+.mr-index-tag.b { background: var(--color-blue); }
+.mr-rot {
+  position: absolute; width: 15px; height: 15px; border-radius: 50%;
+  background: rgba(201,160,90,0.16); border: 1.5px solid var(--color-gold-light);
+  cursor: grab; box-shadow: 0 0 5px rgba(201,160,90,.5);
+}
+.mr-rot::after {
+  content: ''; position: absolute; inset: 0; margin: auto;
+  width: 4px; height: 4px; border-radius: 50%; background: var(--color-gold-light);
+}
+.mr-diff {
+  position: absolute; transform: translateX(-50%);
+  font-family: monospace; font-size: 12px; font-weight: 800; color: #0f0f12;
+  background: var(--color-green); border-radius: 8px; padding: 2px 9px;
+  box-shadow: 0 0 10px rgba(34,197,94,.45); white-space: nowrap;
+  pointer-events: none; z-index: 22;
+}
+.mr-diff::after {
+  content: ''; position: absolute; top: -5px; left: 50%; transform: translateX(-50%);
+  width: 0; height: 0; border: 5px solid transparent; border-bottom-color: var(--color-green);
+}
+.mr-snaps {
+  position: absolute; display: flex; flex-direction: column; gap: 4px;
+}
+.mr-snaps button {
+  font-family: monospace; font-size: 9px; padding: 2px 6px;
+  border-radius: 5px; cursor: pointer; pointer-events: auto;
+  background: rgba(138,138,138,0.15); border: 1px solid var(--color-border-light);
+  color: var(--color-text-muted);
+}
+.mr-snaps button:hover { border-color: var(--color-gold); color: var(--color-gold-light); }

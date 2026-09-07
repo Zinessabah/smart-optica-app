@@ -32,11 +32,16 @@ export function calculateScale(points, spacingMm = 50) {
   if (headRotation > 4) poseAssessment = `Bonne (Légère inclinaison ${headRotation}%)`
   if (headRotation > 10) poseAssessment = `Correction requise (Tête tournée à ${headRotation}%)`
 
+  // Incertitude d'échelle : incohérence relative entre les deux espacements.
+  // Si les 3 mires ne sont pas équidistantes, la confiance dans l'échelle baisse.
+  // 0% = mires parfaitement régulières ; >4% = à vérifier ; >10% = échelle douteuse.
+  const scaleVariation = Math.round(ratio * 100)
+
   return {
     scalePxToMm,
     pixelDist1: Math.round(d1),
     pixelDist2: Math.round(d2),
-    scaleVariation: 0, // Option chirurgicale : 0% d'erreur sur l'échelle
+    scaleVariation,
     headRotation,
     poseAssessment,
     totalSpanMm: totalSpacingMm
@@ -51,16 +56,38 @@ export function calculateScale(points, spacingMm = 50) {
  * @param {number} scale - scalePxToMm
  * @returns {Object} { pdOD, pdOG, pdBinoc }
  */
+export function resolveValidatedCalibration(points, spacingMm = 50, detectedCalibration = null, manuallyAdjusted = false) {
+  if (!points || points.length !== 3) return null
+  if (detectedCalibration && !manuallyAdjusted) {
+    return { ...detectedCalibration, source: detectedCalibration.source || 'backend_auto' }
+  }
+  return { ...calculateScale(points, spacingMm), source: 'manual_validation' }
+}
+
 export function calculateMonocularPD(leftEye, rightEye, bridge, scale) {
   if (!leftEye || !rightEye || !bridge || !scale) {
     return { pdOD: null, pdOG: null, pdBinoc: null }
   }
 
-  // leftEye = côté gauche image = patient OD (œil droit)
-  // rightEye = côté droit image = patient OG (œil gauche)
-  const pdOD = Math.round(Math.hypot(leftEye.x - bridge.x, leftEye.y - bridge.y) * scale * 10) / 10
-  const pdOG = Math.round(Math.hypot(rightEye.x - bridge.x, rightEye.y - bridge.y) * scale * 10) / 10
-  const pdBinoc = Math.round(Math.hypot(rightEye.x - leftEye.x, rightEye.y - leftEye.y) * scale * 10) / 10
+  // leftEye = côté gauche image = patient OD ; rightEye = côté droit image = patient OG.
+  // Les DP monoculaires sont mesurées SUR l’axe interpupillaire : le repère nasal
+  // est d’abord projeté orthogonalement sur cet axe, afin qu’un décalage vertical
+  // du marqueur ne gonfle pas artificiellement les distances.
+  const dx = rightEye.x - leftEye.x
+  const dy = rightEye.y - leftEye.y
+  const axisLengthPx = Math.hypot(dx, dy)
+  if (axisLengthPx <= 0) return { pdOD: null, pdOG: null, pdBinoc: null }
+
+  const ux = dx / axisLengthPx
+  const uy = dy / axisLengthPx
+  const bridgeProjectionPx = (bridge.x - leftEye.x) * ux + (bridge.y - leftEye.y) * uy
+  if (bridgeProjectionPx < 0 || bridgeProjectionPx > axisLengthPx) {
+    return { pdOD: null, pdOG: null, pdBinoc: null }
+  }
+
+  const pdOD = Math.round(bridgeProjectionPx * scale * 10) / 10
+  const pdOG = Math.round((axisLengthPx - bridgeProjectionPx) * scale * 10) / 10
+  const pdBinoc = Math.round(axisLengthPx * scale * 10) / 10
 
   return { pdOD, pdOG, pdBinoc }
 }
@@ -79,11 +106,13 @@ export function calculatePont(boxOG, boxOD, scale) {
   const wOD = Number(boxOD.width) || 0
   if (wOG <= 0 || wOD <= 0) return null
 
-  // Bord nasal OG (côté droit du rectangle gauche image)
-  const nasalOG = boxOG.x + wOG
-  // Bord nasal OD (côté gauche du rectangle droit image)
-  const nasalOD = boxOD.x
-  const gapPx = Math.abs(nasalOG - nasalOD)
+  // Les rectangles sont définis par leur CENTRE (x, y).
+  // Gauche image = patient OD : bord nasal à droite du rectangle.
+  const nasalOD = boxOG.x + wOG / 2
+  // Droite image = patient OG : bord nasal à gauche du rectangle.
+  const nasalOG = boxOD.x - wOD / 2
+  const gapPx = nasalOG - nasalOD
+  if (gapPx < 0) return null // calibres croisés / géométrie invalide
   return Math.round(gapPx * scale * 10) / 10
 }
 
@@ -173,15 +202,47 @@ export function mirrorBox(bridge, sourceBox) {
  * @param {Object} state - { imageSize, calibration, bridge, leftEye, rightEye, boxOG, boxOD }
  * @returns {Object} Mesures complètes + validation
  */
+export function isFrontMeasurementReady({ calibration, leftEye, rightEye, bridge, boxOG, boxOD }) {
+  const scale = calibration?.scalePxToMm
+  if (!scale || !leftEye || !rightEye || !bridge || !boxOG || !boxOD) return false
+  if (boxOG.width <= 0 || boxOG.height <= 0 || boxOD.width <= 0 || boxOD.height <= 0) return false
+  const monocular = calculateMonocularPD(leftEye, rightEye, bridge, scale)
+  return monocular.pdOD != null && monocular.pdOG != null && calculatePont(boxOG, boxOD, scale) != null
+}
+
 export function computeAllMeasurements(state) {
   const { imageSize, calibration, bridge, leftEye, rightEye, boxOG, boxOD } = state
 
   if (!imageSize) return null
 
-  const scale = calibration?.scalePxToMm || (140 / (imageSize.width * 0.65))
-  const confiance = calibration?.confidence || 'moyenne'
+  const scale = calibration?.scalePxToMm || null
+  const confiance = calibration?.confidence || 'non_calibree'
   const pontOk = !!bridge
   const pupilsOk = !!(leftEye && rightEye)
+
+  if (!scale) {
+    return {
+      pd: null,
+      pdMonoculaireGauche: null,
+      pdMonoculaireDroit: null,
+      pont: null,
+      pontOk,
+      pupilsOk,
+      frameOk: !!(boxOG || boxOD),
+      largeurOG: null,
+      largeurOD: null,
+      hauteurCalibre: null,
+      hauteurMontageOG: null,
+      hauteurMontageOD: null,
+      confiance,
+      methode: 'non_calibree',
+      validation: {
+        valid: false,
+        issues: [{ code: 'CALIBRATION_REQUIRED', message: 'Calibration physique requise pour produire des millimètres', severity: 'error' }],
+        level: 'error'
+      }
+    }
+  }
 
   // DP
   const { pdOD, pdOG, pdBinoc } = calculateMonocularPD(leftEye, rightEye, bridge, scale)

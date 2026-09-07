@@ -1,6 +1,31 @@
 import { useState, useRef, useCallback } from 'react'
 import { Camera, Upload, ArrowLeft, AlertTriangle } from 'lucide-react'
 import Webcam from './Webcam'
+import { scoreSharpness, scoreExposure, decidePhotoQuality, photoQualityMessage } from './core/photoQuality'
+
+// Analyse la qualité d'une image dataURL → 'good' | 'blurry' | 'too_dark' | 'too_bright'
+function analyzeDataUrlQuality(dataUrl) {
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => {
+      const w = Math.min(img.naturalWidth || 1, 600)
+      const h = Math.min(img.naturalHeight || 1, 600)
+      const canvas = document.createElement('canvas')
+      canvas.width = w
+      canvas.height = h
+      const ctx = canvas.getContext('2d')
+      ctx.drawImage(img, 0, 0, w, h)
+      const d = ctx.getImageData(0, 0, w, h).data
+      const gray = []
+      for (let i = 0; i < d.length; i += 4) {
+        gray.push(Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]))
+      }
+      resolve(decidePhotoQuality({ sharpness: scoreSharpness(gray), ...scoreExposure(gray) }))
+    }
+    img.onerror = () => resolve('good')
+    img.src = dataUrl
+  })
+}
 
 export default function PhotoPicker({ onCapture, onCancel, initialMode }) {
   const [mode, setMode] = useState(initialMode || null) // null=sélection, 'camera', 'upload'
@@ -23,6 +48,12 @@ export default function PhotoPicker({ onCapture, onCancel, initialMode }) {
     setError(null)
     try {
       const dataUrl = await readFile(file)
+      // Contrôle qualité (flou / exposition) avant acceptation
+      const verdict = await analyzeDataUrlQuality(dataUrl)
+      if (verdict !== 'good') {
+        setError(photoQualityMessage(verdict).replace(/[✅🌫🌑☀️]/g, '').trim() + '. Choisissez une autre photo.')
+        return
+      }
       onCapture(dataUrl)
     } catch (err) {
       setError(err.message)

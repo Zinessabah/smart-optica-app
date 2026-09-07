@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { RotateCcw, Check, SkipForward, AlertTriangle, Loader2, Settings2, Camera } from 'lucide-react'
+import { RotateCcw, Check, SkipForward, AlertTriangle, Loader2, Settings2, Camera, Ruler } from 'lucide-react'
 import { analyzeCalibration } from './services/api'
+import { resolveValidatedCalibration } from './core/optics'
+import { calibrateFromKnownDistance } from './core/noClipCalibration'
 
 export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onRetake, initialPoints }) {
   const [points, setPoints] = useState([])
@@ -10,10 +12,16 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
   const [showSpacingInput, setShowSpacingInput] = useState(false)
   const [autoDetecting, setAutoDetecting] = useState(true)
   const [autoFailed, setAutoFailed] = useState(false)
-  const backendScaleRef = useRef(null)  // échelle du backend, prioritaire
+  const backendScaleRef = useRef(null)  // échelle issue de la détection automatique
+  const manuallyAdjustedRef = useRef(false)
   const cancelAutoRef = useRef(false)
   const containerRef = useRef(null)
   const imageRef = useRef(null)
+
+  // ── Mode « sans clip » (étalon de dépannage) ──
+  const [noClipMode, setNoClipMode] = useState(false)
+  const [noClipPoints, setNoClipPoints] = useState([]) // max 2 points
+  const [noClipKnownMm, setNoClipKnownMm] = useState(50)
 
   // Rectangle réellement affiché à l'écran — source unique pour les coordonnées
   const getImageDisplayRect = useCallback(() => {
@@ -49,6 +57,12 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
     img.onload = () => setImageSize({ width: img.naturalWidth, height: img.naturalHeight })
   }, [imageUrl])
 
+  useEffect(() => {
+    if (Array.isArray(initialPoints) && initialPoints.length === 3) {
+      setPoints(initialPoints)
+    }
+  }, [initialPoints])
+
   const cancelAutoDetect = useCallback(() => {
     cancelAutoRef.current = true
     setAutoDetecting(false)
@@ -83,6 +97,7 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
             scaleVariation: 0,
             headRotation: 0,
             poseAssessment: 'Automatique (backend)',
+            source: 'backend_auto',
           }
           setDebugInfo({ ...scaleInfo, backendConfidence: apiResult.detection_confidence })
           backendScaleRef.current = scaleInfo  // stocker pour confirmCalibration
@@ -101,6 +116,14 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
   }, [imageUrl, markerSpacing])
 
   const handleContainerPointerDown = (e) => {
+    // ── Mode « sans clip » : placer 2 points sur une distance connue ──
+    if (noClipMode) {
+      const coords = toImageCoords(e.clientX, e.clientY)
+      if (!coords) return
+      setNoClipPoints(prev => (prev.length >= 2 ? prev : [...prev, coords]))
+      return
+    }
+
     // Walk up DOM to find a calibration marker
     let target = e.target
     while (target && target !== containerRef.current) {
@@ -122,6 +145,7 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
     const coords = toImageCoords(e.clientX, e.clientY)
     if (!coords) return
     const newPoints = [...cp, coords]
+    manuallyAdjustedRef.current = true
     setPoints(newPoints)
     if (newPoints.length === 3) {
       setDebugInfo(calculateScale(newPoints, markerSpacing))
@@ -141,6 +165,7 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
       const newPos = { x: dragTarget.startPos.x + dx, y: dragTarget.startPos.y + dy }
       const newPoints = [...pointsRef.current]
       newPoints[dragTarget.index] = newPos
+      manuallyAdjustedRef.current = true
       setPoints(newPoints)
     }
 
@@ -165,14 +190,17 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
     setDebugInfo(null)
     setAutoFailed(false)
     backendScaleRef.current = null
+    manuallyAdjustedRef.current = false
   }
 
   const confirmCalibration = () => {
-    if (points.length === 3) {
-      // Priorité à l'échelle backend si dispo (évite le recalcul)
-      const scaleData = backendScaleRef.current || calculateScale(points, markerSpacing)
-      onCalibrated(scaleData)
-    }
+    const scaleData = resolveValidatedCalibration(
+      points,
+      markerSpacing,
+      backendScaleRef.current,
+      manuallyAdjustedRef.current,
+    )
+    if (scaleData) onCalibrated(scaleData)
   }
 
   const allPlaced = points.length === 3
@@ -302,6 +330,42 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
           )
         })()}
 
+        {/* Points « sans clip » (2 points) — rendus dans la même zone image */}
+        {noClipMode && imageSize && getImageDisplayRect() && (() => {
+          const dr = getImageDisplayRect()
+          return (
+            <div style={{ position: 'absolute', left: dr.left, top: dr.top, width: dr.width, height: dr.height, zIndex: 20 }}>
+              {noClipPoints.map((p, i) => {
+                const leftPct = (p.x / imageSize.width) * 100
+                const topPct = (p.y / imageSize.height) * 100
+                return (
+                  <div key={i} className="absolute transform -translate-x-1/2 -translate-y-1/2"
+                    style={{ left: `${leftPct}%`, top: `${topPct}%`, zIndex: 20 }}>
+                    <svg width="22" height="22" viewBox="0 0 22 22" className="mx-auto block"
+                      style={{ filter: 'drop-shadow(0 0 4px rgba(0,0,0,0.5))' }}>
+                      <circle cx="11" cy="11" r="9" fill="none" stroke="#ff2dd0" strokeWidth="2" />
+                      <circle cx="11" cy="11" r="2.5" fill="#ff2dd0" />
+                    </svg>
+                    <div className="text-[10px] text-center mt-1 font-bold px-1 rounded-sm"
+                      style={{ color: '#ff2dd0', background: 'rgba(10,10,12,0.6)' }}>
+                      {i === 0 ? 'Pt 1' : 'Pt 2'}
+                    </div>
+                  </div>
+                )
+              })}
+              {noClipPoints.length === 2 && (
+                <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 5 }}>
+                  <line x1={`${(noClipPoints[0].x / imageSize.width) * 100}%`}
+                    y1={`${(noClipPoints[0].y / imageSize.height) * 100}%`}
+                    x2={`${(noClipPoints[1].x / imageSize.width) * 100}%`}
+                    y2={`${(noClipPoints[1].y / imageSize.height) * 100}%`}
+                    stroke="rgba(255,45,208,0.8)" strokeWidth="1.4" strokeDasharray="4 3" />
+                </svg>
+              )}
+            </div>
+          )
+        })()}
+
         {/* Guide hint */}
         {!allPlaced && (
           <div className="absolute bottom-3 left-0 right-0 text-center pointer-events-none" style={{ zIndex: 50 }}>
@@ -319,9 +383,14 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
       {/* Spacing + reset + debug */}
       <div className="px-4 py-2 flex justify-between items-center border-t" style={{ borderColor: 'var(--color-border)' }}>
         <div className="flex items-center gap-3">
-          <button onClick={() => setShowSpacingInput(!showSpacingInput)}
+          <button onClick={() => { setShowSpacingInput(!showSpacingInput); setNoClipMode(false) }}
             className="flex items-center gap-1 text-xs transition-all hover:opacity-80" style={{ color: 'var(--color-gold)' }}>
             <Settings2 size={12} /> Écart : {markerSpacing} mm
+          </button>
+          <button onClick={() => { setNoClipMode(!noClipMode); setShowSpacingInput(false); setNoClipPoints([]) }}
+            className={`flex items-center gap-1 text-xs transition-all hover:opacity-80 ${noClipMode ? 'font-bold' : ''}`}
+            style={{ color: noClipMode ? 'var(--color-red)' : 'var(--color-text-muted)' }}>
+            <Ruler size={12} /> Pas de clip
           </button>
           {debugInfo && allPlaced && (
             <span className="text-[10px] px-1.5 py-0.5 rounded font-mono" style={{
@@ -351,7 +420,7 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
         </div>
       )}
 
-      {/* Validation */}
+      {/* Validation clip standard */}
       {allPlaced && (
         <div className="px-4 py-3 border-t" style={{ borderColor: 'var(--color-border)' }}>
           <button
@@ -361,6 +430,32 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
           >
             <Check size={16} /> Valider la calibration ({markerSpacing}mm × 2)
           </button>
+        </div>
+      )}
+
+      {/* Validation « sans clip » — 2 points + distance réelle connue */}
+      {noClipMode && noClipPoints.length === 2 && (
+        <div className="px-4 py-3 border-t space-y-2" style={{ background: 'var(--color-bg)', borderColor: 'var(--color-border)' }}>
+          <div className="flex items-center gap-2">
+            <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Distance réelle entre les 2 points :</span>
+            <input type="number" value={noClipKnownMm} onChange={e => setNoClipKnownMm(Number(e.target.value) || 0)}
+              className="w-16 px-2 py-1 rounded text-xs text-center border"
+              style={{ background: 'var(--color-card)', borderColor: 'var(--color-border)', color: 'var(--color-text)' }} />
+            <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>mm</span>
+          </div>
+          <button
+            onClick={() => {
+              const scaleData = calibrateFromKnownDistance(noClipPoints, noClipKnownMm)
+              if (scaleData) onCalibrated(scaleData)
+            }}
+            className="w-full flex items-center justify-center gap-2 py-3 rounded-full font-medium text-sm transition-all hover:opacity-90"
+            style={{ background: 'var(--color-gold)', color: 'var(--color-bg)' }}
+          >
+            <Ruler size={16} /> Valider l'étalon sans clip
+          </button>
+          <p className="text-[10px] text-center" style={{ color: 'var(--color-text-dim)' }}>
+            Placez 2 points sur une dimension connue (largeur de monture, DP connue, objet de référence)
+          </p>
         </div>
       )}
 

@@ -22,17 +22,36 @@ from lateral import (
     detect_lateral_markers as _detect_lateral,
     LATERAL_MARKER_SPACING_MM,
 )
+from geometry import reproject_points
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("smart-optica")
 
 app = FastAPI(title="Smart Optica API", version="1.0.0")
 
-# CORS — autorise le frontend Vite
+# Auth multi-utilisateurs (JWT + PostgreSQL)
+from auth import router as auth_router  # noqa: E402
+from admin import admin as admin_router  # noqa: E402
+from measurements import measurements_router  # noqa: E402
+app.include_router(auth_router)
+app.include_router(admin_router)
+app.include_router(measurements_router)
+
+# CORS — liste blanche d'origines (configurable via env, défaut = serveurs de dev Vite)
+# Ne JAMAIS mettre "*" en production : risque d'appels inter-sites malveillants.
+_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.environ.get(
+        "CORS_ORIGINS",
+        "http://localhost:5173,https://localhost:5173,https://100.75.240.11:5173,http://localhost:5174,https://localhost:5174,https://100.75.240.11:5174",
+    ).split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -100,6 +119,18 @@ class ProfileResult(BaseModel):
 
 
 def decode_image(data: bytes) -> np.ndarray:
+    # Validation MIME réelle par signature (magic bytes) — pas seulement l'extension.
+    if not data or len(data) < 12:
+        raise HTTPException(400, "Fichier vide ou trop court")
+    # JPEG: FF D8 FF ; PNG: 89 50 4E 47 ; WebP: RIFF....WEBP
+    if data[:3] == b"\xff\xd8\xff":
+        pass
+    elif data[:8] == b"\x89PNG\r\n\x1a\n":
+        pass
+    elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        pass
+    else:
+        raise HTTPException(400, "Type de fichier non autorisé (JPEG/PNG/WebP uniquement)")
     arr = np.frombuffer(data, np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
@@ -154,10 +185,12 @@ def detect_calibration_markers(image: np.ndarray) -> dict:
 
     log.info(f"Calibration: eye angle = {eye_angle_deg:.1f}°")
 
+    inverse_rot_mat = None
     if abs(eye_angle_deg) > 0.5:
-        # Redresser l'image
+        # Redresser l'image pour la détection, puis reprojeter les résultats vers l'originale.
         center = (w // 2, h // 2)
         rot_mat = cv2.getRotationMatrix2D(center, eye_angle_deg, 1.0)
+        inverse_rot_mat = cv2.invertAffineTransform(rot_mat)
         image = cv2.warpAffine(image, rot_mat, (w, h), flags=cv2.INTER_LINEAR)
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         # Re-détecter les landmarks sur l'image redressée
@@ -258,7 +291,11 @@ def detect_calibration_markers(image: np.ndarray) -> dict:
 
     if len(peaks) < 3:
         log.info(f"Calibration: only {len(peaks)} peaks, falling back")
-        return _fallback_hough(gray, h, w)
+        fallback = _fallback_hough(gray, h, w)
+        if inverse_rot_mat is not None and fallback.get("markers"):
+            restored = reproject_points(fallback["markers"], inverse_rot_mat)
+            fallback["markers"] = [{"x": round(p["x"]), "y": round(p["y"])} for p in restored]
+        return fallback
 
     # Trier par score décroissant
     peaks.sort(key=lambda p: p["score"], reverse=True)
@@ -286,7 +323,11 @@ def detect_calibration_markers(image: np.ndarray) -> dict:
 
     if not best_triple:
         log.info("Calibration: no valid triple")
-        return _fallback_hough(gray, h, w)
+        fallback = _fallback_hough(gray, h, w)
+        if inverse_rot_mat is not None and fallback.get("markers"):
+            restored = reproject_points(fallback["markers"], inverse_rot_mat)
+            fallback["markers"] = [{"x": round(p["x"]), "y": round(p["y"])} for p in restored]
+        return fallback
 
     # ── 4. Résultat ──
     best_triple.sort(key=lambda p: p["x"])
@@ -303,8 +344,11 @@ def detect_calibration_markers(image: np.ndarray) -> dict:
     log.info(f"Calibration DONE: markers={[(m['x'],m['y']) for m in best_triple]} "
              f"span={total_px}px spacing={avg_spacing:.0f}px scale={scale:.4f}mm/px conf={confidence:.2f}")
 
+    detected_markers = [{"x": float(m["x"]), "y": float(m["y"])} for m in best_triple]
+    restored_markers = reproject_points(detected_markers, inverse_rot_mat)
+
     return {
-        "markers": [{"x": int(m["x"]), "y": int(m["y"])} for m in best_triple],
+        "markers": [{"x": round(m["x"]), "y": round(m["y"])} for m in restored_markers],
         "scale_mm_per_px": round(scale, 6),
         "spacing_px": round(avg_spacing, 1),
         "detection_confidence": round(confidence, 3),

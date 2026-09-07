@@ -5,7 +5,6 @@
  * 3. Estimation par proportions (fallback final)
  */
 
-const FACE_API_MODELS_URL = 'https://justadudewhohacks.github.io/face-api.js/models'
 const FACE_API_LOADED = { tiny: false, landmarks: false }
 
 /**
@@ -63,14 +62,26 @@ async function ensureFaceApiModels() {
   if (FACE_API_LOADED.tiny && FACE_API_LOADED.landmarks) return
 
   const fa = await import('face-api.js')
+  const FALLBACK_CDN = 'https://justadudewhohacks.github.io/face-api.js/models'
 
-  if (!FACE_API_LOADED.tiny) {
-    await fa.nets.tinyFaceDetector.loadFromUri(FACE_API_MODELS_URL)
-    FACE_API_LOADED.tiny = true
+  const loadFromUri = async (base) => {
+    if (!FACE_API_LOADED.tiny) {
+      await fa.nets.tinyFaceDetector.loadFromUri(base)
+      FACE_API_LOADED.tiny = true
+    }
+    if (!FACE_API_LOADED.landmarks) {
+      await fa.nets.faceLandmarks68Net.loadFromUri(base)
+      FACE_API_LOADED.landmarks = true
+    }
   }
-  if (!FACE_API_LOADED.landmarks) {
-    await fa.nets.faceLandmarks68Net.loadFromUri(FACE_API_MODELS_URL)
-    FACE_API_LOADED.landmarks = true
+
+  try {
+    await loadFromUri('/models')
+  } catch (err) {
+    console.warn('[faceDetection] Modèles locaux introuvables, bascule CDN:', err.message)
+    FACE_API_LOADED.tiny = false
+    FACE_API_LOADED.landmarks = false
+    await loadFromUri(FALLBACK_CDN)
   }
 
   return fa

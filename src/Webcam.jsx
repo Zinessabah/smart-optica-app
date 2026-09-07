@@ -1,5 +1,21 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
 import { Camera, RefreshCw, X, CheckCircle2, AlertTriangle } from 'lucide-react'
+import { classifyCameraFraming, framingGuideMessage } from './core/cameraFraming'
+import { scoreSharpness, scoreExposure, decidePhotoQuality, photoQualityMessage } from './core/photoQuality'
+import { detectFaceBoxFromVideo } from './core/faceFallback'
+
+// Échantillonne les pixels d'un canvas en niveaux de gris (sous-échantillonné).
+function sampleGrayFromCanvas(ctx, width, height) {
+  const step = Math.max(4, Math.floor(Math.min(width, height) / 300))
+  const gray = []
+  for (let y = 0; y < height; y += step) {
+    for (let x = 0; x < width; x += step) {
+      const d = ctx.getImageData(x, y, 1, 1).data
+      gray.push(Math.round(0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]))
+    }
+  }
+  return gray
+}
 
 export default function Webcam({ onCapture, onCancel }) {
   const videoRef = useRef(null)
@@ -7,7 +23,7 @@ export default function Webcam({ onCapture, onCancel }) {
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState(null)
   const [facingMode, setFacingMode] = useState('environment')
-  const [faceStatus, setFaceStatus] = useState(null) // null | 'checking' | 'ok' | 'bad'
+  const [faceStatus, setFaceStatus] = useState(null) // null | 'ok' | 'bad' | verdict détaillé
   const checkIntervalRef = useRef(null)
 
   // Vérification périodique de la présence d'un visage
@@ -15,27 +31,29 @@ export default function Webcam({ onCapture, onCancel }) {
     const video = videoRef.current
     if (!video || !video.videoWidth) return
     try {
-      if (typeof window.FaceDetector === 'undefined') {
-        setFaceStatus(null) // API non dispo → pas de check
-        return
-      }
-      setFaceStatus('checking')
-      const detector = new window.FaceDetector({ maxDetectedFaces: 1, fastMode: true })
-      const faces = await detector.detect(video)
-      if (faces.length > 0) {
-        const f = faces[0]
-        const box = f.boundingBox
-        // Vérifie que le visage couvre 10-50% de l'image et n'est pas trop excentré
-        const area = (box.width * box.height) / (video.videoWidth * video.videoHeight)
-        const cx = (box.x + box.width / 2) / video.videoWidth
-        const cy = (box.y + box.height / 2) / video.videoHeight
-        if (area > 0.08 && area < 0.55 && cx > 0.25 && cx < 0.75 && cy > 0.2 && cy < 0.7) {
-          setFaceStatus('ok')
-        } else {
-          setFaceStatus('bad')
-        }
+      let box = null
+      if (typeof window.FaceDetector !== 'undefined') {
+        // 1) API native (Chrome/Edge) — détection fiable
+        const detector = new window.FaceDetector({ maxDetectedFaces: 1, fastMode: true })
+        const faces = await detector.detect(video)
+        if (faces.length > 0) box = faces[0].boundingBox
       } else {
-        setFaceStatus('bad')
+        // 2) Fallback face-api local (iPad/Safari) — détection réelle.
+        // Si rien n'est détecté, on ne JUGMENT PAS le cadrage (pas d'estimation
+        // par proportions qui fausserait le verdict). faceStatus = 'none'.
+        box = await detectFaceBoxFromVideo(video)
+      }
+
+      if (box) {
+        setFaceStatus('checking')
+        const verdict = classifyCameraFraming({
+          box,
+          videoWidth: video.videoWidth,
+          videoHeight: video.videoHeight,
+        })
+        setFaceStatus(verdict) // 'ok' | 'too_far' | 'too_close' | 'too_offset'
+      } else {
+        setFaceStatus('none')
       }
     } catch {
       setFaceStatus(null)
@@ -100,9 +118,11 @@ export default function Webcam({ onCapture, onCancel }) {
 
   const capture = useCallback(() => {
     if (!videoRef.current) return
-    // Vérification rapide : si FaceDetector disponible et visage mal positionné
-    if (faceStatus === 'bad') {
-      setError("Aucun visage détecté dans le cadre. Ajustez la position et réessayez.")
+    // Ne bloque la capture QUE sur un verdict de cadrage réel (détection fiable).
+    // 'none' / 'checking' / null = pas de visage détecté → on laisse capturer
+    // (sinon l'utilisateur resterait bloqué si la détection échoue).
+    if (faceStatus === 'too_far' || faceStatus === 'too_close' || faceStatus === 'too_offset') {
+      setError(framingGuideMessage(faceStatus).replace(/[✅📏🙂🎯🎭]/g, '').trim() + '. Ajustez et réessayez.')
       return
     }
     const video = videoRef.current
@@ -115,6 +135,20 @@ export default function Webcam({ onCapture, onCancel }) {
       ctx.scale(-1, 1)
     }
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+    // ── Contrôle qualité photo (flou / exposition) ──
+    try {
+      const gray = sampleGrayFromCanvas(ctx, canvas.width, canvas.height)
+      const verdict = decidePhotoQuality({
+        sharpness: scoreSharpness(gray),
+        ...scoreExposure(gray),
+      })
+      if (verdict !== 'good') {
+        setError(photoQualityMessage(verdict).replace(/[✅🌫🌑☀️]/g, '').trim() + '. Réessayez.')
+        return
+      }
+    } catch { /* analyse non-bloquante si canvas refusé */ }
+
     const url = canvas.toDataURL('image/jpeg', 0.95)
     onCapture(url)
     stopCamera()
@@ -171,7 +205,9 @@ export default function Webcam({ onCapture, onCancel }) {
             <div style={{
               position: 'absolute', inset: 0,
               border: '3px solid',
-              borderColor: faceStatus === 'ok' ? 'rgba(34,197,94,0.6)' : faceStatus === 'bad' ? 'rgba(255,107,107,0.5)' : 'transparent',
+              borderColor: faceStatus === 'ok' ? 'rgba(34,197,94,0.6)'
+                : (faceStatus && faceStatus !== 'checking') ? 'rgba(255,107,107,0.5)'
+                : 'transparent',
               borderRadius: 4,
               transition: 'border-color 0.3s ease',
             }} />
@@ -179,12 +215,12 @@ export default function Webcam({ onCapture, onCancel }) {
             {/* Texte guide + statut visage */}
             <div className="absolute inset-x-0 bottom-4 flex justify-center">
               <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-medium"
-                style={{ background: 'rgba(0,0,0,0.7)', color: faceStatus === 'ok' ? 'var(--color-green)' : faceStatus === 'bad' ? 'var(--color-red)' : 'rgba(255,255,255,0.7)', border: '1px solid rgba(255,255,255,0.1)' }}>
+                style={{ background: 'rgba(0,0,0,0.7)', color: faceStatus === 'ok' ? 'var(--color-green)' : (faceStatus && faceStatus !== 'checking') ? 'var(--color-red)' : 'rgba(255,255,255,0.7)', border: '1px solid rgba(255,255,255,0.1)' }}>
                 {faceStatus === 'ok' && <CheckCircle2 size={10} />}
-                {faceStatus === 'bad' && <AlertTriangle size={10} />}
-                {faceStatus === 'ok' ? '✅ Visage détecté' :
-                 faceStatus === 'bad' ? '⚠️ Aucun visage — Ajustez le cadre' :
-                 'Alignez le visage dans le cadre · Placez le clip de calibration'}
+                {faceStatus !== 'ok' && faceStatus !== 'checking' && <AlertTriangle size={10} />}
+                {faceStatus === 'ok' ? '✅ ' + framingGuideMessage('ok')
+                 : faceStatus === 'checking' ? 'Analyse du cadre…'
+                 : framingGuideMessage(faceStatus)}
               </span>
             </div>
           </div>

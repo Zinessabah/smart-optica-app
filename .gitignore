@@ -28,3 +28,22 @@ backend/venv/
 __pycache__/
 *.pyc
 backend/__pycache__/
+
+# Secrets & DB
+.env
+backend/.env
+backend/smartoptica.db
+*.db
+*.db.bak*
+*.env.bak*
+backend/uploads/
+certs/
+dist-admin/
+admin/dist/
+
+# Fichiers temporaires / maquettes locales (ne pas publier)
+fix_verify.jsx
+ruler-mockup.html
+AUDIT_*.md
+strong-class-query.md
+

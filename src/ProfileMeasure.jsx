@@ -1,5 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { ArrowLeft, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react'
+import { computeContainedImageRect, screenPointToImage } from './core/imageGeometry'
+import { calculatePantoscopicAngle, isProfileMeasurementReady } from './core/profileGeometry'
+import MeasureRuler from './components/MeasureRuler'
 
 /**
  * Mesures latérales (profil D) — étape séparée après la capture de la photo.
@@ -11,6 +14,7 @@ import { ArrowLeft, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react'
 export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, onSkip, onBack }) {
   const [imageSize, setImageSize] = useState(null)
   const [error, setError] = useState(null)
+  const [rulerVisible, setRulerVisible] = useState(false)
 
   // ── Calibrage 25mm (2 points sur les mires latérales) ──
   const [verifyLine, setVerifyLine] = useState([])
@@ -28,7 +32,29 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
   const [vertexLine, setVertexLine] = useState([])
 
   const dragRef = useRef(null)
+  const containerRef = useRef(null)
   const [vertexNeedsCompute, setVertexNeedsCompute] = useState(false)
+
+  const getDisplayRect = useCallback(() => {
+    if (!containerRef.current || !imageSize) return null
+    return computeContainedImageRect(
+      containerRef.current.clientWidth,
+      containerRef.current.clientHeight,
+      imageSize.width,
+      imageSize.height,
+    )
+  }, [imageSize])
+
+  const toImageCoords = useCallback((clientX, clientY) => {
+    if (!containerRef.current || !imageSize) return null
+    return screenPointToImage(
+      clientX,
+      clientY,
+      containerRef.current.getBoundingClientRect(),
+      getDisplayRect(),
+      imageSize,
+    )
+  }, [getDisplayRect, imageSize])
 
   // ── Chargement de l'image ──
   useEffect(() => {
@@ -53,10 +79,16 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
   // ── Vertex → API backend (distance pure, sans correction) ──
   const [vertexMm, setVertexMm] = useState(null)
   const [vertexLoading, setVertexLoading] = useState(false)
+  const [vertexError, setVertexError] = useState(null)
+  const [vertexAdjusted, setVertexAdjusted] = useState(false)
+  const vertexRequestRef = useRef(0)
 
   const computeVertexFromAPI = useCallback(async () => {
     if (vertexLine.length < 2 || !effectiveScale) return
+    const requestId = ++vertexRequestRef.current
     setVertexLoading(true)
+    setVertexError(null)
+    setVertexMm(null)
     try {
       const res = await fetch('/api/compute-vertex', {
         method: 'POST',
@@ -67,12 +99,14 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
           scale_mm_per_px: effectiveScale,
         }),
       })
-      if (res.ok) {
-        const data = await res.json()
-        setVertexMm(data.vertex_distance_mm)
-      }
-    } catch { /* silencieux */ }
-    setVertexLoading(false)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || `Erreur vertex HTTP ${res.status}`)
+      if (requestId === vertexRequestRef.current) setVertexMm(data.vertex_distance_mm)
+    } catch (error) {
+      if (requestId === vertexRequestRef.current) setVertexError(error.message || 'Calcul vertex impossible')
+    } finally {
+      if (requestId === vertexRequestRef.current) setVertexLoading(false)
+    }
   }, [vertexLine, effectiveScale])
 
   useEffect(() => {
@@ -82,7 +116,7 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     }
   }, [vertexLine, vertexNeedsCompute, computeVertexFromAPI])
 
-  const allDone = allAngleDone && vertexLine.length === 2
+  const allDone = isProfileMeasurementReady(anglePts, vertexLine, vertexMm, vertexLoading, vertexAdjusted)
 
   // ── Drag & drop des poignées (data-pt-type + data-pt-index) ──
   const handlePointerDown = useCallback((e) => {
@@ -93,17 +127,27 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     const index = parseInt(ep.dataset.ptIndex)
     const setter = { verify: setVerifyLine, angle: setAnglePts, vertex: setVertexLine }[ptType]
     if (!setter) return
-    const rect = e.currentTarget.getBoundingClientRect()
+    if (ptType === 'vertex') {
+      vertexRequestRef.current += 1
+      setVertexLoading(false)
+      setVertexMm(null)
+      setVertexError(null)
+      setVertexAdjusted(false)
+    }
+    const startImg = toImageCoords(e.clientX, e.clientY)
+    if (!startImg) return
 
     setter(prev => {
       const orig = prev[index]; if (!orig) return prev
-      dragRef.current = { setter, index, sX: e.clientX, sY: e.clientY, oX: orig.x, oY: orig.y, rect }
+      dragRef.current = { setter, index, startImg, oX: orig.x, oY: orig.y }
       return prev
     })
     const onMove = (ev) => {
       const d = dragRef.current; if (!d) return
-      const nx = Math.round(Math.max(0, Math.min(imageSize.width, d.oX + (ev.clientX - d.sX) / d.rect.width * imageSize.width)))
-      const ny = Math.round(Math.max(0, Math.min(imageSize.height, d.oY + (ev.clientY - d.sY) / d.rect.height * imageSize.height)))
+      const currentImg = toImageCoords(ev.clientX, ev.clientY)
+      if (!currentImg) return
+      const nx = Math.round(Math.max(0, Math.min(imageSize.width, d.oX + currentImg.x - d.startImg.x)))
+      const ny = Math.round(Math.max(0, Math.min(imageSize.height, d.oY + currentImg.y - d.startImg.y)))
       d.setter(prev => { const n = [...prev]; n[d.index] = { x: nx, y: ny }; return n })
     }
     const onUp = () => {
@@ -111,41 +155,38 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
       dragRef.current = null
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
-      if (wasVertex) setVertexNeedsCompute(true)
+      if (wasVertex) {
+        setVertexAdjusted(true)
+        setVertexNeedsCompute(true)
+      }
     }
     window.addEventListener('pointermove', onMove); window.addEventListener('pointerup', onUp)
-  }, [imageSize])
+  }, [imageSize, toImageCoords])
 
   // ── Clic pour placer les points dans l'ordre : mires → angle → (vertex auto) ──
   const handleImageClick = useCallback((e) => {
     if (!imageSize) return
     if (e.target.closest('[data-pt-type]')) return
-    const rect = e.currentTarget.getBoundingClientRect()
-    const pt = { x: Math.round((e.clientX - rect.left) / rect.width * imageSize.width), y: Math.round((e.clientY - rect.top) / rect.height * imageSize.height) }
+    const mapped = toImageCoords(e.clientX, e.clientY)
+    if (!mapped) return
+    const pt = { x: Math.round(mapped.x), y: Math.round(mapped.y) }
     if (verifyLine.length < 2) {
       setVerifyLine(prev => [...prev, pt])
     } else if (anglePts.length < 3) {
       setAnglePts(prev => [...prev, pt])
     }
-  }, [imageSize, verifyLine, anglePts])
+  }, [imageSize, verifyLine, anglePts, toImageCoords])
 
   // ── Angle pantoscopique : écart à 90° de l'angle entre les 2 segments ──
   // Le plan du verre est perpendiculaire à la branche → angle brut ≈ 90°.
   // La pantoscopie est la DÉVIATION par rapport à cette perpendiculaire.
-  const pantoscopic = (() => {
-    if (anglePts.length < 3) return null
-    const [a, v, b] = anglePts
-    const v1 = Math.atan2(a.y - v.y, a.x - v.x) * 180 / Math.PI
-    const v2 = Math.atan2(b.y - v.y, b.x - v.x) * 180 / Math.PI
-    let ang = Math.abs(v2 - v1)
-    if (ang > 180) ang = 360 - ang
-    const deviation = Math.abs(ang - 90)
-    return Math.round(Math.max(0, Math.min(30, deviation)) * 10) / 10
-  })()
+  const pantoscopic = calculatePantoscopicAngle(anglePts)
 
   // ── Reset ──
   const resetMeasure = useCallback(() => {
-    setVerifyLine([]); setAnglePts([]); setVertexLine([]); setVertexMm(null)
+    vertexRequestRef.current += 1
+    setVertexLoading(false)
+    setVerifyLine([]); setAnglePts([]); setVertexLine([]); setVertexMm(null); setVertexError(null); setVertexAdjusted(false)
   }, [])
 
   // ── Validation ──
@@ -316,14 +357,25 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
           </h2>
           <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Angle pantoscopique & distance vertex</p>
         </div>
+        <div className="ml-auto">
+          <MeasureRuler variant="button" scaleMmPerPx={effectiveScale} imageSize={imageSize} displayRect={getDisplayRect()} visible={rulerVisible} onToggle={() => setRulerVisible(v => !v)} />
+        </div>
       </div>
 
       <div className="rounded-2xl border overflow-hidden relative" style={{ background: 'var(--color-card)', borderColor: 'var(--color-border)' }}>
-        <div className="relative select-none" style={{ touchAction: 'none' }}
+        <div ref={containerRef} className="relative select-none aspect-[3/4]" style={{ touchAction: 'none' }}
           onPointerDown={handlePointerDown} onClick={handleImageClick}>
-          <img src={imageUrl} alt="Profil" className="w-full aspect-[3/4] object-contain pointer-events-none" />
-          {renderLines()}
-          {renderEndpoints()}
+          <img src={imageUrl} alt="Profil" className="absolute inset-0 w-full h-full object-contain pointer-events-none" />
+          {getDisplayRect() && (() => {
+            const dr = getDisplayRect()
+            return (
+              <div className="absolute" style={{ left: dr.left, top: dr.top, width: dr.width, height: dr.height }}>
+                {renderLines()}
+                {renderEndpoints()}
+                <MeasureRuler variant="ruler" scaleMmPerPx={effectiveScale} imageSize={imageSize} displayRect={dr} visible={rulerVisible} onToggle={() => setRulerVisible(v => !v)} />
+              </div>
+            )
+          })()}
         </div>
       </div>
 
@@ -334,9 +386,24 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
         borderColor: step === 'done' ? 'rgba(16,185,129,0.25)' : step === 'angle' ? 'rgba(167,139,250,0.25)' : 'rgba(34,211,238,0.3)',
       }}>
         {step === 'calib' && <>🔷 Placez 2 points sur les <strong>2 cercles noirs</strong> ({verifyLine.length}/2)</>}
-        {step === 'angle' && <>🟠🔵 Placez le <strong>sommet 🟣</strong> puis les 2 extrémités sur la branche et le plan du verre ({anglePts.length}/3)</>}
+        {step === 'angle' && <>{anglePts.length === 0 ? '🟠 Placez l’extrémité sur la branche' : anglePts.length === 1 ? '🟣 Placez le sommet à la charnière' : '🔵 Placez l’extrémité sur le plan du verre'} ({anglePts.length}/3)</>}
         {step === 'done' && <>✅ Pantoscopique <strong>{pantoscopic}°</strong> | Vertex <strong>{vertexLoading ? '...' : vertexMm ? `${vertexMm} mm` : '—'}</strong></>}
       </div>
+
+      {vertexError && (
+        <div className="rounded-xl px-3 py-2 text-xs flex items-center justify-between gap-3"
+          style={{ background: 'var(--color-red-bg)', color: 'var(--color-red)', border: '1px solid rgba(255,107,107,0.25)' }}>
+          <span>{vertexError}</span>
+          <button onClick={computeVertexFromAPI} className="px-3 py-1.5 rounded-lg font-medium shrink-0"
+            style={{ background: 'var(--color-red)', color: '#fff' }}>Réessayer</button>
+        </div>
+      )}
+
+      {allAngleDone && !allDone && !vertexError && (
+        <div className="text-center text-xs" style={{ color: 'var(--color-gold)' }}>
+          {vertexLoading ? 'Calcul de la distance vertex…' : vertexAdjusted ? 'Calcul vertex en attente.' : 'Placez précisément les deux points sur la cornée et le vrai plan arrière du verre.'}
+        </div>
+      )}
 
       <div className="flex gap-2">
         <button onClick={onBack} className="flex items-center justify-center gap-1.5 flex-1 py-2.5 rounded-full text-sm font-medium"
