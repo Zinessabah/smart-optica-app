@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+<<<<<<< HEAD
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,6 +16,19 @@ const hasCert = fs.existsSync(certPath) && fs.existsSync(keyPath)
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+=======
+import basicSsl from '@vitejs/plugin-basic-ssl'
+import { fileURLToPath, URL } from 'node:url'
+
+export default defineConfig({
+  plugins: [react(), tailwindcss(), basicSsl()],
+  resolve: {
+    alias: {
+      // Alias '@' → src, utilisé par le barrel core/index.js (import { … } from '@/core')
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
+  },
+>>>>>>> origin/main
   server: {
     host: '0.0.0.0',
     https: hasCert ? {

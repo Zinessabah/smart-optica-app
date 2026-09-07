@@ -9,8 +9,11 @@
     "lint": "oxlint",
     "test": "vitest run",
     "test:watch": "vitest",
+<<<<<<< HEAD
     "test:integration": "vitest run --config vitest.integration.config.js",
     "typecheck": "tsc --noEmit",
+=======
+>>>>>>> origin/main
     "preview": "vite preview"
   },
   "dependencies": {
@@ -31,8 +34,13 @@
     "@vitejs/plugin-basic-ssl": "^2.3.0",
     "@vitejs/plugin-react": "^6.0.3",
     "oxlint": "^1.71.0",
+<<<<<<< HEAD
     "typescript": "^5.6.3",
     "vite": "^8.1.1",
     "vitest": "^4.1.10"
+=======
+    "vite": "^8.1.1",
+    "vitest": "^3.2.4"
+>>>>>>> origin/main
   }
 }
