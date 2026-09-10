@@ -4,6 +4,108 @@ import { computeContainedImageRect, screenPointToImage } from './core/imageGeome
 import { calculatePantoscopicAngle, isProfileMeasurementReady } from './core/profileGeometry'
 import MeasureRuler from './components/MeasureRuler'
 
+// ── Poignée de drag DÉPORTÉE (design validé par Driss) ──
+// Le point de mesure exact reste SUR la mire ; la poignée (octogone translucide)
+// est ÉLOIGNÉE du point pour ne jamais masquer la visée, et reliée par un segment.
+const HANDLE_R = 11.52      // rayon de l'octogone → ~23 px visibles (−20 % sur 14,4)
+const HANDLE_HALF = 24      // demi-épaisseur de la zone tactile du point → 48 px
+const HANDLE_OFFSET = 46    // distance point → centre de la poignée (px écran)
+const HANDLE_GRAB = 22      // rayon de la zone tactile de la poignée → 44 px (inchangé : confort doigt)
+const HANDLE_BOX = 140      // largeur de la boîte du marqueur (le point est au centre)
+const IVORY = '#f6f4ee'     // fond ivoire (translucide)
+const HANDLE_SHADOW = { filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))' }
+
+// Octogone régulier : sommets à 22,5° + k·45° (faces à plat, notre signature)
+const octagonPoints = (r) => Array.from({ length: 8 }, (_, k) => {
+  const a = ((22.5 + k * 45) * Math.PI) / 180
+  return `${(r * Math.cos(a)).toFixed(2)},${(r * Math.sin(a)).toFixed(2)}`
+}).join(' ')
+const HANDLE_OCTAGON = octagonPoints(HANDLE_R)
+
+// 4 chevrons fins = affordance « déplacer » (notre style, ≠ le ✥ plein d'OptiFest).
+// Tracés dans un repère de référence r=18 puis mis à l'échelle → suivent toute
+// modification de taille de l'octogone.
+const CHEV = HANDLE_R / 18
+const chev = (x1, y1, x2, y2, x3, y3) =>
+  `M ${(x1 * CHEV).toFixed(2)} ${(y1 * CHEV).toFixed(2)} ` +
+  `L ${(x2 * CHEV).toFixed(2)} ${(y2 * CHEV).toFixed(2)} ` +
+  `L ${(x3 * CHEV).toFixed(2)} ${(y3 * CHEV).toFixed(2)}`
+const HANDLE_CHEVRONS = [
+  chev(-3.2, -8.6, 0, -12.2, 3.2, -8.6),
+  chev(-3.2, 8.6, 0, 12.2, 3.2, 8.6),
+  chev(-8.6, -3.2, -12.2, 0, -8.6, 3.2),
+  chev(8.6, -3.2, 12.2, 0, 8.6, 3.2),
+]
+
+// Orientation par DÉFAUT des poignées — aucune automatique de positionnement, des
+// directions fixes par famille (choix Driss) ; chaque poignée reste pivotable au
+// double-tap si besoin.
+//   · échelle (mires)   → à DROITE (0°)
+//   · vertex            → HORIZONTAL et OPPOSÉ (point de gauche à gauche, l'autre à droite)
+//   · sommet de l'angle → VERTICAL vers le haut (270°)
+function defaultHandleAngle(type, i, pt, peers) {
+  if (type === 'vertex') {
+    if (!peers || peers.length < 2) return 0
+    const ref = peers.reduce((s, p) => s + p.x, 0) / peers.length
+    if (Math.abs(pt.x - ref) < 1e-6) return i % 2 === 0 ? 180 : 0
+    return pt.x < ref ? 180 : 0
+  }
+  if (type === 'angle') return 270
+  return 0
+}
+
+// Le point de mesure exact : réticule fin (croix + point), jamais masqué.
+function pointReticle(color) {
+  return (
+    <>
+      <line x1="-7.5" y1="0" x2="-3.5" y2="0" stroke={color} strokeWidth="1.3" strokeLinecap="round" />
+      <line x1="3.5" y1="0" x2="7.5" y2="0" stroke={color} strokeWidth="1.3" strokeLinecap="round" />
+      <line x1="0" y1="-7.5" x2="0" y2="-3.5" stroke={color} strokeWidth="1.3" strokeLinecap="round" />
+      <line x1="0" y1="3.5" x2="0" y2="7.5" stroke={color} strokeWidth="1.3" strokeLinecap="round" />
+      <circle r="1.7" fill={color} />
+    </>
+  )
+}
+
+// Poignée déportée dans N'IMPORTE QUELLE DIRECTION + segment de liaison.
+// `dx`/`dy` = vecteur point → poignée (0,0 = octogone POSÉ SUR le point, sans segment).
+// `angle` = orientation courante (deg), exposée en data-attribut pour la rotation.
+function handleShape(color, isDragging, dx, dy, angle) {
+  const onPoint = dx === 0 && dy === 0
+  const len = Math.hypot(dx, dy)
+  const ux = len ? dx / len : 0
+  const uy = len ? dy / len : 0
+  const segFrom = 9.5                        // juste après le réticule du point
+  const segTo = len - HANDLE_R + 2           // jusqu'au bord de l'octogone
+  return (
+    <>
+      {/* segment de liaison — seulement si la poignée est écartée */}
+      {!onPoint && (
+        <line x1={(ux * segFrom).toFixed(2)} y1={(uy * segFrom).toFixed(2)}
+          x2={(ux * segTo).toFixed(2)} y2={(uy * segTo).toFixed(2)}
+          stroke={color} strokeWidth="1.4" opacity="0.75" strokeLinecap="round" />
+      )}
+      {/* poignée : octogone translucide + chevrons (double-tap = rotation par 45°) */}
+      <g transform={`translate(${dx} ${dy})`}
+        {...(onPoint ? {} : { 'data-handle-rot': '1', 'data-handle-angle': String(angle) })}>
+        {/* zone tactile de la poignée */}
+        <circle r={HANDLE_GRAB} fill="none" pointerEvents="all" />
+        <polygon points={HANDLE_OCTAGON} fill={IVORY} fillOpacity={isDragging ? 0.5 : 0.3}
+          stroke={color} strokeWidth="2" strokeLinejoin="round" style={HANDLE_SHADOW} />
+        {HANDLE_CHEVRONS.map((d, n) => (
+          <path key={n} d={d} fill="none" stroke={color} strokeWidth="1.5"
+            strokeLinecap="round" strokeLinejoin="round" />
+        ))}
+        <circle r="1.7" fill={color} />
+      </g>
+      {/* zone tactile du point (48 px) + réticule exact */}
+      <rect x={-HANDLE_HALF} y={-HANDLE_HALF} width={2 * HANDLE_HALF} height={2 * HANDLE_HALF}
+        fill="none" pointerEvents="all" />
+      {pointReticle(color)}
+    </>
+  )
+}
+
 /**
  * Mesures latérales (profil D) — étape séparée après la capture de la photo.
  * Calibrage : 2 points cyan sur les mires latérales (25mm fixe) → échelle mm/px.
@@ -32,8 +134,16 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
   const [vertexLine, setVertexLine] = useState([])
 
   const dragRef = useRef(null)
+  const lastDragEndRef = useRef(0)
+  // Double-tap sur un octogone : { key, time } du dernier tap (rotation 45°)
+  const lastTapRef = useRef({ key: null, time: 0 })
   const containerRef = useRef(null)
   const [vertexNeedsCompute, setVertexNeedsCompute] = useState(false)
+  // Poignée en cours de déplacement → pastille plus opaque (repère visuel)
+  const [draggingPt, setDraggingPt] = useState(null)
+  // Orientation choisie par l'utilisateur, par poignée : { 'vertex-0': 135, ... }
+  // Absent = sens automatique (horizontal, opposé pour les couples, bascule aux bords).
+  const [handleAngles, setHandleAngles] = useState({})
 
   const getDisplayRect = useCallback(() => {
     if (!containerRef.current || !imageSize) return null
@@ -122,9 +232,15 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
   const handlePointerDown = useCallback((e) => {
     const ep = e.target.closest('[data-pt-type]')
     if (!ep || !imageSize) return
+    e.preventDefault()
     e.stopPropagation()
     const ptType = ep.dataset.ptType
     const index = parseInt(ep.dataset.ptIndex)
+    // Rotation : un double-tap sur l'octogone le fait pivoter de 45°, poignée par poignée
+    const rotEl = e.target.closest('[data-handle-rot]')
+    const rotKey = rotEl ? `${ptType}-${index}` : null
+    const rotFrom = rotEl ? Number(rotEl.dataset.handleAngle || 0) : 0
+    let moved = false
     const setter = { verify: setVerifyLine, angle: setAnglePts, vertex: setVertexLine }[ptType]
     if (!setter) return
     if (ptType === 'vertex') {
@@ -137,6 +253,7 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     const startImg = toImageCoords(e.clientX, e.clientY)
     if (!startImg) return
 
+    setDraggingPt({ type: ptType, i: index })
     setter(prev => {
       const orig = prev[index]; if (!orig) return prev
       dragRef.current = { setter, index, startImg, oX: orig.x, oY: orig.y }
@@ -146,26 +263,49 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
       const d = dragRef.current; if (!d) return
       const currentImg = toImageCoords(ev.clientX, ev.clientY)
       if (!currentImg) return
-      const nx = Math.round(Math.max(0, Math.min(imageSize.width, d.oX + currentImg.x - d.startImg.x)))
-      const ny = Math.round(Math.max(0, Math.min(imageSize.height, d.oY + currentImg.y - d.startImg.y)))
+      const dx = currentImg.x - d.startImg.x
+      const dy = currentImg.y - d.startImg.y
+      // Seuil de 3 px (image) : au-delà on considère que c'est un vrai drag
+      if (Math.hypot(dx, dy) > 3) { d.moved = true; moved = true }
+      const nx = Math.round(Math.max(0, Math.min(imageSize.width, d.oX + dx)))
+      const ny = Math.round(Math.max(0, Math.min(imageSize.height, d.oY + dy)))
       d.setter(prev => { const n = [...prev]; n[d.index] = { x: nx, y: ny }; return n })
     }
     const onUp = () => {
       const wasVertex = dragRef.current?.setter === setVertexLine
+      // Si un vrai déplacement a eu lieu, marquer l'instant pour neutraliser le clic suivant
+      if (moved) lastDragEndRef.current = Date.now()
+      // Double-tap sur l'octogone sans déplacement → rotation de 45° (par poignée)
+      if (rotKey && !moved) {
+        const now = Date.now()
+        const prev = lastTapRef.current
+        if (prev.key === rotKey && now - prev.time < 400) {
+          lastTapRef.current = { key: null, time: 0 }
+          setHandleAngles(a => ({ ...a, [rotKey]: (rotFrom + 45) % 360 }))
+        } else {
+          lastTapRef.current = { key: rotKey, time: now }
+        }
+      }
       dragRef.current = null
+      setDraggingPt(null)
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
       if (wasVertex) {
         setVertexAdjusted(true)
         setVertexNeedsCompute(true)
       }
     }
-    window.addEventListener('pointermove', onMove); window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
   }, [imageSize, toImageCoords])
 
   // ── Clic pour placer les points dans l'ordre : mires → angle → (vertex auto) ──
   const handleImageClick = useCallback((e) => {
     if (!imageSize) return
+    // Un drag vient de se terminer (< 300 ms) : le relâchement ne doit pas ajouter un point
+    if (Date.now() - lastDragEndRef.current < 300) return
     if (e.target.closest('[data-pt-type]')) return
     const mapped = toImageCoords(e.clientX, e.clientY)
     if (!mapped) return
@@ -186,7 +326,7 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
   const resetMeasure = useCallback(() => {
     vertexRequestRef.current += 1
     setVertexLoading(false)
-    setVerifyLine([]); setAnglePts([]); setVertexLine([]); setVertexMm(null); setVertexError(null); setVertexAdjusted(false)
+    setVerifyLine([]); setAnglePts([]); setVertexLine([]); setHandleAngles({}); setVertexMm(null); setVertexError(null); setVertexAdjusted(false)
   }, [])
 
   // ── Validation ──
@@ -267,10 +407,12 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     )
   }
 
-  // ── Marqueurs : réticule de visée métrologique (SVG) ──
-  // Anneau fin + croix fine + point central. Halo pulsant sur le DERNIER point placé.
+  // ── Poignées de drag : octogone (notre signature) ──
+  // Le point de mesure exact est matérialisé par un réticule fin, TOUJOURS visible.
   const renderEndpoints = () => {
     if (!imageSize) return null
+    // Groupes de points d'un même couple (sert au sens d'écartement opposé)
+    const groups = { verify: verifyLine, angle: anglePts, vertex: vertexLine }
     const items = []
     verifyLine.forEach((pt, i) => items.push({ pt, color: '#22d3ee', type: 'verify', i }))
     anglePts.forEach((pt, i) => items.push({
@@ -288,32 +430,38 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
       return null
     })()
 
-    const R = 11   // rayon anneau (px écran)
-    const C = 5    // demi-longueur croix
-
     return items.map(({ pt, color, type, i }, k) => {
       const isLast = lastPlaced && lastPlaced.type === type && lastPlaced.i === i
+      const isDragging = !!draggingPt && draggingPt.type === type && draggingPt.i === i
+      // Angle pantoscopique : les 2 extrémités (branche 🟠 et plan du verre 🔵) ont
+      // l'octogone POSÉ SUR le point — ni écartement, ni segment. Le sommet 🟣 est
+      // écarté verticalement. Directions par défaut fixes (cf. defaultHandleAngle),
+      // aucune automatique ; chaque poignée reste pivotable (double-tap → 45°).
+      const onPoint = type === 'angle' && i !== 1
+      const key = `${type}-${i}`
+      const deg = handleAngles[key] ?? defaultHandleAngle(type, i, pt, groups[type])
+      const rad = (deg * Math.PI) / 180
+      const r2 = (v) => { const n = Math.round(v * 100) / 100; return n === 0 ? 0 : n }
+      const dx = onPoint ? 0 : r2(HANDLE_OFFSET * Math.cos(rad))
+      const dy = onPoint ? 0 : r2(HANDLE_OFFSET * Math.sin(rad))
       return (
         <div key={`${type}${k}`} data-pt-type={type} data-pt-index={i} style={{
           position: 'absolute', left: toPct(pt.x, imageSize.width), top: toPct(pt.y, imageSize.height),
-          transform: 'translate(-50%,-50%)', width: 2 * R + 8, height: 2 * R + 8,
-          cursor: 'grab', touchAction: 'none', pointerEvents: 'auto', zIndex: 15,
+          transform: 'translate(-50%,-50%)',
+          width: HANDLE_BOX, height: HANDLE_BOX,
+          // Le conteneur est transparent aux events : seuls la poignée et le point sont saisissables
+          pointerEvents: 'none', touchAction: 'none',
+          cursor: isDragging ? 'grabbing' : 'grab', zIndex: 15,
+          WebkitTouchCallout: 'none', WebkitUserSelect: 'none',
         }}>
-          <svg width="100%" height="100%" viewBox={`-${R + 4} -${R + 4} ${2 * (R + 4)} ${2 * (R + 4)}`}>
-            {/* Halo pulsant — dernier point placé uniquement */}
+          <svg width={HANDLE_BOX} height={HANDLE_BOX}
+            viewBox={`-${HANDLE_BOX / 2} -${HANDLE_BOX / 2} ${HANDLE_BOX} ${HANDLE_BOX}`}>
+            {/* Halo pulsant — dernier point placé, centré sur le POINT (guidage) */}
             {isLast && (
-              <circle r={R + 2} fill="none" stroke={color} strokeWidth="1" opacity="0.5"
+              <circle r="13" fill="none" stroke={color} strokeWidth="1" opacity="0.5"
                 style={{ animation: 'reticle-pulse 1.6s ease-out infinite' }} />
             )}
-            {/* Croix fine qui dépasse l'anneau */}
-            <line x1={-C - 3} y1="0" x2={-C} y2="0" stroke={color} strokeWidth="1.2" opacity="0.9" />
-            <line x1={C} y1="0" x2={C + 3} y2="0" stroke={color} strokeWidth="1.2" opacity="0.9" />
-            <line x1="0" y1={-C - 3} x2="0" y2={-C} stroke={color} strokeWidth="1.2" opacity="0.9" />
-            <line x1="0" y1={C} x2="0" y2={C + 3} stroke={color} strokeWidth="1.2" opacity="0.9" />
-            {/* Anneau fin */}
-            <circle r={R} fill={`${color}18`} stroke={color} strokeWidth="1.4" />
-            {/* Point central */}
-            <circle r="1.6" fill={color} />
+            {handleShape(color, isDragging, dx, dy, deg)}
           </svg>
         </div>
       )
@@ -357,7 +505,17 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
           </h2>
           <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Angle pantoscopique & distance vertex</p>
         </div>
-        <div className="ml-auto">
+        {/* Bandeau d'outils — les 3 mesures sont visibles DÈS LE DÉBUT (choix Driss),
+            pas seulement à l'étape où elles deviennent calculables. */}
+        <div className="ml-auto flex items-center gap-2 flex-wrap justify-end">
+          <span title="Angle pantoscopique" className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg font-medium"
+            style={{ background: 'var(--color-card)', border: '1px solid var(--color-border)', color: '#a78bfa' }}>
+            📐 {pantoscopic !== null ? `${pantoscopic}°` : '—'}
+          </span>
+          <span title="Distance vertex" className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg font-medium"
+            style={{ background: 'var(--color-card)', border: '1px solid var(--color-border)', color: '#10b981' }}>
+            ↔ {vertexMm ? `${vertexMm} mm` : '—'}
+          </span>
           <MeasureRuler variant="button" scaleMmPerPx={effectiveScale} imageSize={imageSize} displayRect={getDisplayRect()} visible={rulerVisible} onToggle={() => setRulerVisible(v => !v)} />
         </div>
       </div>
@@ -388,6 +546,11 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
         {step === 'calib' && <>🔷 Placez 2 points sur les <strong>2 cercles noirs</strong> ({verifyLine.length}/2)</>}
         {step === 'angle' && <>{anglePts.length === 0 ? '🟠 Placez l’extrémité sur la branche' : anglePts.length === 1 ? '🟣 Placez le sommet à la charnière' : '🔵 Placez l’extrémité sur le plan du verre'} ({anglePts.length}/3)</>}
         {step === 'done' && <>✅ Pantoscopique <strong>{pantoscopic}°</strong> | Vertex <strong>{vertexLoading ? '...' : vertexMm ? `${vertexMm} mm` : '—'}</strong></>}
+        <div className="mt-1.5 opacity-75">
+          ↻ Double-tap sur un octogone pour le faire pivoter par pas de 45°
+          {Object.keys(handleAngles).length > 0
+            && ` · ${Object.keys(handleAngles).length} pivotée${Object.keys(handleAngles).length > 1 ? 's' : ''} à la main`}
+        </div>
       </div>
 
       {vertexError && (

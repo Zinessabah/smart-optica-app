@@ -43,7 +43,7 @@ admin/dist/
 
 # Fichiers temporaires / maquettes locales (ne pas publier)
 fix_verify.jsx
-ruler-mockup.html
+ruler-mockup*.html
 AUDIT_*.md
 strong-class-query.md
 
