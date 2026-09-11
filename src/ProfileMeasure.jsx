@@ -13,7 +13,16 @@ const HANDLE_OFFSET = 46    // distance point → centre de la poignée (px écr
 const HANDLE_GRAB = 22      // rayon de la zone tactile de la poignée → 44 px (inchangé : confort doigt)
 const HANDLE_BOX = 140      // largeur de la boîte du marqueur (le point est au centre)
 const IVORY = '#f6f4ee'     // fond ivoire (translucide)
+const GOLD = '#c9a05a'      // couleur « échelle » du thème (var(--color-gold))
 const HANDLE_SHADOW = { filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))' }
+
+// Style d'un bouton d'outil — calqué sur l'écran facial (PupilMarker.btnStyle).
+// `color` doit être une couleur hexa : on en dérive la teinte de fond à 12 %.
+const toolBtnStyle = (isActive, color) => ({
+  background: isActive ? `${color}20` : 'var(--color-border)',
+  color: isActive ? color : 'var(--color-text-dim)',
+  border: isActive ? `1.5px solid ${color}` : '1.5px solid transparent',
+})
 
 // Octogone régulier : sommets à 22,5° + k·45° (faces à plat, notre signature)
 const octagonPoints = (r) => Array.from({ length: 8 }, (_, k) => {
@@ -116,7 +125,10 @@ function handleShape(color, isDragging, dx, dy, angle) {
 export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, onSkip, onBack }) {
   const [imageSize, setImageSize] = useState(null)
   const [error, setError] = useState(null)
-  const [rulerVisible, setRulerVisible] = useState(false)
+  // Interrupteurs d'outils (Driss) : « les boutons doivent activer ET désactiver
+  // les outils de mesures ». Au début des mesures latérales, SEULE l'Échelle est
+  // active ; réglette, angle et vertex s'activent à la demande.
+  const [toolOn, setToolOn] = useState({ scale: true, ruler: false, angle: false, vertex: false })
 
   // ── Calibrage 25mm (2 points sur les mires latérales) ──
   const [verifyLine, setVerifyLine] = useState([])
@@ -155,6 +167,39 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     )
   }, [imageSize])
 
+  // ── Dispositions par défaut des poignées créées par les boutons d'outil ──
+  // (Driss : « en appuyant sur le bouton tu actives toutes les poignées au lieu
+  // d'une par une »). Elles apparaissent groupées puis se déplacent au doigt.
+  const defaultAnglePts = useCallback(() => {
+    if (!imageSize) return []
+    const { width: w, height: h } = imageSize
+    return [
+      { x: Math.round(w * 0.62), y: Math.round(h * 0.42) },  // 🟠 extrémité sur la branche
+      { x: Math.round(w * 0.50), y: Math.round(h * 0.42) },  // 🟣 sommet (charnière)
+      { x: Math.round(w * 0.50), y: Math.round(h * 0.55) },  // 🔵 extrémité sur le plan du verre
+    ]
+  }, [imageSize])
+
+  const defaultVertexPts = useCallback(() => {
+    if (!imageSize) return []
+    const w = imageSize.width, h = imageSize.height
+    return [
+      { x: Math.round(w / 2 - 30), y: Math.round(h * 0.62) },
+      { x: Math.round(w / 2 + 30), y: Math.round(h * 0.62) },
+    ]
+  }, [imageSize])
+
+  // Les 2 poignées de l'échelle (les marqueurs du clip) : c'est leur écartement
+  // qui donne les px/mm. Positions de départ à ajuster sur les 2 cercles noirs.
+  const defaultVerifyPts = useCallback(() => {
+    if (!imageSize) return []
+    const { width: w, height: h } = imageSize
+    return [
+      { x: Math.round(w * 0.43), y: Math.round(h * 0.40) },
+      { x: Math.round(w * 0.57), y: Math.round(h * 0.40) },
+    ]
+  }, [imageSize])
+
   const toImageCoords = useCallback((clientX, clientY) => {
     if (!containerRef.current || !imageSize) return null
     return screenPointToImage(
@@ -176,15 +221,22 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
 
   const allAngleDone = anglePts.length >= 3
 
-  // ── Vertex auto-placé au centre quand l'angle est fait ──
+  // ── L'échelle est active dès l'arrivée : on crée donc ses 2 poignées tout de
+  // suite (Driss : « en appuyant sur le bouton échelle tu devrais activer les 2
+  // poignées »). Elles sont prêtes à être posées sur les 2 cercles noirs.
+  useEffect(() => {
+    if (toolOn.scale && verifyLine.length === 0 && imageSize) {
+      setVerifyLine(defaultVerifyPts())
+    }
+  }, [toolOn.scale, verifyLine.length, imageSize, defaultVerifyPts])
+
+  // ── Vertex auto-placé quand l'angle est fait ──
   useEffect(() => {
     if (allAngleDone && vertexLine.length === 0 && imageSize) {
-      const cx = Math.round(imageSize.width / 2)
-      const cy = Math.round(imageSize.height / 2)
-      setVertexLine([{ x: cx - 30, y: cy }, { x: cx + 30, y: cy }])
+      setVertexLine(defaultVertexPts())
       setVertexNeedsCompute(true)
     }
-  }, [allAngleDone, vertexLine.length, imageSize])
+  }, [allAngleDone, vertexLine.length, imageSize, defaultVertexPts])
 
   // ── Vertex → API backend (distance pure, sans correction) ──
   const [vertexMm, setVertexMm] = useState(null)
@@ -301,7 +353,24 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     window.addEventListener('pointercancel', onUp)
   }, [imageSize, toImageCoords])
 
-  // ── Clic pour placer les points dans l'ordre : mires → angle → (vertex auto) ──
+  // ── Barre d'outils : chaque bouton ACTIVE / DÉSACTIVE son outil de mesure ──
+  // Activer l'angle ou le vertex crée ses poignées d'un coup si elles n'existent
+  // pas encore (Driss) ; les mesures déjà calculées sont conservées quand on
+  // masque un outil, seul l'affichage change.
+  const toggleTool = useCallback((tool) => {
+    const turningOn = !toolOn[tool]
+    setToolOn(prev => ({ ...prev, [tool]: !prev[tool] }))
+    if (!turningOn) return
+    // À l'activation, chaque outil crée TOUTES ses poignées d'un coup (Driss)
+    if (tool === 'scale' && verifyLine.length === 0) setVerifyLine(defaultVerifyPts())
+    if (tool === 'angle' && anglePts.length === 0) setAnglePts(defaultAnglePts())
+    if (tool === 'vertex' && vertexLine.length === 0) {
+      setVertexLine(defaultVertexPts())
+      setVertexNeedsCompute(true)
+    }
+  }, [toolOn, verifyLine.length, anglePts.length, vertexLine.length, defaultVerifyPts, defaultAnglePts, defaultVertexPts])
+
+  // ── Clic sur l'image : pose un point pour le 1er outil ACTIF encore incomplet ──
   const handleImageClick = useCallback((e) => {
     if (!imageSize) return
     // Un drag vient de se terminer (< 300 ms) : le relâchement ne doit pas ajouter un point
@@ -310,12 +379,20 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     const mapped = toImageCoords(e.clientX, e.clientY)
     if (!mapped) return
     const pt = { x: Math.round(mapped.x), y: Math.round(mapped.y) }
-    if (verifyLine.length < 2) {
+    if (toolOn.scale && verifyLine.length < 2) {
       setVerifyLine(prev => [...prev, pt])
-    } else if (anglePts.length < 3) {
-      setAnglePts(prev => [...prev, pt])
+      return
     }
-  }, [imageSize, verifyLine, anglePts, toImageCoords])
+    if (toolOn.angle && anglePts.length < 3) {
+      setAnglePts(prev => [...prev, pt])
+      return
+    }
+    if (toolOn.vertex && vertexLine.length < 2) {
+      setVertexLine(prev => [...prev, pt])
+      setVertexAdjusted(true)
+      setVertexNeedsCompute(true)
+    }
+  }, [imageSize, toolOn, verifyLine.length, anglePts.length, vertexLine.length, toImageCoords])
 
   // ── Angle pantoscopique : écart à 90° de l'angle entre les 2 segments ──
   // Le plan du verre est perpendiculaire à la branche → angle brut ≈ 90°.
@@ -327,6 +404,7 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     vertexRequestRef.current += 1
     setVertexLoading(false)
     setVerifyLine([]); setAnglePts([]); setVertexLine([]); setHandleAngles({}); setVertexMm(null); setVertexError(null); setVertexAdjusted(false)
+    setToolOn({ scale: true, ruler: false, angle: false, vertex: false })
   }, [])
 
   // ── Validation ──
@@ -350,14 +428,14 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     if (!imageSize) return null
     return (
       <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 10 }}>
-        {/* Ligne de calibrage cyan — fine, tirets longs */}
-        {verifyLine.length >= 2 && (
+        {/* Ligne de calibrage cyan — fine, tirets longs (outil « échelle ») */}
+        {toolOn.scale && verifyLine.length >= 2 && (
           <line x1={toPct(verifyLine[0].x, imageSize.width)} y1={toPct(verifyLine[0].y, imageSize.height)}
             x2={toPct(verifyLine[1].x, imageSize.width)} y2={toPct(verifyLine[1].y, imageSize.height)}
             stroke="#22d3ee" strokeWidth="1.4" strokeLinecap="round" opacity="0.75" strokeDasharray="6 4" />
         )}
         {/* Angle : 2 segments fins reliés au sommet */}
-        {anglePts.length >= 2 && (
+        {toolOn.angle && anglePts.length >= 2 && (
           <>
             <line x1={toPct(anglePts[0].x, imageSize.width)} y1={toPct(anglePts[0].y, imageSize.height)}
               x2={toPct(anglePts[1].x, imageSize.width)} y2={toPct(anglePts[1].y, imageSize.height)}
@@ -370,7 +448,7 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
           </>
         )}
         {/* Arc d'angle + valeur */}
-        {pantoscopic !== null && (() => {
+        {toolOn.angle && pantoscopic !== null && (() => {
           const [a, v, b] = anglePts
           const r = 34
           const a1 = Math.atan2(a.y - v.y, a.x - v.x)
@@ -398,7 +476,7 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
           )
         })()}
         {/* Segment vertex */}
-        {vertexLine.length >= 2 && (
+        {toolOn.vertex && vertexLine.length >= 2 && (
           <line x1={toPct(vertexLine[0].x, imageSize.width)} y1={toPct(vertexLine[0].y, imageSize.height)}
             x2={toPct(vertexLine[1].x, imageSize.width)} y2={toPct(vertexLine[1].y, imageSize.height)}
             stroke="#10b981" strokeWidth="1.5" strokeLinecap="round" opacity="0.8" strokeDasharray="6 3" />
@@ -411,21 +489,22 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
   // Le point de mesure exact est matérialisé par un réticule fin, TOUJOURS visible.
   const renderEndpoints = () => {
     if (!imageSize) return null
-    // Groupes de points d'un même couple (sert au sens d'écartement opposé)
+    // Groupes de points d'un même couple (sert au sens d'écartement opposé).
+    // Les groupes restent complets même masqués : seule la VISIBILITÉ suit les boutons.
     const groups = { verify: verifyLine, angle: anglePts, vertex: vertexLine }
     const items = []
-    verifyLine.forEach((pt, i) => items.push({ pt, color: '#22d3ee', type: 'verify', i }))
-    anglePts.forEach((pt, i) => items.push({
+    if (toolOn.scale) verifyLine.forEach((pt, i) => items.push({ pt, color: '#22d3ee', type: 'verify', i }))
+    if (toolOn.angle) anglePts.forEach((pt, i) => items.push({
       pt,
       color: i === 1 ? '#a78bfa' : i === 0 ? '#f59e0b' : '#3b9eff',
       type: 'angle', i,
     }))
-    vertexLine.forEach((pt, i) => items.push({ pt, color: '#10b981', type: 'vertex', i }))
+    if (toolOn.vertex) vertexLine.forEach((pt, i) => items.push({ pt, color: '#10b981', type: 'vertex', i }))
 
     const lastPlaced = (() => {
-      if (verifyLine.length === 1) return { type: 'verify', i: 0 }
-      if (verifyLine.length === 2 && anglePts.length < 3) {
-        return anglePts.length > 0 ? { type: 'angle', i: anglePts.length - 1 } : null
+      if (toolOn.scale && verifyLine.length === 1) return { type: 'verify', i: 0 }
+      if (toolOn.angle && anglePts.length > 0 && anglePts.length < 3) {
+        return { type: 'angle', i: anglePts.length - 1 }
       }
       return null
     })()
@@ -494,7 +573,39 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     )
   }
 
-  const step = verifyLine.length < 2 ? 'calib' : anglePts.length < 3 ? 'angle' : 'done'
+  // Aide contextuelle : le message suit l'outil le plus « avancé » qui est actif
+  const hint = (() => {
+    if (toolOn.angle) {
+      return {
+        text: <>∠ <strong>{pantoscopic !== null ? `${pantoscopic}°` : '—'}</strong> — ajustez les 3 poignées : 🟠 branche, 🟣 sommet (charnière), 🔵 plan du verre</>,
+        color: '#a78bfa', bg: 'rgba(167,139,250,0.08)', border: 'rgba(167,139,250,0.25)',
+      }
+    }
+    if (toolOn.vertex) {
+      return {
+        text: <>↔ <strong>{vertexLoading ? '…' : vertexMm ? `${vertexMm} mm` : '—'}</strong> — ajustez les 2 poignées : cornée et plan arrière du verre</>,
+        color: 'var(--color-green)', bg: 'var(--color-green-bg)', border: 'rgba(16,185,129,0.25)',
+      }
+    }
+    if (toolOn.scale) {
+      return {
+        text: verifyLine.length === 2
+          ? <>🔷 Échelle <strong>{effectiveScale ? `${(1 / effectiveScale).toFixed(2)} px/mm` : '—'}</strong> — posez les 2 poignées sur les <strong>2 cercles noirs</strong></>
+          : <>🔷 Placez les 2 poignées sur les <strong>2 cercles noirs</strong> ({verifyLine.length}/2)</>,
+        color: GOLD, bg: 'var(--color-gold-bg)', border: 'rgba(201,160,90,0.3)',
+      }
+    }
+    if (toolOn.ruler) {
+      return {
+        text: <>📐 Réglette affichée — elle n'est juste qu'une fois le calibrage fait.</>,
+        color: '#22d3ee', bg: 'rgba(34,211,238,0.08)', border: 'rgba(34,211,238,0.3)',
+      }
+    }
+    return {
+      text: <>Tous les outils sont masqués — appuyez sur un bouton pour en activer un.</>,
+      color: 'var(--color-text-muted)', bg: 'var(--color-card)', border: 'var(--color-border)',
+    }
+  })()
   return (
     <div className="space-y-4 animate-fade-in">
       <div className="flex items-center gap-3 mb-2">
@@ -505,19 +616,35 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
           </h2>
           <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Angle pantoscopique & distance vertex</p>
         </div>
-        {/* Bandeau d'outils — les 3 mesures sont visibles DÈS LE DÉBUT (choix Driss),
-            pas seulement à l'étape où elles deviennent calculables. */}
-        <div className="ml-auto flex items-center gap-2 flex-wrap justify-end">
-          <span title="Angle pantoscopique" className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg font-medium"
-            style={{ background: 'var(--color-card)', border: '1px solid var(--color-border)', color: '#a78bfa' }}>
-            📐 {pantoscopic !== null ? `${pantoscopic}°` : '—'}
-          </span>
-          <span title="Distance vertex" className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg font-medium"
-            style={{ background: 'var(--color-card)', border: '1px solid var(--color-border)', color: '#10b981' }}>
-            ↔ {vertexMm ? `${vertexMm} mm` : '—'}
-          </span>
-          <MeasureRuler variant="button" scaleMmPerPx={effectiveScale} imageSize={imageSize} displayRect={getDisplayRect()} visible={rulerVisible} onToggle={() => setRulerVisible(v => !v)} />
-        </div>
+      </div>
+
+      {/* Barre d'outils — 4 interrupteurs (Driss) : chaque bouton ACTIVE et
+          DÉSACTIVE son outil de mesure. Les valeurs restent affichées même
+          quand l'outil est masqué. */}
+      <div className="flex items-stretch gap-1.5 flex-wrap">
+        <button type="button" onClick={() => toggleTool('scale')}
+          className="flex-1 min-w-[132px] py-2 rounded-xl text-xs font-medium transition-all flex items-center justify-center gap-1.5"
+          style={toolBtnStyle(toolOn.scale, GOLD)}>
+          📏 Échelle · {effectiveScale ? `${(1 / effectiveScale).toFixed(2)} px/mm` : '—'}
+        </button>
+
+        <button type="button" onClick={() => toggleTool('ruler')}
+          className="flex-1 min-w-[100px] py-2 rounded-xl text-xs font-medium transition-all flex items-center justify-center gap-1.5"
+          style={toolBtnStyle(toolOn.ruler, '#22d3ee')}>
+          📐 Réglette
+        </button>
+
+        <button type="button" onClick={() => toggleTool('vertex')}
+          className="flex-1 min-w-[138px] py-2 rounded-xl text-xs font-medium transition-all flex items-center justify-center gap-1.5"
+          style={toolBtnStyle(toolOn.vertex, '#10b981')}>
+          ↔ Vertex · {vertexMm ? `${vertexMm} mm` : vertexLoading ? '…' : '—'}
+        </button>
+
+        <button type="button" onClick={() => toggleTool('angle')}
+          className="flex-1 min-w-[152px] py-2 rounded-xl text-xs font-medium transition-all flex items-center justify-center gap-1.5"
+          style={toolBtnStyle(toolOn.angle, '#a78bfa')}>
+          ∠ Angle pantoscopique · {pantoscopic !== null ? `${pantoscopic}°` : '—'}
+        </button>
       </div>
 
       <div className="rounded-2xl border overflow-hidden relative" style={{ background: 'var(--color-card)', borderColor: 'var(--color-border)' }}>
@@ -530,7 +657,7 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
               <div className="absolute" style={{ left: dr.left, top: dr.top, width: dr.width, height: dr.height }}>
                 {renderLines()}
                 {renderEndpoints()}
-                <MeasureRuler variant="ruler" scaleMmPerPx={effectiveScale} imageSize={imageSize} displayRect={dr} visible={rulerVisible} onToggle={() => setRulerVisible(v => !v)} />
+                <MeasureRuler variant="ruler" scaleMmPerPx={effectiveScale} imageSize={imageSize} displayRect={dr} visible={toolOn.ruler} onToggle={() => toggleTool('ruler')} />
               </div>
             )
           })()}
@@ -538,14 +665,10 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
       </div>
 
       <div className="rounded-xl px-4 py-3 text-xs" style={{
-        background: step === 'done' ? 'var(--color-green-bg)' : step === 'angle' ? 'rgba(167,139,250,0.08)' : 'rgba(34,211,238,0.08)',
-        color: step === 'done' ? 'var(--color-green)' : step === 'angle' ? '#a78bfa' : '#22d3ee',
-        borderWidth: 1, borderStyle: 'solid',
-        borderColor: step === 'done' ? 'rgba(16,185,129,0.25)' : step === 'angle' ? 'rgba(167,139,250,0.25)' : 'rgba(34,211,238,0.3)',
+        background: hint.bg, color: hint.color,
+        borderWidth: 1, borderStyle: 'solid', borderColor: hint.border,
       }}>
-        {step === 'calib' && <>🔷 Placez 2 points sur les <strong>2 cercles noirs</strong> ({verifyLine.length}/2)</>}
-        {step === 'angle' && <>{anglePts.length === 0 ? '🟠 Placez l’extrémité sur la branche' : anglePts.length === 1 ? '🟣 Placez le sommet à la charnière' : '🔵 Placez l’extrémité sur le plan du verre'} ({anglePts.length}/3)</>}
-        {step === 'done' && <>✅ Pantoscopique <strong>{pantoscopic}°</strong> | Vertex <strong>{vertexLoading ? '...' : vertexMm ? `${vertexMm} mm` : '—'}</strong></>}
+        {hint.text}
         <div className="mt-1.5 opacity-75">
           ↻ Double-tap sur un octogone pour le faire pivoter par pas de 45°
           {Object.keys(handleAngles).length > 0

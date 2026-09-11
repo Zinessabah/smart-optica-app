@@ -87,38 +87,45 @@ describe('ProfileMeasure — poignées du profil', () => {
     fireEvent.pointerUp(window, { clientX: 100, clientY: 150 })
   }
 
-  async function placePoints(clicks, waitForCount) {
+  // Clique un bouton de la barre d'outils par son libellé
+  const clickTool = (container, label) => {
+    const btn = [...container.querySelectorAll('button')].find(b => (b.textContent || '').includes(label))
+    expect(btn, `bouton « ${label} » introuvable`).toBeTruthy()
+    fireEvent.click(btn)
+    return btn
+  }
+
+  // Les 2 poignées de l'échelle sont créées dès l'arrivée (l'outil est actif)
+  async function renderBase() {
     const utils = renderPM()
     const { container } = utils
     await waitFor(() => expect(container.querySelector('img')).toBeTruthy())
-    const stage = container.querySelector('.aspect-\\[3\\/4\\]')
-    for (const [x, y] of clicks) {
-      fireEvent.pointerDown(stage, { clientX: x, clientY: y })
-      fireEvent.click(stage, { clientX: x, clientY: y })
-    }
-    if (waitForCount) {
-      await waitFor(() => expect(container.querySelectorAll('[data-pt-type]').length).toBeGreaterThanOrEqual(waitForCount))
-    }
-    return { ...utils, stage }
+    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2))
+    return { ...utils, stage: container.querySelector('.aspect-\\[3\\/4\\]') }
   }
-  const renderWithOnePoint = (x = 100, y = 150) => placePoints([[x, y]])
 
-  // 2 mires + 3 points d'angle (le vertex est auto-placé ensuite) — dans le cadre 400 × 533
-  const CLICKS = [[100, 150], [300, 160], [120, 420], [240, 330], [330, 470]]
+  // Mires + angle + vertex : chaque outil doit être ACTIVÉ (boutons interrupteurs)
+  async function withEveryHandle() {
+    const utils = await renderBase()
+    clickTool(utils.container, 'Angle pantoscopique')
+    clickTool(utils.container, 'Vertex')
+    await waitFor(() => expect(utils.container.querySelectorAll('[data-pt-type]').length).toBeGreaterThanOrEqual(7))
+    return utils
+  }
 
-  it("rend l'image et accepte un placement de point au tap", async () => {
-    const { container } = await renderWithOnePoint()
-    expect(byType(container, 'verify').length).toBe(1)
+  it("les 2 poignées de l'échelle sont créées dès l'arrivée", async () => {
+    const { container } = await renderBase()
+    expect(byType(container, 'verify').length).toBe(2)
   })
 
   it('l’octogone est 20 % plus petit qu’à l’étape précédente (r = 11,52)', async () => {
-    const { container } = await renderWithOnePoint()
+    const { container } = await renderBase()
     const maxAbs = Math.max(...polygonXs(octagonOf(handleOf(container))).map(Math.abs))
     expect(maxAbs).toBeCloseTo(R * Math.cos(Math.PI / 8), 1)   // ≈ 10,6
   })
 
   it("échelle : les 2 poignées sont à DROITE (aucun automatisme)", async () => {
-    const { container } = await placePoints([[100, 150], [300, 160]], 2)
+    const { container } = await renderBase()
     const [m0, m1] = byType(container, 'verify')
     expect(angleOf(m0)).toBe(0)
     expect(angleOf(m1)).toBe(0)
@@ -127,14 +134,14 @@ describe('ProfileMeasure — poignées du profil', () => {
   })
 
   it("la poignée écartée ne couvre jamais le point de mesure", async () => {
-    const { container } = await renderWithOnePoint()
+    const { container } = await renderBase()
     const xs = octEffectiveXs(handleOf(container))
     expect(Math.min(...xs)).toBeGreaterThanOrEqual(NEAR - 1)   // dégagé du point (à droite)
     expect(Math.max(...xs)).toBeLessThanOrEqual(FAR + 1)
   })
 
   it('un segment relie le point de mesure à la poignée écartée', async () => {
-    const { container } = await renderWithOnePoint()
+    const { container } = await renderBase()
     const seg = connectSeg(handleOf(container))
     expect(seg).toBeTruthy()
     expect(Number(seg.getAttribute('x1'))).toBeCloseTo(9.5, 1)
@@ -143,7 +150,7 @@ describe('ProfileMeasure — poignées du profil', () => {
   })
 
   it("vertex : les 2 octogones sont HORIZONTAUX et OPPOSÉS", async () => {
-    const { container } = await placePoints(CLICKS, 7)
+    const { container } = await withEveryHandle()
     const [v0, v1] = byType(container, 'vertex')
     expect(v0 && v1).toBeTruthy()
     expect(angleOf(v0) * 1 + angleOf(v1)).toBe(180)            // 180° + 0° = un de chaque côté
@@ -156,7 +163,7 @@ describe('ProfileMeasure — poignées du profil', () => {
   })
 
   it("sommet de l'angle pantoscopique : poignée VERTICALE", async () => {
-    const { container } = await placePoints(CLICKS, 7)
+    const { container } = await withEveryHandle()
     const sommet = byType(container, 'angle')[1]
     expect(angleOf(sommet)).toBe(270)
     const { dx, dy } = octOffset(sommet)
@@ -166,7 +173,7 @@ describe('ProfileMeasure — poignées du profil', () => {
   })
 
   it("angle pantoscopique : octogone SUR le point pour les 2 extrémités (orange, bleu)", async () => {
-    const { container } = await placePoints(CLICKS, 7)
+    const { container } = await withEveryHandle()
     const angle = byType(container, 'angle')
     expect(angle.length).toBe(3)
     expect(octOffset(angle[0])).toEqual({ dx: 0, dy: 0 })   // 🟠 branche
@@ -177,13 +184,13 @@ describe('ProfileMeasure — poignées du profil', () => {
 
   it('aucune bascule automatique : la direction ne change pas près du bord', async () => {
     // Point tout près du bord droit du cadre : on reste à droite (c'est à l'utilisateur de pivoter)
-    const { container } = await renderWithOnePoint(395, 150)
+    const { container } = await renderBase()
     expect(angleOf(handleOf(container))).toBe(0)
     expect(octOffset(handleOf(container)).dx).toBeGreaterThan(0)
   })
 
   it('le point de mesure exact garde son réticule (croix + point)', async () => {
-    const { container } = await renderWithOnePoint()
+    const { container } = await renderBase()
     const handle = handleOf(container)
     const reticleLines = [...handle.querySelectorAll('line')].filter(l =>
       ['x1', 'x2', 'y1', 'y2'].every(a => Math.abs(Number(l.getAttribute(a))) <= 7.5))
@@ -192,7 +199,7 @@ describe('ProfileMeasure — poignées du profil', () => {
   })
 
   it('le fond de la poignée est translucide (30 %) et se renforce pendant le drag', async () => {
-    const { container } = await renderWithOnePoint()
+    const { container } = await renderBase()
     const opacityOf = () => octagonOf(handleOf(container)).getAttribute('fill-opacity')
 
     expect(opacityOf()).toBe('0.3')
@@ -203,7 +210,7 @@ describe('ProfileMeasure — poignées du profil', () => {
   })
 
   it('zones tactiles : 48 px sur le point, 44 px sur la poignée', async () => {
-    const { container } = await renderWithOnePoint()
+    const { container } = await renderBase()
     const handle = handleOf(container)
     const rect = [...handle.querySelectorAll('rect')].find(r => r.getAttribute('width') === '48')
     expect(rect).toBeTruthy()
@@ -212,12 +219,12 @@ describe('ProfileMeasure — poignées du profil', () => {
   })
 
   it('le conteneur du marqueur est transparent aux events (pas de zone morte)', async () => {
-    const { container } = await renderWithOnePoint()
+    const { container } = await renderBase()
     expect(handleOf(container).style.pointerEvents).toBe('none')
   })
 
   it('double-tap sur un octogone : rotation de 45°, orientation mémorisée', async () => {
-    const { container } = await renderWithOnePoint()          // mire → 0° (droite)
+    const { container } = await renderBase()          // mire → 0° (droite)
     const handle = handleOf(container)
     expect(angleOf(handle)).toBe(0)
 
@@ -230,7 +237,7 @@ describe('ProfileMeasure — poignées du profil', () => {
   })
 
   it('le segment suit la rotation (il reste aligné avec la poignée)', async () => {
-    const { container } = await renderWithOnePoint()
+    const { container } = await renderBase()
     const handle = handleOf(container)
     doubleTapOctagon(handle)
     await waitFor(() => expect(angleOf(handle)).toBe(45))
@@ -244,14 +251,14 @@ describe('ProfileMeasure — poignées du profil', () => {
   })
 
   it('8 double-taps = tour complet, retour à l’orientation de départ', async () => {
-    const { container } = await renderWithOnePoint()
+    const { container } = await renderBase()
     const handle = handleOf(container)
     for (let n = 0; n < 8; n++) doubleTapOctagon(handle)
     await waitFor(() => expect(angleOf(handle)).toBe(0))
   })
 
   it('chaque poignée garde sa propre orientation', async () => {
-    const { container } = await placePoints([[100, 150], [300, 160]], 2)
+    const { container } = await renderBase()
     const [m0, m1] = byType(container, 'verify')
     doubleTapOctagon(m0)
     await waitFor(() => expect(angleOf(m0)).toBe(45))
@@ -259,7 +266,7 @@ describe('ProfileMeasure — poignées du profil', () => {
   })
 
   it("les 2 extrémités de l'angle (posées sur le point) ne sont pas pivotables", async () => {
-    const { container } = await placePoints(CLICKS, 7)
+    const { container } = await withEveryHandle()
     const angle = byType(container, 'angle')
     expect(rotatable(angle[0])).toBe(false)     // 🟠 branche
     expect(rotatable(angle[2])).toBe(false)     // 🔵 plan du verre
@@ -267,7 +274,7 @@ describe('ProfileMeasure — poignées du profil', () => {
   })
 
   it('un drag de l’octogone déplace le point SANS le faire pivoter', async () => {
-    const { container } = await renderWithOnePoint()
+    const { container } = await renderBase()
     const handle = handleOf(container)
     const before = handle.style.left
 
@@ -280,7 +287,7 @@ describe('ProfileMeasure — poignées du profil', () => {
   })
 
   it('un drag déplace le point', async () => {
-    const { container } = await renderWithOnePoint()
+    const { container } = await renderBase()
     const before = handleOf(container).style.left
 
     fireEvent.pointerDown(handleOf(container), { clientX: 100, clientY: 150 })
@@ -291,7 +298,7 @@ describe('ProfileMeasure — poignées du profil', () => {
   })
 
   it('un clic < 300 ms après un drag ne crée PAS de point fantôme', async () => {
-    const { container, stage } = await renderWithOnePoint()
+    const { container, stage } = await renderBase()
 
     fireEvent.pointerDown(handleOf(container), { clientX: 100, clientY: 150 })
     fakeNow += 50
@@ -301,11 +308,11 @@ describe('ProfileMeasure — poignées du profil', () => {
     fakeNow += 100  // < 300 ms
     fireEvent.click(stage, { clientX: 180, clientY: 240 })
 
-    expect(byType(container, 'verify').length).toBe(1)
+    expect(byType(container, 'verify').length).toBe(2)
   })
 
-  it('un tap > 300 ms après un drag place bien un point normalement', async () => {
-    const { container, stage } = await renderWithOnePoint()
+  it('un tap après un drag n’ajoute aucun point (groupes complets)', async () => {
+    const { container, stage } = await renderBase()
 
     fireEvent.pointerDown(handleOf(container), { clientX: 100, clientY: 150 })
     fakeNow += 50
