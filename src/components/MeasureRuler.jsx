@@ -1,11 +1,17 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { formatInclination } from '../core/rulerAngle'
 
 /**
  * MeasureRuler — Réglette métrologique déplaçable (réutilisable, contrôlée).
  *
  * Design validé (maquette v1-v5) :
  *  - 100 mm réels, graduations 0.5 mm / 1 mm / 5 mm / cm chiffrés.
- *  - Rotation libre par une poignée compacte au CENTRE (+ snaps 0/45/90).
+ *  - ROTATION À DEUX DOIGTS : l'angle est celui du VECTEUR entre les 2 doigts.
+ *    La poignée centrale 1-doigt a été retirée — sur iPad un doigt masquait le
+ *    centre et le levier de 15 px rendait la rotation imprécise.
+ *  - INCLINAISON affichée dans le SEUL badge sous la réglette, à côté du Δ
+ *    (valeur + « ° », couleur distincte, sans libellé) — remplace les anciens
+ *    angles prédéfinis 0°/45°/90° et évite tout recouvrement entre badges.
  *  - 2 lignes de lecture (index A doré, B bleu) déplaçables → écart en mm.
  *  - Badge écart TANGENT EN DESSOUS (n'occulte ni graduations ni index).
  *
@@ -21,17 +27,18 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 const MM_TOTAL = 100        // longueur (mm)
 const STEP = 0.5            // précision graduation (mm)
 const BAR_H = 46            // hauteur barre (px)
-const SNAP_ANGLES = [0, 45, 90]
 
 export default function MeasureRuler({ scaleMmPerPx, imageSize, displayRect, visible, onToggle, variant = 'button' })
 {
   const [pos, setPos] = useState({ x: 0, y: 0 })
   const [angle, setAngle] = useState(0)
-  const [idxA, setIdxA] = useState(0.35)
-  const [idxB, setIdxB] = useState(0.65)
+  const [idxA, setIdxA] = useState(35)
+  const [idxB, setIdxB] = useState(65)
   const [warn, setWarn] = useState(false)
+  const [hint, setHint] = useState(true)   // indice « 2 doigts » (disparaît au 1er geste / après 6 s)
   const rulerRef = useRef(null)
   const drag = useRef(null)
+  const pointers = useRef(new Map())       // pointerId → { x, y } (multi-touch)
 
   const enabled = !!scaleMmPerPx && !!imageSize && !!displayRect
 
@@ -55,29 +62,49 @@ export default function MeasureRuler({ scaleMmPerPx, imageSize, displayRect, vis
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [variant, visible, enabled])
 
+  // Indice « 2 doigts » : affiché au 1er affichage, masqué au 1er geste ou après 6 s
+  useEffect(() => {
+    if (variant !== 'ruler' || !visible) return
+    setHint(true)
+    const t = setTimeout(() => setHint(false), 6000)
+    return () => clearTimeout(t)
+  }, [variant, visible])
+
   // ── Drag handlers (références stables via useRef pour les valeurs lues) ──
   const stateRef = useRef({ pos, angle, idxA, idxB, usableLength, displayRect, enabled })
   stateRef.current = { pos, angle, idxA, idxB, usableLength, displayRect, enabled }
 
+  /** Les 2 doigts, dans l'ordre stable de leur pointerId. */
+  const twoPointers = () =>
+    [...pointers.current.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, v]) => v)
+
   const beginDrag = useCallback((e) => {
     if (!stateRef.current.enabled) return
-    const idx = e.target.closest?.('[data-idx]')
-    const isRot = e.target.closest?.('.mr-rot')
+    pointers.current.set(e.pointerId ?? 0, { x: e.clientX, y: e.clientY })
     const S = stateRef.current
-    // Centre réel de la réglette (fiabble même en rotation) pour un angle de départ stable
-    let startPtrAngle = 0
-    if (isRot && rulerRef.current) {
-      const rect = rulerRef.current.getBoundingClientRect()
-      const cx = rect.left + rect.width / 2
-      const cy = rect.top + rect.height / 2
-      startPtrAngle = Math.atan2(e.clientY - cy, e.clientX - cx)
+
+    // 2 doigts → ROTATION (angle du vecteur inter-doigts)
+    if (pointers.current.size >= 2) {
+      const [p1, p2] = twoPointers()
+      drag.current = {
+        mode: 'rot2',
+        startVec: Math.atan2(p2.y - p1.y, p2.x - p1.x),
+        origA: S.angle,
+      }
+      setHint(false)
+      e.preventDefault()
+      return
     }
+
+    // 1 doigt → déplacement, ou drag d'un index de lecture
+    const idx = e.target.closest?.('[data-idx]')
     drag.current = {
-      mode: idx ? idx.dataset.idx : isRot ? 'rot' : 'move',
+      mode: idx ? idx.dataset.idx : 'move',
       startX: e.clientX, startY: e.clientY,
       origX: S.pos.x, origY: S.pos.y,
       origA: S.angle,
-      startPtrAngle,
       origIdxA: S.idxA, origIdxB: S.idxB,
     }
     e.preventDefault()
@@ -85,22 +112,27 @@ export default function MeasureRuler({ scaleMmPerPx, imageSize, displayRect, vis
 
   const moveDrag = useCallback((e) => {
     const d = drag.current
-    if (!d || !stateRef.current.enabled || !rulerRef.current) return
-    const dx = e.clientX - d.startX, dy = e.clientY - d.startY
+    if (!d || !stateRef.current.enabled) return
     const S = stateRef.current
+    if (pointers.current.has(e.pointerId)) {
+      pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    }
+
+    if (d.mode === 'rot2') {
+      if (pointers.current.size < 2) return
+      const [p1, p2] = twoPointers()
+      const curVec = Math.atan2(p2.y - p1.y, p2.x - p1.x)
+      // DELTA d'angle par rapport au départ → rotation fluide, pas de saut
+      setAngle(d.origA + (curVec - d.startVec) * 180 / Math.PI)
+      return
+    }
+
+    const dx = e.clientX - d.startX, dy = e.clientY - d.startY
     if (d.mode === 'move') {
       setPos({
         x: Math.max(-S.usableLength * 0.15, Math.min(S.displayRect.width - S.usableLength * 0.85, d.origX + dx)),
         y: Math.max(-BAR_H * 0.15, Math.min(S.displayRect.height - BAR_H * 0.85, d.origY + dy)),
       })
-    } else if (d.mode === 'rot') {
-      // DELTA d'angle par rapport au départ → rotation fluide et stable, pas de saut
-      const rect = rulerRef.current.getBoundingClientRect()
-      const cx = rect.left + rect.width / 2
-      const cy = rect.top + rect.height / 2
-      const curAngle = Math.atan2(e.clientY - cy, e.clientX - cx)
-      const deltaDeg = (curAngle - d.startPtrAngle) * 180 / Math.PI
-      setAngle(d.origA + deltaDeg)
     } else if (d.mode === 'a' || d.mode === 'b') {
       // Projection du déplacement sur l'Axe de la réglette (juste même en rotation)
       const rad = S.angle * Math.PI / 180
@@ -111,16 +143,23 @@ export default function MeasureRuler({ scaleMmPerPx, imageSize, displayRect, vis
     }
   }, [])
 
-  const endDrag = useCallback(() => { drag.current = null }, [])
+  // Fin de geste : on retire le doigt levé. Dès qu'il reste MOINS de 2 doigts,
+  // on clôt le geste pour qu'aucun mouvement résiduel ne fasse sauter l'angle.
+  const endDrag = useCallback((e) => {
+    if (e && e.pointerId != null) pointers.current.delete(e.pointerId)
+    if (pointers.current.size < 2) drag.current = null
+  }, [])
 
   // Attacher les listeners globaux seulement en mode ruler
   useEffect(() => {
     if (variant !== 'ruler') return
     window.addEventListener('pointermove', moveDrag)
     window.addEventListener('pointerup', endDrag)
+    window.addEventListener('pointercancel', endDrag)
     return () => {
       window.removeEventListener('pointermove', moveDrag)
       window.removeEventListener('pointerup', endDrag)
+      window.removeEventListener('pointercancel', endDrag)
     }
   }, [variant, moveDrag, endDrag])
 
@@ -208,20 +247,21 @@ export default function MeasureRuler({ scaleMmPerPx, imageSize, displayRect, vis
         <span className="mr-index-tick b" />
       </div>
 
-      {/* poignée de rotation (centre, compacte) */}
-      <div className="mr-rot" style={{ left: '50%', top: '50%', transform: 'translate(-50%,-50%)' }} />
-
-      {/* badge écart — sous la réglette */}
+      {/* badge écart + inclinaison — UN SEUL badge sous la réglette.
+          L'inclinaison par rapport à l'horizontale est affichée à côté du Δ,
+          dans une couleur distincte et sans libellé (juste la valeur + « ° »).
+          Un seul badge = plus aucun recouvrement possible entre eux. */}
       <div className="mr-diff" style={{ left: '50%', top: BAR_H + 6, transform: 'translateX(-50%)' }}>
-        Δ {diffMm.toFixed(1)} mm
+        <span>Δ {diffMm.toFixed(1)} mm</span>
+        <span className="mr-incl">{formatInclination(angle)}</span>
       </div>
 
-      {/* snaps — sur le côté droit (colonne), hors de la zone de lecture */}
-      <div className="mr-snaps" style={{ right: -34, top: '50%', transform: 'translateY(-50%)' }}>
-        {SNAP_ANGLES.map(a => (
-          <button key={a} onClick={(e) => { e.stopPropagation(); setAngle(a) }}>{a}°</button>
-        ))}
-      </div>
+      {/* indice de rotation (disparaît au 1er geste 2 doigts ou après 6 s) */}
+      {hint && (
+        <div className="mr-hint" style={{ left: '50%', top: -50, transform: 'translateX(-50%)' }}>
+          🖐 2 doigts pour pivoter
+        </div>
+      )}
     </div>
   )
 }
