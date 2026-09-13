@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { ChevronLeft, RotateCcw, Camera, Check, Loader2, AlertTriangle } from 'lucide-react'
+import { ChevronLeft, RotateCcw, ZoomIn, Camera, Check, Loader2, AlertTriangle } from 'lucide-react'
 import BoxingRect from './BoxingRect'
 import MeasureRuler from './components/MeasureRuler'
 import { detectFace } from './core/faceDetection'
@@ -74,6 +74,9 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
 
   // --- Auto-détection faciale ---
   const [faceEstimate, setFaceEstimate] = useState(false) // true = repères estimés par proportions, à vérifier
+  // Positions de RÉFÉRENCE (détection auto ou coordonnées du backend) : c'est vers
+  // elles que le bouton « Réinitialiser » ramène les repères.
+  const [initialPts, setInitialPts] = useState(null)
 
   useEffect(() => {
     if (!imageSize) return
@@ -83,6 +86,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       setLeftEye(initialLeftEye)
       setRightEye(initialRightEye)
       setBridge(initialBridge)
+      setInitialPts({ left: initialLeftEye, right: initialRightEye, bridge: initialBridge })
       setFaceEstimate(false)
       setFaceDetectStatus('success')
       return
@@ -106,6 +110,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
           setLeftEye(detected.leftEye)
           setRightEye(detected.rightEye)
           if (detected.nose) setBridge(detected.nose)
+          setInitialPts({ left: detected.leftEye, right: detected.rightEye, bridge: detected.nose || null })
           setFaceEstimate(detected.method === 'proportions')
           setFaceDetectStatus('success')
         } else {
@@ -166,14 +171,28 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
 
   const getDefaultBoxSize = useCallback(() => coreDefaultBoxSize(calibration?.scalePxToMm), [calibration])
 
-  const undo = () => {
-    switch (activeMarker) {
-      case 'bridge': if (bridge) setBridge(null); break
-      case 'left': if (leftEye) setLeftEye(null); break
-      case 'right': if (rightEye) setRightEye(null); break
-      case 'boxOG': if (boxOG) setBoxOG(null); break
-      case 'boxOD': if (boxOD) setBoxOD(null); break
+  // ── Réinitialiser — remet les mesures ET les positions à leur état initial ──
+  // Les repères reviennent à leur position de référence (détection auto ou
+  // coordonnées du backend), les boîtes et le diamètre sont effacés.
+  // Indispensable : on DÉVERROUILLE tout. Sans cela, un repère effacé restait
+  // marqué comme verrouillé et ne pouvait plus être reposé (défaut constaté).
+  const resetAll = () => {
+    if (initialPts) {
+      setLeftEye(initialPts.left)
+      setRightEye(initialPts.right)
+      setBridge(initialPts.bridge)
+    } else {
+      setLeftEye(null); setRightEye(null); setBridge(null)
     }
+    setBoxOG(null)
+    setBoxOD(null)
+    boxDuplicated.current = false
+    setLensRadiusOG(null); setLensRadiusOD(null)
+    setLensCenterOG(null); setLensCenterOD(null)
+    lockedRef.current = new Set()
+    setLockVersion(v => v + 1)
+    setActiveMarker(null)
+    activeMarkerRef.current = null
   }
 
   // --- Drag du rayon du cercle (diamètre verre à commander) ---
@@ -490,6 +509,69 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   }, [])
 
   // ── Container pointer down: detect marker hit or place new marker ──
+  // ── Pointage assisté ────────────────────────────────────────────────────────
+  // Au doigt, la cible est masquée par le doigt lui-même. En mode assisté, un
+  // contact ne pose plus le repère : il ouvre la VISÉE (loupe de 8 mm suivant le
+  // doigt, rendue au-dessus pour ne pas être cachée), et la pose a lieu au
+  // RELÂCHEMENT. Activé d'office quand la détection automatique a ÉCHOUÉ (aucun
+  // repère posé) : c'est exactement le cas où tout repose sur le pointage manuel.
+  // `assistOverride` : null = décision automatique (échec de la détection) ;
+  // true/false = choix explicite de l'utilisateur, qui PRIME sur l'automatique —
+  // sans cela, le bouton ne pouvait pas désactiver le mode en cas d'échec.
+  const [assistOverride, setAssistOverride] = useState(null)
+  const [aim, setAim] = useState(null)   // { x, y, target } — cible figée au CONTACT
+  const nextMarkerId = !bridge ? 'bridge' : !leftEye ? 'left' : !rightEye ? 'right' : null
+  const assistAuto = faceDetectStatus === 'failed'
+  const assistOn = assistOverride ?? assistAuto
+  // Le mode reste disponible même quand les 3 repères sont posés : il sert alors
+  // à REPOSITIONNER finement un repère déjà en place (lunettes, reflets…), ce qui
+  // est précisément le cas où l'on veut vérifier à la loupe.
+  const assistActive = assistOn
+
+  // Repère visé : le prochain manquant s'il en reste, sinon le plus proche du point
+  // touché. La cible est figée au contact pour que la loupe ne change pas de couleur
+  // pendant le glissement du doigt.
+  const aimTargetAt = useCallback((pt) => {
+    if (nextMarkerId) return nextMarkerId
+    const cands = [['bridge', bridge], ['left', leftEye], ['right', rightEye]].filter(([, q]) => q)
+    if (!cands.length) return null
+    return cands.reduce((best, c) => (
+      Math.hypot(c[1].x - pt.x, c[1].y - pt.y) < Math.hypot(best[1].x - pt.x, best[1].y - pt.y) ? c : best
+    ))[0]
+  }, [nextMarkerId, bridge, leftEye, rightEye])
+  const AIM_COLOR = { bridge: BRIDGE_COLOR, left: PUPIL_L_COLOR, right: PUPIL_R_COLOR }
+  const AIM_LABEL = { bridge: 'Nez', left: 'OD', right: 'OG' }
+
+  // Pose effective du premier repère manquant, dans l'ordre du travail réel.
+  // AUCUN test de verrou : un repère absent ne peut pas être « verrouillé », et
+  // ce test empêchait de le reposer après un effacement.
+  const placeAt = useCallback((pt, target) => {
+    const cur = currentPosRef.current
+    // Repère absent → on le pose ; repère déjà posé → on le déplace.
+    // Un repère VERROUILLÉ ne bouge pas, comme au glissement (règle unique).
+    const id = target || (!cur.bridge ? 'bridge' : !cur.left ? 'left' : !cur.right ? 'right' : null)
+    if (!id || lockedRef.current.has(id)) return
+    if (id === 'bridge') setBridge(pt)
+    else if (id === 'left') setLeftEye(pt)
+    else setRightEye(pt)
+  }, [])
+
+  const handleContainerPointerMove = useCallback((e) => {
+    if (!assistActive || !aim) return
+    const c = toImageCoords(e.clientX, e.clientY)
+    // On conserve la cible choisie au contact : la loupe garde sa couleur et son
+    // étiquette pendant tout le glissement du doigt.
+    if (c) setAim((a) => ({ x: Math.round(c.x), y: Math.round(c.y), target: a && a.target }))
+  }, [assistActive, aim, toImageCoords])
+
+  const handleContainerPointerUp = useCallback((e) => {
+    if (!assistActive || !aim) return
+    const c = toImageCoords(e.clientX, e.clientY)
+    const pt = c ? { x: Math.round(c.x), y: Math.round(c.y) } : { x: aim.x, y: aim.y }
+    placeAt(pt, aim.target)
+    setAim(null)
+  }, [assistActive, aim, toImageCoords, placeAt])
+
   const handleContainerPointerDown = useCallback((e) => {
     // Walk up DOM to find a marker (data-markerid)
     let target = e.target
@@ -507,43 +589,18 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       }
       target = target.parentElement
     }
-    // Not on a marker → tap outside: place if not yet existing, otherwise no-op (pure drag)
+    // Pas sur un repère → un tap pose LE PREMIER REPÈRE MANQUANT (Pont → OD → OG).
+    // Plus de bouton de sélection : l'ordre du code suit l'ordre du travail réel.
     const coords = toImageCoords(e.clientX, e.clientY)
     if (!coords) return
     const pt = { x: Math.round(coords.x), y: Math.round(coords.y) }
-    const am = activeMarkerRef.current
-    // Si le marqueur actif est verrouillé, ignorer tout tap
-    if (am && lockedRef.current.has(am)) return
-    const b = currentPosRef.current.bridge
-
-        // Un tap ne DÉPLACE plus un repère déjà posé (Driss : « supprimer le drop »).
-        // On ne pose que ce qui manque ; un repère existant se règle AU DRAG.
-        if (am === 'bridge' && !b) { setBridge(pt); return }
-        if (am === 'left' && !currentPosRef.current.left)   { setLeftEye(pt); return }
-        if (am === 'right' && !currentPosRef.current.right) { setRightEye(pt); return }
-        if (am === 'boxOG' && !boxOG) {
-          const def = getDefaultBoxSize()
-          if (b) {
-            setBoxOG({ x: b.x - def.width / 2, y: b.y, width: def.width, height: def.height })
-          } else {
-            setBoxOG({ x: pt.x, y: pt.y, width: def.width, height: def.height })
-          }
-          return
-        }
-        if (am === 'boxOD' && !boxOD) {
-          if (!boxOG) {
-            const def = getDefaultBoxSize()
-            if (b) {
-              setBoxOD({ x: b.x + def.width / 2, y: b.y, width: def.width, height: def.height })
-            } else {
-              setBoxOD({ x: pt.x, y: pt.y, width: def.width, height: def.height })
-            }
-          }
-          return
-        }
-    // Already placed → tap outside does nothing
+    // Pointage assisté : on VISE d'abord, on POSE au relâchement (le doigt
+    // masquerait la pupille qu'il vise). Hors mode assisté : pose immédiate.
+    if (assistActive) { setAim({ ...pt, target: aimTargetAt(pt) }); return }
+    placeAt(pt)
+    // Tout est posé → un tap à côté ne fait rien (un repère se règle AU DRAG)
     return
-  }, [toImageCoords, boxOG, boxOD, getDefaultBoxSize])
+  }, [toImageCoords, assistActive, placeAt, aimTargetAt])
 
   // ── Contrôles objectifs — aucun facteur correctif, uniquement des constats ──
   // Netteté de la zone des yeux rapportée au bloc le plus net de la photo :
@@ -568,15 +625,25 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   // reste EXACTEMENT au centre : on peut viser le centre de la pupille au pixel.
   // Purement visuelle (pointerEvents: none) → ne déplace jamais la mesure.
   const LOUPE_R = 62
-  const renderLoupe = (dr) => {
-    if (!dragMarker || !imageSize || !imageUrl) return null
-    const pos = { bridge, left: leftEye, right: rightEye }[dragMarker.markerId]
-    if (!pos) return null
+  const renderLoupe = (dr, aimPoint) => {
+    // `aimPoint` = { pos, color, label } → pointage assisté (aucun glissement en cours).
+    // Sans lui, la loupe suit le repère en cours de glissement (comportement historique).
+    let pos = null, color = null, label = null
+    if (aimPoint) {
+      pos = aimPoint.pos; color = aimPoint.color; label = aimPoint.label
+    } else if (dragMarker) {
+      const id = dragMarker.markerId
+      pos = { bridge, left: leftEye, right: rightEye }[id]
+      color = id === 'bridge' ? BRIDGE_COLOR : id === 'left' ? PUPIL_L_COLOR : PUPIL_R_COLOR
+      label = id === 'bridge' ? 'Nez' : id === 'left' ? 'OD' : 'OG'
+    }
+    if (!pos || !imageSize || !imageUrl) return null
     // Champ de vision PHYSIQUE constant (12 mm de côté) : la précision visée ne
     // dépend ni de la résolution de la photo ni de la taille d'affichage.
     // Sans calibrage, on se rabat sur 6 % de la largeur de l'image.
     const mmPerPx = calibration?.scalePxToMm || null
-    const SPAN_MM = 12
+    // En visée, champ plus serré : on cherche le centre de la pupille, pas l'œil entier.
+    const SPAN_MM = aimPoint ? 8 : 12
     const spanPx = mmPerPx ? SPAN_MM / mmPerPx : imageSize.width * 0.06
     const zoom = Math.min(20, Math.max(1, (LOUPE_R * 2) / Math.max(spanPx, 1)))
     const cx = (pos.x / imageSize.width) * dr.width
@@ -586,11 +653,6 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     const by = above ? cy - LOUPE_R - 40 : cy + LOUPE_R + 40
     const maxX = Math.max(LOUPE_R + 6, dr.width - LOUPE_R - 6)
     const bx = Math.min(Math.max(cx, LOUPE_R + 6), maxX)
-    const color = dragMarker.markerId === 'bridge' ? BRIDGE_COLOR
-      : dragMarker.markerId === 'left' ? PUPIL_L_COLOR : PUPIL_R_COLOR
-    const label = dragMarker.markerId === 'bridge' ? 'Nez'
-      : dragMarker.markerId === 'left' ? 'OD' : 'OG'
-
     return (
       <div data-loupe="1" style={{
         position: 'absolute', left: bx, top: by,
@@ -631,7 +693,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
         {/* Étiquette */}
         <div style={{ position: 'absolute', left: 0, right: 0, bottom: 6, textAlign: 'center',
           fontSize: 10, fontWeight: 700, color: '#fff', textShadow: '0 1px 3px rgba(0,0,0,0.95)' }}>
-          {label} · {mmPerPx ? `${SPAN_MM} mm` : `${Math.round(spanPx)} px`}
+          {label} · {aimPoint ? 'relâcher pour poser' : mmPerPx ? `${SPAN_MM} mm` : `${Math.round(spanPx)} px`}
         </div>
       </div>
     )
@@ -688,11 +750,19 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     )
     }
 
-  const btnStyle = (marker, accentColor) => ({
-  background: activeMarker === marker ? `${accentColor}20` : 'var(--color-border)',
-  color: activeMarker === marker ? accentColor : 'var(--color-text-dim)',
-  border: activeMarker === marker ? `1.5px solid ${accentColor}` : '1.5px solid transparent',
-  })
+  // Création d'une boîte par sa pastille : posée autour du nez, la seconde se
+  // génère en miroir au verrouillage (comportement historique conservé).
+  // Depuis l'homogénéisation, aucun bouton d'outil n'est nécessaire.
+  const createBox = useCallback((which) => {
+    if (which === 'boxOG' ? boxOG : boxOD) return
+    const b = currentPosRef.current.bridge
+    if (!b) return
+    const def = getDefaultBoxSize()
+    const r = { x: b.x + (which === 'boxOG' ? -def.width / 2 : def.width / 2), y: b.y,
+                width: def.width, height: def.height }
+    if (which === 'boxOG') setBoxOG(r)
+    else setBoxOD(r)
+  }, [boxOG, boxOD, getDefaultBoxSize])
 
   const hasAnyMarker = leftEye || rightEye || bridge || boxOG || boxOD
 
@@ -779,85 +849,42 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
         ))}
       </div>
 
-      {/* Pont buttons — Un seul bouton d'axe central du nez */}
-      <div className="flex items-stretch gap-1.5 flex-wrap">
-        <span className="self-center text-[10px] font-medium" style={{ color: BRIDGE_COLOR }}>Pont :</span>
-        <button onClick={() => setActiveMarker('bridge')}
-          className="flex-1 min-w-[120px] py-2 rounded-xl text-xs font-medium transition-all flex items-center justify-center gap-1"
-          style={btnStyle('bridge', BRIDGE_COLOR)}>
-          <span className="w-2 h-3 rounded-sm inline-block" style={{ background: bridge ? BRIDGE_COLOR : 'var(--color-text-dim)' }} />
-          Centre du Nez{bridge ? ' ✓' : ''}
-        </button>
-        {bridge && (
-          <button onClick={() => toggleLock('bridge')}
-            className="px-2 py-2 rounded-xl text-xs transition-all"
-            style={{ background: isLocked('bridge') ? 'var(--color-green-bg)' : 'var(--color-border)', color: isLocked('bridge') ? 'var(--color-green)' : 'var(--color-text-dim)' }}>
-            {isLocked('bridge') ? '🔒' : '🔓'}
-          </button>
-        )}
+      {/* Repères — état ET verrou sur une seule ligne.
+          Pastille grise = absent · ✓ = posé · 🔒 = verrouillé (taper = verrouiller).
+          L'état est déjà visible sur l'image (étiquettes colorées sous les points). */}
+      <div className="flex items-center gap-1 flex-wrap" data-markers-status="1">
+        <span className="text-[10px] font-medium mr-0.5" style={{ color: 'var(--color-text-muted)' }}>Repères :</span>
+        {[
+          { key: 'bridge', label: 'Pont', color: BRIDGE_COLOR, value: bridge },
+          { key: 'left', label: 'OD', color: PUPIL_L_COLOR, value: leftEye },
+          { key: 'right', label: 'OG', color: PUPIL_R_COLOR, value: rightEye },
+          { key: 'boxOG', label: 'Box OD', color: BOX_COLOR, value: boxOG },
+          { key: 'boxOD', label: 'Box OG', color: BOX_COLOR, value: boxOD },
+        ].map(({ key, label, color, value }) => {
+          const locked = isLocked(key)
+          const isBox = key === 'boxOG' || key === 'boxOD'
+          // Une pastille de boîte ABSENTE sert à CRÉER la boîte (autour du nez) ;
+          // une pastille posée sert à la VERROUILLER. Un seul geste pour les deux.
+          const canCreate = isBox && !value && !!bridge
+          return (
+            <button key={key}
+              onClick={() => { if (value) toggleLock(key); else if (canCreate) createBox(key) }}
+              disabled={!value && !canCreate}
+              data-chip={key} data-locked={locked ? '1' : '0'}
+              className="px-2 py-1 rounded-lg text-[11px] font-medium transition-all disabled:opacity-40"
+              style={{
+                background: value ? (locked ? 'var(--color-green-bg)' : `${color}18`) : 'var(--color-border)',
+                color: value ? (locked ? 'var(--color-green)' : color) : 'var(--color-text-dim)',
+                border: `1px solid ${value ? (locked ? 'var(--color-green)' : `${color}55`) : 'transparent'}`,
+              }}>
+              {label} {value ? (locked ? '🔒' : '✓') : (isBox ? '+' : '—')}
+            </button>
+          )
+        })}
       </div>
 
-      {/* Pupilles — OD + OG + locks */}
+      {/* Outils */}
       <div className="flex items-stretch gap-1.5 flex-wrap">
-        <span className="self-center text-[10px] font-medium" style={{ color: '#3b82f6' }}>Pupilles :</span>
-        <button onClick={() => setActiveMarker('left')}
-          className="flex-1 min-w-[55px] py-2 rounded-xl text-xs font-medium transition-all flex items-center justify-center gap-1"
-          style={btnStyle('left', '#3b82f6')}>
-          <span className="w-3 h-3 rounded-full inline-block" style={{ background: leftEye ? '#3b82f6' : 'var(--color-text-dim)' }} />
-          OD{leftEye ? ' ✓' : ''}
-        </button>
-        {leftEye && (
-          <button onClick={() => toggleLock('left')}
-            className="px-2 py-2 rounded-xl text-xs transition-all"
-            style={{ background: isLocked('left') ? 'var(--color-green-bg)' : 'var(--color-border)', color: isLocked('left') ? 'var(--color-green)' : 'var(--color-text-dim)' }}>
-            {isLocked('left') ? '🔒' : '🔓'}
-          </button>
-        )}
-        <button onClick={() => setActiveMarker('right')}
-          className="flex-1 min-w-[55px] py-2 rounded-xl text-xs font-medium transition-all flex items-center justify-center gap-1"
-          style={btnStyle('right', '#f59e0b')}>
-          <span className="w-3 h-3 rounded-full inline-block" style={{ background: rightEye ? '#f59e0b' : 'var(--color-text-dim)' }} />
-          OG{rightEye ? ' ✓' : ''}
-        </button>
-        {rightEye && (
-          <button onClick={() => toggleLock('right')}
-            className="px-2 py-2 rounded-xl text-xs transition-all"
-            style={{ background: isLocked('right') ? 'var(--color-green-bg)' : 'var(--color-border)', color: isLocked('right') ? 'var(--color-green)' : 'var(--color-text-dim)' }}>
-            {isLocked('right') ? '🔒' : '🔓'}
-          </button>
-        )}
-      </div>
-
-      {/* Boxing — BOX OD + BOX OG + locks */}
-      <div className="flex items-stretch gap-1.5 flex-wrap">
-        <span className="self-center text-[10px] font-medium" style={{ color: BOX_COLOR }}>Box :</span>
-        <button onClick={() => setActiveMarker('boxOG')}
-          className="flex-1 min-w-[70px] py-2 rounded-xl text-xs font-medium transition-all flex items-center justify-center gap-1"
-          style={btnStyle('boxOG', BOX_COLOR)}>
-          <span style={{ color: boxOG ? BOX_COLOR : 'var(--color-text-dim)' }}>▣</span>
-          Box OD{boxOG ? ' ✓' : ''}
-        </button>
-        {boxOG && (
-          <button onClick={() => toggleLock('boxOG')}
-            className="px-2 py-2 rounded-xl text-xs transition-all"
-            style={{ background: isLocked('boxOG') ? 'var(--color-green-bg)' : 'var(--color-border)', color: isLocked('boxOG') ? 'var(--color-green)' : 'var(--color-text-dim)' }}>
-            {isLocked('boxOG') ? '🔒' : '🔓'}
-          </button>
-        )}
-        <button onClick={() => setActiveMarker('boxOD')}
-          className="flex-1 min-w-[70px] py-2 rounded-xl text-xs font-medium transition-all flex items-center justify-center gap-1"
-          style={btnStyle('boxOD', BOX_COLOR)}>
-          <span style={{ color: boxOD ? BOX_COLOR : 'var(--color-text-dim)' }}>▣</span>
-          Box OG{boxOD ? ' ✓' : ''}
-        </button>
-        {boxOD && (
-          <button onClick={() => toggleLock('boxOD')}
-            className="px-2 py-2 rounded-xl text-xs transition-all"
-            style={{ background: isLocked('boxOD') ? 'var(--color-green-bg)' : 'var(--color-border)', color: isLocked('boxOD') ? 'var(--color-green)' : 'var(--color-text-dim)' }}>
-            {isLocked('boxOD') ? '🔒' : '🔓'}
-          </button>
-        )}
-        {/* Diamètre verre à commander — toggle activer/désactiver + reset rayon */}
         <button onClick={() => setLensActive(v => !v)}
           className="flex-1 min-w-[70px] py-2 rounded-xl text-xs font-medium transition-all flex items-center justify-center gap-1"
           style={{
@@ -868,10 +895,20 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
           <span style={{ color: lensActive ? '#06b6d4' : 'var(--color-text-dim)' }}>◎</span>
           Diamètre{lensActive ? ' ✓' : ''}
         </button>
-        <button onClick={undo} disabled={!hasAnyMarker}
+        <button onClick={() => setAssistOverride(!assistOn)} data-tool="assist" data-assist={assistActive ? '1' : '0'}
+          className="px-3 py-2 rounded-xl text-xs font-medium transition-opacity disabled:opacity-30 flex items-center gap-1"
+          style={{
+            background: assistActive ? 'rgba(201,160,90,0.18)' : 'var(--color-card, #1a1a20)',
+            color: assistActive ? 'var(--color-gold)' : 'var(--color-text)',
+            border: `1px solid ${assistActive ? 'var(--color-gold)' : 'var(--color-border)'}`,
+            cursor: 'pointer',
+          }}>
+          <ZoomIn size={12} /> Pointage assisté
+        </button>
+        <button onClick={resetAll} disabled={!hasAnyMarker} data-tool="reset"
           className="px-3 py-2 rounded-xl text-xs font-medium transition-opacity disabled:opacity-30 flex items-center gap-1"
           style={{ background: 'var(--color-red-bg)', color: 'var(--color-red)' }}>
-          <RotateCcw size={12} /> Annuler
+          <RotateCcw size={12} /> Réinitialiser
         </button>
         {lensActive && (lensRadiusOG != null || lensRadiusOD != null) && (
           <button onClick={() => { setLensRadiusOG(null); setLensRadiusOD(null); setLensCenterOG(null); setLensCenterOD(null) }}
@@ -886,7 +923,11 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       <div ref={containerRef} id="pupil-image-container"
         className="relative rounded-2xl border overflow-hidden select-none cursor-crosshair"
         style={{ background: '#08080a', borderColor: 'var(--color-border)', aspectRatio: imageSize ? `${imageSize.width}/${imageSize.height}` : '4/3', touchAction: 'none' }}
-        onPointerDown={handleContainerPointerDown}>
+        onPointerDown={handleContainerPointerDown}
+        onPointerMove={handleContainerPointerMove}
+        onPointerUp={handleContainerPointerUp}
+        onPointerCancel={() => setAim(null)}
+        onPointerLeave={() => setAim(null)}>
         {imageUrl && <img src={imageUrl} alt="Centrage" className="w-full h-full block object-contain" draggable={false} />}
 
         {/* Image overlay — exact display rect, all markers render inside it with simple % */}
@@ -903,9 +944,9 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
             }}>
               {/* Boxing rectangles render via BoxingRect (which handles its own letterboxing) */}
               <BoxingRect rect={boxOG} imageSize={imageSize} toImageCoords={toImageCoords}
-                onChange={setBoxOG} active={activeMarker === 'boxOG'} color={BOX_COLOR} label="VOD" containerRef={containerRef} />
+                onChange={setBoxOG} active={activeMarker === 'boxOG'} locked={isLocked('boxOG')} color={BOX_COLOR} label="VOD" containerRef={containerRef} />
               <BoxingRect rect={boxOD} imageSize={imageSize} toImageCoords={toImageCoords}
-                onChange={setBoxOD} active={activeMarker === 'boxOD'} color={BOX_COLOR} label="VOG" containerRef={containerRef} />
+                onChange={setBoxOD} active={activeMarker === 'boxOD'} locked={isLocked('boxOD')} color={BOX_COLOR} label="VOG" containerRef={containerRef} />
 
               {/* Cercles diamètre verre à commander — 1 par verre, centrés sur la pupille, rayon dragable.
                   Rayon "glacé" à l'activation : indépendant du déplacement des marqueurs OD/OG. */}
@@ -948,7 +989,9 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
               {rightEye && renderCrossMarkerSimple(rightEye, PUPIL_R_COLOR, 'OG', activeMarker === 'right', 'right')}
 
               {/* Loupe de précision — visible pendant le drag d'un repère */}
-              {renderLoupe(dr)}
+              {renderLoupe(dr, assistActive && aim && aim.target
+                ? { pos: aim, color: AIM_COLOR[aim.target], label: AIM_LABEL[aim.target] }
+                : null)}
 
               {/* Ligne pointillée fine — 25% hauteur, centrée sur le pont */}
                             {bridge && (() => {
@@ -1077,10 +1120,10 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
           <span className="inline-block px-3 py-1.5 rounded-full text-xs"
             style={{ background: 'rgba(0,0,0,0.7)', color: '#ccc', border: '1px solid rgba(255,255,255,0.1)' }}>
             {result?.pupilsOk && result?.pontOk && (boxOG || boxOD) ? 'Tous les repères placés · Validez'
-              : `Placez : ${
-                activeMarker === 'bridgeL' ? 'PD' : activeMarker === 'bridgeR' ? 'PG'
-                : activeMarker === 'left' ? 'Pupille OD' : activeMarker === 'right' ? 'Pupille OG'
-                : activeMarker === 'boxOG' ? 'Box OD' : activeMarker === 'boxOD' ? 'Box OG' : ''}`}
+              : !bridge ? 'Tapez pour placer le centre du nez'
+              : !leftEye ? 'Tapez pour placer la pupille OD'
+              : !rightEye ? 'Tapez pour placer la pupille OG'
+              : 'Touchez Box OD ou Box OG pour créer les boîtes'}
           </span>
         </div>
       </div>

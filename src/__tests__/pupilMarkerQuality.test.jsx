@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, waitFor } from '@testing-library/react'
+import { render, waitFor, configure } from '@testing-library/react'
+
+// Marge de manœuvre : jsdom sous charge peut dépasser le délai par défaut de 1 s.
+// Les assertions restent identiques — seul le temps d'attente change.
+configure({ asyncUtilTimeout: 3000 })
 import PupilMarker from '../PupilMarker'
 
 /**

@@ -59,9 +59,11 @@ export async function detectWithNativeAPI(img) {
  * Charge les modèles face-api.js (une seule fois)
  */
 async function ensureFaceApiModels() {
-  if (FACE_API_LOADED.tiny && FACE_API_LOADED.landmarks) return
-
+  // ⚠️ Le module doit être renvoyé DANS TOUS LES CAS : un `return` nu ici faisait
+  // échouer toute détection suivant la première (`fa.detectSingleFace` sur undefined).
   const fa = await import('face-api.js')
+
+  if (FACE_API_LOADED.tiny && FACE_API_LOADED.landmarks) return fa
   const FALLBACK_CDN = 'https://justadudewhohacks.github.io/face-api.js/models'
 
   const loadFromUri = async (base) => {
@@ -70,7 +72,7 @@ async function ensureFaceApiModels() {
       FACE_API_LOADED.tiny = true
     }
     if (!FACE_API_LOADED.landmarks) {
-      await fa.nets.faceLandmarks68Net.loadFromUri(base)
+      await fa.nets.faceLandmark68Net.loadFromUri(base)
       FACE_API_LOADED.landmarks = true
     }
   }

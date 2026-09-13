@@ -1,16 +1,18 @@
 import { useState, useCallback } from 'react'
 
 export default function BoxingRect({
-  rect, imageSize, toImageCoords, onChange, active, label, containerRef
+  rect, imageSize, toImageCoords, onChange, active, label, containerRef, locked = false
 }) {
   const [drag, setDrag] = useState(null)
 
   const handlePointerDown = useCallback((mode, e) => {
+    // Verrou : même règle que pour les repères ponctuels — verrouillé = on ne bouge pas
+    if (locked) return
     e.stopPropagation()
     e.preventDefault()
     e.target.setPointerCapture(e.pointerId)
     setDrag({ mode, startClient: { x: e.clientX, y: e.clientY }, startRect: { ...rect } })
-  }, [rect])
+  }, [rect, locked])
 
   const handleClick = useCallback((e) => { e.stopPropagation() }, [])
 
@@ -139,38 +141,40 @@ export default function BoxingRect({
 
   return (
     <>
-      {/* Bordure blanche fine */}
+      {/* Bordure — plus marquée quand la boîte est active (touchée) */}
       <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 12 }}>
         <rect x={`${boxLeftPct}%`} y={`${boxTopPct}%`}
           width={`${boxWidthPct}%`} height={`${boxHeightPct}%`}
           fill="none"
-          stroke="rgba(255,255,255,0.5)"
-          strokeWidth="0.8"
+          stroke={active ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.5)'}
+          strokeWidth={active ? 1.4 : 0.8}
           strokeDasharray="3 2" />
       </svg>
 
-      {/* Move handle — centre du rectangle */}
-      {active && (
-        <div className="absolute cursor-move" style={{
-          left: `${boxLeftPct + boxWidthPct / 2}%`, top: `${boxTopPct + boxHeightPct / 2}%`,
-          transform: 'translate(-50%, -50%)', zIndex: 22,
-        }}
-          onPointerDown={(e) => handlePointerDown('move', e)}
-          onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onClick={handleClick}>
-          <svg width="18" height="18" viewBox="0 0 18 18">
-            <circle cx="9" cy="9" r="8" fill="rgba(255,255,255,0.1)" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
-            <path d="M9 3 L10.5 6 L7.5 6 Z M9 15 L10.5 12 L7.5 12 Z M3 9 L6 7.5 L6 10.5 Z M15 9 L12 7.5 L12 10.5 Z"
-              fill="rgba(255,255,255,0.6)" />
-          </svg>
-        </div>
-      )}
+      {/* Croix de déplacement — TOUJOURS présente : les boîtes se déplacent
+          directement, sans devoir être « sélectionnées » auparavant (ce qui
+          permet d'avoir un seul type de bouton pour les 5 repères). */}
+      <div data-box-handle="move" className="absolute cursor-move" style={{
+        left: `${boxLeftPct + boxWidthPct / 2}%`, top: `${boxTopPct + boxHeightPct / 2}%`,
+        transform: 'translate(-50%, -50%)', zIndex: 22,
+        opacity: locked ? 0.2 : 1, pointerEvents: locked ? 'none' : 'auto',
+      }}
+        onPointerDown={(e) => handlePointerDown('move', e)}
+        onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onClick={handleClick}>
+        <svg width="18" height="18" viewBox="0 0 18 18">
+          <circle cx="9" cy="9" r="8" fill="rgba(255,255,255,0.1)" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
+          <path d="M9 3 L10.5 6 L7.5 6 Z M9 15 L10.5 12 L7.5 12 Z M3 9 L6 7.5 L6 10.5 Z M15 9 L12 7.5 L12 10.5 Z"
+            fill="rgba(255,255,255,0.6)" />
+        </svg>
+      </div>
 
-      {/* 4 petits carrés aux coins */}
-      {active && Object.entries(corners).map(([key, c]) => (
-        <div key={key} className="absolute" style={{
+      {/* 4 petits carrés aux coins — toujours présents */}
+      {Object.entries(corners).map(([key, c]) => (
+        <div key={key} data-box-handle={c.mode} className="absolute" style={{
           left: `${c.l}%`, top: `${c.t}%`,
           transform: 'translate(-50%, -50%)',
           zIndex: 21, cursor: c.cursor,
+          opacity: locked ? 0.2 : 1, pointerEvents: locked ? 'none' : 'auto',
         }}
           onPointerDown={(e) => handlePointerDown(c.mode, e)}
           onPointerMove={handlePointerMove} onPointerUp={handlePointerUp}

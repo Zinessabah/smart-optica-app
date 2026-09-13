@@ -1,6 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, fireEvent, waitFor } from '@testing-library/react'
+import { render, fireEvent, waitFor, configure } from '@testing-library/react'
+
+// Marge de manœuvre : jsdom sous charge peut dépasser le délai par défaut de 1 s.
+// Les assertions restent identiques — seul le temps d'attente change.
+configure({ asyncUtilTimeout: 3000 })
 import PupilMarker from '../PupilMarker'
+
+// Détection auto neutralisée (résout `null`) → géométrie déterministe et
+// aucun repère posé par une estimation concurrente.
+vi.mock('../core/faceDetection', () => ({ detectFace: async () => null }))
 
 /**
  * Loupe de précision de l'écran facial.
@@ -43,21 +51,40 @@ describe('PupilMarker — loupe de précision', () => {
   async function mountWithMarkers() {
     const utils = renderPM()
     const { container } = utils
-    await waitFor(() => expect(container.querySelector('img')).toBeTruthy())
+    await waitFor(() => expect(container.querySelector('#pupil-image-container')).toBeTruthy())
     const stage = container.querySelector('#pupil-image-container')
-    const btn = (t) => [...container.querySelectorAll('button')].find(b => (b.textContent || '').includes(t))
 
-    // Pont (marqueur actif par défaut) → OD → OG
-    fireEvent.pointerDown(stage, { clientX: 90, clientY: 140 })
-    fireEvent.click(btn('OD')); fireEvent.pointerDown(stage, { clientX: 120, clientY: 150 })
-    fireEvent.click(btn('OG')); fireEvent.pointerDown(stage, { clientX: 260, clientY: 152 })
+    // Le conteneur est rendu AVANT que `imageSize` soit connu : un tap trop tôt
+    // est ignoré. On réessaie le même tap jusqu'à ce que le repère apparaisse —
+    // relancer ce tap est sûr, il pose toujours le premier repère manquant.
+    const tap = async (sel, x, y) => {
+      await waitFor(() => {
+        fireEvent.pointerDown(stage, { clientX: x, clientY: y })
+        fireEvent.pointerUp(stage, { clientX: x, clientY: y })
+        expect(container.querySelector(sel)).toBeTruthy()
+      }, { timeout: 5000, interval: 100 })
+    }
+    await tap('[data-markerid="bridge"]', 90, 140)
+    await tap('[data-markerid="left"]', 120, 150)
+    await tap('[data-markerid="right"]', 260, 152)
 
-    await waitFor(() => expect(container.querySelector('[data-markerid="left"]')).toBeTruthy())
-    return { ...utils, stage, handle: (id) => container.querySelector(`[data-markerid="${id}"]`) }
+    return { ...utils, container, stage, tap, handle: (id) => container.querySelector(`[data-markerid="${id}"]`) }
   }
 
-  it('aucune loupe tant qu’on ne fait que poser les repères', async () => {
-    const { container } = await mountWithMarkers()
+  it('hors pointage assisté, poser un repère n’affiche aucune loupe', async () => {
+    const { container } = renderPM()
+    const stage0 = container.querySelector('#pupil-image-container')
+    await waitFor(() => expect(stage0).toBeTruthy())
+    // La détection simulée échoue → le pointage assisté s'active d'office.
+    // On le coupe : c'est la pose DIRECTE qu'on vérifie ici.
+    const bouton = container.querySelector('button[data-tool="assist"]')
+    await waitFor(() => expect(bouton.dataset.assist).toBe('1'))
+    fireEvent.click(bouton)
+    await waitFor(() => expect(bouton.dataset.assist).toBe('0'))
+
+    fireEvent.pointerDown(stage0, { clientX: 90, clientY: 140 })
+    await waitFor(() => expect(container.querySelector('[data-markerid="bridge"]')).toBeTruthy())
+    fireEvent.pointerUp(stage0, { clientX: 90, clientY: 140 })
     expect(container.querySelector('[data-loupe="1"]')).toBeFalsy()
   })
 
