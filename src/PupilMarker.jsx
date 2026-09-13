@@ -4,6 +4,13 @@ import BoxingRect from './BoxingRect'
 import MeasureRuler from './components/MeasureRuler'
 import { detectFace } from './core/faceDetection'
 import { calculateMonocularPD, calculatePont, calculateBoxingDimensions, getDefaultBoxSize as coreDefaultBoxSize, mirrorBox, resolveLensDiameter, DEFAULT_LENS_DIAMETER_MM, isFrontMeasurementReady } from './core/optics'
+// Contrôles objectifs (netteté relative, inclinaison, alignement) — à ne pas
+// confondre avec core/photoQuality.ts qui note la PRISE DE VUE (flou/exposition).
+import { eyeRegions, evaluatePhotoQuality, gridSharpness, blockSharpness } from './core/photoChecks'
+
+// Affichage des verdicts de contrôle (aucune correction : uniquement des constats)
+const QUALITY_ICON = { ok: '✓', warn: '⚠️', bad: '✕' }
+const QUALITY_COLOR = { ok: 'var(--color-green)', warn: 'var(--color-gold)', bad: 'var(--color-red)' }
 
 export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, onRetake, initialLeftEye, initialRightEye, initialBridge }) {
   const [imageSize, setImageSize] = useState(null)
@@ -26,6 +33,39 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   const containerRef = useRef(null)
   const cancelAutoFaceRef = useRef(false)
   const [rulerVisible, setRulerVisible] = useState(false)
+  // Analyse de netteté de la photo (une seule fois par image) — contrôle objectif
+  const [imageGray, setImageGray] = useState(null)
+
+  // L'image est échantillonnée hors écran : niveaux de gris + netteté du bloc le
+  // plus net (référence interne). Si le canvas est illisible (origine non sûre),
+  // on renvoie null : le contrôle se déclare « indisponible », jamais « ok ».
+  useEffect(() => {
+    if (!imageUrl || !imageSize) return
+    let cancelled = false
+    const img = new Image()
+    img.onload = () => {
+      try {
+        const s = Math.min(1, 700 / Math.max(1, img.naturalWidth))
+        const w = Math.max(1, Math.round(img.naturalWidth * s))
+        const h = Math.max(1, Math.round(img.naturalHeight * s))
+        const cv = document.createElement('canvas')
+        cv.width = w; cv.height = h
+        const ctx = cv.getContext('2d', { willReadFrequently: true })
+        ctx.drawImage(img, 0, 0, w, h)
+        const data = ctx.getImageData(0, 0, w, h).data
+        const gray = new Float64Array(w * h)
+        for (let i = 0, p = 0; i < gray.length; i++, p += 4) {
+          gray[i] = 0.299 * data[p] + 0.587 * data[p + 1] + 0.114 * data[p + 2]
+        }
+        const best = gridSharpness(gray, w, h)
+        if (!cancelled) setImageGray({ gray, w, h, s, best })
+      } catch {
+        if (!cancelled) setImageGray(null)
+      }
+    }
+    img.src = imageUrl
+    return () => { cancelled = true }
+  }, [imageUrl, imageSize])
 
   useEffect(() => {
     const img = new Image(); img.src = imageUrl
@@ -476,10 +516,11 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     if (am && lockedRef.current.has(am)) return
     const b = currentPosRef.current.bridge
 
-        // Tap repositionne le marqueur actif (même s'il existe déjà)
-        if (am === 'bridge') { setBridge(pt); return }
-        if (am === 'left')   { setLeftEye(pt); return }
-        if (am === 'right')  { setRightEye(pt); return }
+        // Un tap ne DÉPLACE plus un repère déjà posé (Driss : « supprimer le drop »).
+        // On ne pose que ce qui manque ; un repère existant se règle AU DRAG.
+        if (am === 'bridge' && !b) { setBridge(pt); return }
+        if (am === 'left' && !currentPosRef.current.left)   { setLeftEye(pt); return }
+        if (am === 'right' && !currentPosRef.current.right) { setRightEye(pt); return }
         if (am === 'boxOG' && !boxOG) {
           const def = getDefaultBoxSize()
           if (b) {
@@ -504,13 +545,107 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     return
   }, [toImageCoords, boxOG, boxOD, getDefaultBoxSize])
 
-  // ── Simplified marker renderers — réticules purs directement tactiles ──
+  // ── Contrôles objectifs — aucun facteur correctif, uniquement des constats ──
+  // Netteté de la zone des yeux rapportée au bloc le plus net de la photo :
+  // critère RELATIF, donc indépendant de l'exposition et du niveau de détail.
+  const sharpnessRatio = (() => {
+    if (!imageGray || !imageGray.best || !leftEye || !rightEye || !imageSize) return null
+    const { s } = imageGray
+    const regions = eyeRegions(leftEye, rightEye, imageSize, { mmPerPx: calibration?.scalePxToMm })
+      .map((r) => ({ x: r.x * s, y: r.y * s, width: r.width * s, height: r.height * s }))
+    const scores = regions
+      .map((r) => blockSharpness(imageGray.gray, imageGray.w, imageGray.h, r))
+      .filter((v) => v > 0)
+    if (!scores.length) return null
+    return (scores.reduce((a, b) => a + b, 0) / scores.length) / imageGray.best
+  })()
+
+  const quality = evaluatePhotoQuality({ calibration, leftEye, rightEye, bridge, imageSize, sharpnessRatio })
+  const qualityIssues = quality.filter((c) => c.level !== 'ok').length
+
+  // ── Loupe de précision ──────────────────────────────────────────────────────
+  // Bulle grossissante qui suit le marqueur pendant le drag. Le point de mesure
+  // reste EXACTEMENT au centre : on peut viser le centre de la pupille au pixel.
+  // Purement visuelle (pointerEvents: none) → ne déplace jamais la mesure.
+  const LOUPE_R = 62
+  const renderLoupe = (dr) => {
+    if (!dragMarker || !imageSize || !imageUrl) return null
+    const pos = { bridge, left: leftEye, right: rightEye }[dragMarker.markerId]
+    if (!pos) return null
+    // Champ de vision PHYSIQUE constant (12 mm de côté) : la précision visée ne
+    // dépend ni de la résolution de la photo ni de la taille d'affichage.
+    // Sans calibrage, on se rabat sur 6 % de la largeur de l'image.
+    const mmPerPx = calibration?.scalePxToMm || null
+    const SPAN_MM = 12
+    const spanPx = mmPerPx ? SPAN_MM / mmPerPx : imageSize.width * 0.06
+    const zoom = Math.min(20, Math.max(1, (LOUPE_R * 2) / Math.max(spanPx, 1)))
+    const cx = (pos.x / imageSize.width) * dr.width
+    const cy = (pos.y / imageSize.height) * dr.height
+    // Au-dessus du doigt, bascule en dessous s'il n'y a pas la place
+    const above = cy > LOUPE_R * 2 + 30
+    const by = above ? cy - LOUPE_R - 40 : cy + LOUPE_R + 40
+    const maxX = Math.max(LOUPE_R + 6, dr.width - LOUPE_R - 6)
+    const bx = Math.min(Math.max(cx, LOUPE_R + 6), maxX)
+    const color = dragMarker.markerId === 'bridge' ? BRIDGE_COLOR
+      : dragMarker.markerId === 'left' ? PUPIL_L_COLOR : PUPIL_R_COLOR
+    const label = dragMarker.markerId === 'bridge' ? 'Nez'
+      : dragMarker.markerId === 'left' ? 'OD' : 'OG'
+
+    return (
+      <div data-loupe="1" style={{
+        position: 'absolute', left: bx, top: by,
+        width: LOUPE_R * 2, height: LOUPE_R * 2,
+        transform: 'translate(-50%, -50%)',
+        borderRadius: '50%', overflow: 'hidden',
+        border: `2px solid ${color}`,
+        boxShadow: '0 8px 28px rgba(0,0,0,0.8), 0 0 0 1px rgba(0,0,0,0.6)',
+        backgroundImage: `url(${imageUrl})`,
+        backgroundSize: `${imageSize.width * zoom}px ${imageSize.height * zoom}px`,
+        backgroundPosition: `${LOUPE_R - pos.x * zoom}px ${LOUPE_R - pos.y * zoom}px`,
+        backgroundRepeat: 'no-repeat',
+        zIndex: 60, pointerEvents: 'none',
+      }}>
+        {/* Réticule — le point mesuré est pile au centre */}
+        <div style={{ position: 'absolute', left: '50%', top: '50%', width: 30, height: 1,
+          background: 'rgba(255,255,255,0.85)', transform: 'translate(-50%,-50%)' }} />
+        <div style={{ position: 'absolute', left: '50%', top: '50%', width: 1, height: 30,
+          background: 'rgba(255,255,255,0.85)', transform: 'translate(-50%,-50%)' }} />
+        <div style={{ position: 'absolute', left: '50%', top: '50%', width: 40, height: 40,
+          border: '1px solid rgba(255,255,255,0.25)', borderRadius: '50%', transform: 'translate(-50%,-50%)' }} />
+        <div style={{ position: 'absolute', left: '50%', top: '50%', width: 4, height: 4,
+          background: color, borderRadius: '50%', transform: 'translate(-50%,-50%)',
+          boxShadow: '0 0 4px rgba(0,0,0,0.9)' }} />
+        {/* Cale étalon : 1 mm à l'échelle de la photo — la loupe reste un instrument */}
+        {mmPerPx && (() => {
+          const barW = Math.max(6, (1 / mmPerPx) * zoom)
+          return (
+            <div data-mm-bar={barW.toFixed(2)} style={{ position: 'absolute', left: 9, top: '50%',
+              transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <div style={{ width: barW, height: 7, borderLeft: '1px solid #fff',
+                borderRight: '1px solid #fff', borderBottom: '1px solid #fff', opacity: 0.9 }} />
+              <span style={{ fontSize: 8, fontWeight: 600, color: '#fff',
+                textShadow: '0 1px 3px rgba(0,0,0,0.95)' }}>1 mm</span>
+            </div>
+          )
+        })()}
+        {/* Étiquette */}
+        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 6, textAlign: 'center',
+          fontSize: 10, fontWeight: 700, color: '#fff', textShadow: '0 1px 3px rgba(0,0,0,0.95)' }}>
+          {label} · {mmPerPx ? `${SPAN_MM} mm` : `${Math.round(spanPx)} px`}
+        </div>
+      </div>
+    )
+  }
+
+  // ── Marqueur ponctuel — le PETIT CERCLE de mesure est lui-même la cible du drag ──
+  // (Driss : plus de poignée déportée 75 px au-dessus → la loupe suit directement
+  //  la pupille au lieu de flotter à côté du handle)
   const renderCrossMarkerSimple = (pos, color, label, isActive, markerId, sz = 22) => {
     if (!pos || !imageSize) return null
     const l = (pos.x / imageSize.width) * 100
     const t = (pos.y / imageSize.height) * 100
     const half = sz / 2
-    const handleOffsetY = -75
+    const HIT = 44      // zone tactile centrée sur le point (invisible, 44 px)
 
     return (
     <div style={{
@@ -519,7 +654,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       zIndex: 15,
       pointerEvents: 'none',
     }}>
-      {/* Réticule de précision — centré sur le point de mesure, non tactile */}
+      {/* Réticule de précision — le centre est le point de mesure */}
       <div style={{
         position: 'absolute',
         left: 0, top: 0,
@@ -531,33 +666,24 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
                 </svg>
       </div>
 
-      {/* Ligne de liaison fine */}
-      <svg width="2" height={Math.abs(handleOffsetY)} style={{
-        position: 'absolute', left: 0, top: handleOffsetY,
-        pointerEvents: 'none', overflow: 'visible',
-      }}>
-        <line x1="0" y1="0" x2="0" y2={Math.abs(handleOffsetY)}
-          stroke="rgba(255,255,255,0.5)" strokeWidth="0.8" strokeDasharray="5 3" />
-      </svg>
-
-      {/* Poignée tactile déportée 75px au-dessus */}
-      <div style={{
-        position: 'absolute', left: 0, top: handleOffsetY,
+      {/* Cible tactile : centrée sur le point, invisible, ne masque jamais la mesure */}
+      <div data-markerid={markerId} style={{
+        position: 'absolute', left: 0, top: 0,
+        width: HIT, height: HIT,
         transform: 'translate(-50%, -50%)',
+        borderRadius: '50%',
         pointerEvents: 'auto', cursor: 'grab',
-      }} data-markerid={markerId}>
-        <div style={{
-          width: '16px', height: '16px', borderRadius: '50%',
-          background: isActive ? color : 'rgba(255,255,255,0.85)',
-          border: `1.5px solid ${color}`,
-          boxShadow: '0 0 6px rgba(0,0,0,0.5)',
-        }} />
-        <div style={{
-          textAlign: 'center', fontSize: '8px', fontWeight: 700,
-          color: color, marginTop: '2px',
-          textShadow: '0 1px 2px rgba(0,0,0,0.8)',
-        }}>{label}</div>
-      </div>
+        border: `1px solid ${isActive ? color : 'transparent'}`,
+        background: isActive ? `${color}18` : 'transparent',
+      }} />
+
+      {/* Étiquette — SOUS le point, jamais dessus */}
+      <div style={{
+        position: 'absolute', left: 0, top: 13,
+        transform: 'translateX(-50%)',
+        fontSize: '9px', fontWeight: 700, color: color,
+        textShadow: '0 1px 2px rgba(0,0,0,0.9)', whiteSpace: 'nowrap',
+      }}>{label}</div>
     </div>
     )
     }
@@ -625,6 +751,32 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
         <span className="self-center text-xs" style={{ color: 'var(--color-text-muted)' }}>
           {calibration ? '✓ 3 repères placés' : 'Non fait'}
         </span>
+      </div>
+
+      {/* Contrôles objectifs — à lire AVANT de valider les mesures */}
+      <div className="rounded-xl px-3 py-2.5" data-quality-panel="1"
+        style={{ background: 'var(--color-card)', border: '1px solid var(--color-border)' }}>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[10px] font-semibold" style={{ color: 'var(--color-text-muted)', letterSpacing: '0.05em' }}>
+            CONTRÔLES OBJECTIFS
+          </span>
+          <span className="text-[10px] font-semibold"
+            style={{ color: qualityIssues ? 'var(--color-gold)' : 'var(--color-green)' }}>
+            {qualityIssues ? `${qualityIssues} point${qualityIssues > 1 ? 's' : ''} à vérifier` : 'tout est conforme'}
+          </span>
+        </div>
+        {quality.map((c) => (
+          <div key={c.id} className="flex items-start gap-1.5 py-0.5 text-[11px]"
+            style={{ lineHeight: 1.3 }} data-quality={c.id} data-level={c.level}>
+            <span className="shrink-0" style={{ color: QUALITY_COLOR[c.level] }}>{QUALITY_ICON[c.level]}</span>
+            <span style={{ color: 'var(--color-text-muted)' }}>
+              <strong style={{ color: c.level === 'ok' ? 'var(--color-text-muted)' : QUALITY_COLOR[c.level] }}>
+                {c.label}
+              </strong>
+              {' — '}{c.detail}
+            </span>
+          </div>
+        ))}
       </div>
 
       {/* Pont buttons — Un seul bouton d'axe central du nez */}
@@ -794,6 +946,9 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
               {/* Eye markers */}
               {leftEye && renderCrossMarkerSimple(leftEye, PUPIL_L_COLOR, 'OD', activeMarker === 'left', 'left')}
               {rightEye && renderCrossMarkerSimple(rightEye, PUPIL_R_COLOR, 'OG', activeMarker === 'right', 'right')}
+
+              {/* Loupe de précision — visible pendant le drag d'un repère */}
+              {renderLoupe(dr)}
 
               {/* Ligne pointillée fine — 25% hauteur, centrée sur le pont */}
                             {bridge && (() => {
