@@ -22,6 +22,8 @@ export default function PrecisionLoupe({
   color,
   label,
   mmPerPx,          // échelle physique, si connue
+  reticle,          // LE repère de l'écran, rendu grossi comme l'image
+  reticleSize = 22, // taille du repère au repos (px écran)
   spanMm = 12,      // champ de vision visé, en mm
   fallbackPct = 6,  // repli SANS échelle connue : % de la largeur d'image
   hint,             // texte de remplacement sous l'étiquette (ex. « relâcher pour poser »)
@@ -36,14 +38,14 @@ export default function PrecisionLoupe({
   const zoom = Math.min(MAX_ZOOM, Math.max(1, (LOUPE_R * 2) / Math.max(spanPx, 1)))
   const cx = (pos.x / imageSize.width) * dr.width
   const cy = (pos.y / imageSize.height) * dr.height
-  // Au-dessus du doigt ; bascule en dessous s'il n'y a pas la place
-  const above = cy > LOUPE_R * 2 + 30
-  const by = above ? cy - LOUPE_R - 40 : cy + LOUPE_R + 40
+  // TOUJOURS au-dessus du doigt. En dessous, la bulle tombe sous la MAIN : la paume
+  // occupe tout l'espace sous le doigt et masque la bulle (retour de Driss : « les
+  // zoom s'affichent en bas des doigts ce qui perturbe la vision »). Quand il n'y a
+  // pas la place au-dessus, on la remonte au bord plutôt que de basculer dessous.
+  const by = Math.max(LOUPE_R + 8, cy - LOUPE_R - 40)
   const maxX = Math.max(LOUPE_R + 6, dr.width - LOUPE_R - 6)
   const bx = Math.min(Math.max(cx, LOUPE_R + 6), maxX)
 
-  const white = 'rgba(255,255,255,0.85)'
-  const centre = { position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%,-50%)' }
 
   return (
     <div data-loupe="1" style={{
@@ -59,11 +61,22 @@ export default function PrecisionLoupe({
       backgroundRepeat: 'no-repeat',
       zIndex: 60, pointerEvents: 'none',
     }}>
-      {/* Réticule — le point mesuré est pile au centre */}
-      <div style={{ ...centre, width: 30, height: 1, background: white }} />
-      <div style={{ ...centre, width: 1, height: 30, background: white }} />
-      <div style={{ ...centre, width: 40, height: 40, border: '1px solid rgba(255,255,255,0.25)', borderRadius: '50%' }} />
-      <div style={{ ...centre, width: 4, height: 4, background: color, borderRadius: '50%', boxShadow: '0 0 4px rgba(0,0,0,0.9)' }} />
+      {/* Réticule = LE REPÈRE DE L'ÉCRAN, grossi exactement comme l'image (même facteur).
+          L'ancienne croix + anneau de la loupe ne ressemblait pas au repère : on voyait
+          deux formes différentes pour le même point. Ici, ce qu'on voit dans la bulle
+          est littéralement ce qu'on voit sur la photo, agrandi. */}
+      {reticle && (
+        <div style={{ position: 'absolute', left: '50%', top: '50%', width: 0, height: 0 }}>
+          <div data-reticle="1" style={{
+            position: 'absolute',
+            left: -reticleSize / 2, top: -reticleSize / 2,
+            width: reticleSize, height: reticleSize,
+            transform: `scale(${zoom})`, transformOrigin: 'center',
+          }}>
+            {reticle}
+          </div>
+        </div>
+      )}
 
       {/* Cale étalon : 1 mm à l'échelle de la photo — la loupe reste un instrument */}
       {scaleBar && mmPerPx && (() => {

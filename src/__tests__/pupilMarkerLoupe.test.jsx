@@ -204,4 +204,31 @@ describe('PupilMarker — loupe de précision', () => {
       container.querySelector('[data-loupe="1"]').getAttribute('style'))[1])
     expect(loupeLeft).toBeCloseTo((after / 100) * drWidth, 1)
   })
+
+  it('la loupe affiche LE repère de l’écran, pas un dessin différent', async () => {
+    const { container, handle } = await mountWithMarkers()
+    fireEvent.pointerDown(handle('left'), { clientX: 120, clientY: 150 })
+    await waitFor(() => expect(container.querySelector('[data-loupe]')).toBeTruthy())
+
+    const loupe = container.querySelector('[data-loupe]')
+    const svg = loupe.querySelector('[data-reticle] svg')
+    expect(svg).toBeTruthy()
+    // Le repère de cet écran est un petit cercle r=2,5 — c'est LUI qui doit être grossi,
+    // pas la croix + anneau que la loupe dessinait de son côté.
+    expect(svg.querySelector('circle').getAttribute('r')).toBe('2.5')
+    expect(svg.querySelector('line')).toBeNull()
+    fireEvent.pointerUp(window)
+  })
+
+  it('la loupe reste AU-DESSUS du doigt près du bord haut (jamais sous la main)', async () => {
+    // Le repère « bridge » est posé près du haut : l'ancien code basculait la bulle
+    // SOUS le doigt, c'est-à-dire sous la paume, qui masquait tout.
+    const { container, handle } = await mountWithMarkers()
+    fireEvent.pointerDown(handle('bridge'), { clientX: 90, clientY: 140 })
+    await waitFor(() => expect(container.querySelector('[data-loupe]')).toBeTruthy())
+
+    const top = parseFloat(container.querySelector('[data-loupe]').style.top)
+    expect(top).toBeLessThanOrEqual(80)      // remontée au bord, pas basculée dessous
+    fireEvent.pointerUp(window)
+  })
 })

@@ -127,6 +127,18 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
 
   const assistOn = assistOverride ?? autoFailed
 
+  // Réticule du repère — SOURCE UNIQUE, partagée avec la loupe (qui le grossit du même
+  // facteur que l'image). La loupe dessinait sa propre croix, différente du repère.
+  const reticleNode = (dragging) => (
+    <svg width="22" height="22" viewBox="0 0 22 22" className="mx-auto block"
+      style={{ filter: 'drop-shadow(0 0 4px rgba(0,0,0,0.5))' }}>
+      <circle cx="11" cy="11" r="9" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
+      <line x1="2" y1="11" x2="20" y2="11" stroke={dragging ? '#ff2dd0' : 'rgba(255,255,255,0.6)'} strokeWidth="1.5" />
+      <line x1="11" y1="2" x2="11" y2="20" stroke={dragging ? '#ff2dd0' : 'rgba(255,255,255,0.6)'} strokeWidth="1.5" />
+      <circle cx="11" cy="11" r={dragging ? 3 : 2} fill={dragging ? '#ff2dd0' : 'rgba(255,255,255,0.8)'} />
+    </svg>
+  )
+
   // Pose effective d'un repère de calibrage (3 au maximum).
   const addPoint = (pt) => {
     const cp = pointsRef.current
@@ -346,6 +358,7 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
                   : noClipMode ? 'Sans clip'
                   : `Repère ${Math.min(points.length + 1, 3)}`}
                 fallbackPct={1.5}
+                reticle={reticleNode(!!dragTarget)} reticleSize={22}
                 hint={aim ? 'relâcher pour poser' : null} />
 
               {points.map((p, i) => {
@@ -356,13 +369,7 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
                   <div key={i} className="absolute transform -translate-x-1/2 -translate-y-1/2 transition-none"
                     style={{ left: `${leftPct}%`, top: `${topPct}%`, zIndex: isDragging ? 30 : 10, cursor: 'grab' }}
                     data-markerid={i}>
-                    <svg width="22" height="22" viewBox="0 0 22 22" className="mx-auto block"
-                      style={{ filter: 'drop-shadow(0 0 4px rgba(0,0,0,0.5))' }}>
-                      <circle cx="11" cy="11" r="9" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
-                      <line x1="2" y1="11" x2="20" y2="11" stroke={isDragging ? '#ff2dd0' : 'rgba(255,255,255,0.6)'} strokeWidth="1.5" />
-                      <line x1="11" y1="2" x2="11" y2="20" stroke={isDragging ? '#ff2dd0' : 'rgba(255,255,255,0.6)'} strokeWidth="1.5" />
-                      <circle cx="11" cy="11" r={isDragging ? 3 : 2} fill={isDragging ? '#ff2dd0' : 'rgba(255,255,255,0.8)'} />
-                    </svg>
+                    {reticleNode(isDragging)}
                     <div className="text-[10px] text-center mt-1 font-bold tracking-wider px-1 rounded-sm"
                       style={{
                         color: isDragging ? '#ff2dd0' : 'rgba(255,255,255,0.8)',

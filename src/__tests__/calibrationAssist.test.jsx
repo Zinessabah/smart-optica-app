@@ -125,4 +125,25 @@ describe('CalibrationOverlay — pointage assisté', () => {
     // On ne dessine pas un instrument gradué sur une échelle qui n'existe pas encore.
     expect(container.querySelector('[data-mm-bar]')).toBeNull()
   })
+
+  it('la loupe affiche LE repère du calibrage (son propre dessin), pas un autre', async () => {
+    const { container, stage } = await mount()
+    await waitFor(() => expect(container.querySelector('button[data-tool="assist"]').dataset.assist).toBe('1'))
+
+    fireEvent.pointerDown(stage, { clientX: 200, clientY: 300 })
+    const svg = container.querySelector('[data-loupe] [data-reticle] svg')
+    expect(svg).toBeTruthy()
+    // Le repère de cet écran : cercle r=9 + croix (deux lignes)
+    expect(svg.querySelector('circle').getAttribute('r')).toBe('9')
+    expect(svg.querySelectorAll('line').length).toBe(2)
+  })
+
+  it('la loupe reste AU-DESSUS du doigt, jamais sous la main', async () => {
+    const { container, stage } = await mount()
+    await waitFor(() => expect(container.querySelector('button[data-tool="assist"]').dataset.assist).toBe('1'))
+
+    fireEvent.pointerDown(stage, { clientX: 200, clientY: 30 })
+    const top = parseFloat(container.querySelector('[data-loupe]').style.top)
+    expect(top).toBeLessThanOrEqual(80)
+  })
 })

@@ -621,6 +621,16 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   const quality = evaluatePhotoQuality({ calibration, leftEye, rightEye, bridge, imageSize, sharpnessRatio })
   const qualityIssues = quality.filter((c) => c.level !== 'ok').length
 
+  // Réticule du repère — SOURCE UNIQUE : il habille le repère posé sur la photo ET
+  // la loupe, qui l'affiche grossi du même facteur que l'image. Deux formes différentes
+  // pour le même point (croix dans la loupe, cercle sur la photo) étaient déroutantes :
+  // on ne savait plus quel dessin représentait la mesure.
+  const reticleNode = (color, sz = 22) => (
+    <svg width={sz} height={sz} viewBox={`0 0 ${sz} ${sz}`}>
+      <circle cx={sz / 2} cy={sz / 2} r="2.5" fill={color} fillOpacity="0.20" stroke="#fff" strokeWidth="0.8" />
+    </svg>
+  )
+
   // ── Loupe de précision ──────────────────────────────────────────────────────
   // Instrument PARTAGÉ (components/PrecisionLoupe) : la même loupe sert ici et à
   // l'écran de calibrage. Champ de 12 mm pendant un glissement, resserré à 8 mm en
@@ -639,6 +649,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     return (
       <PrecisionLoupe dr={dr} imageSize={imageSize} imageUrl={imageUrl} pos={pos}
         color={color} label={label} mmPerPx={calibration?.scalePxToMm || null}
+        reticle={reticleNode(color)} reticleSize={22}
         spanMm={aimPoint ? 8 : 12}
         hint={aimPoint ? 'relâcher pour poser' : null} />
     )
@@ -651,7 +662,6 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
     if (!pos || !imageSize) return null
     const l = (pos.x / imageSize.width) * 100
     const t = (pos.y / imageSize.height) * 100
-    const half = sz / 2
     const HIT = 44      // zone tactile centrée sur le point (invisible, 44 px)
 
     return (
@@ -668,9 +678,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
         transform: 'translate(-50%, -50%)',
         filter: 'drop-shadow(0 1px 4px rgba(0,0,0,0.95))',
       }}>
-        <svg width={sz} height={sz} viewBox={`0 0 ${sz} ${sz}`}>
-                  <circle cx={half} cy={half} r="2.5" fill={color} fillOpacity="0.20" stroke="#fff" strokeWidth="0.8" />
-                </svg>
+        {reticleNode(color, sz)}
       </div>
 
       {/* Cible tactile : centrée sur le point, invisible, ne masque jamais la mesure */}
