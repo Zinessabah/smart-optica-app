@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { ArrowLeft, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react'
 import { computeContainedImageRect, screenPointToImage } from './core/imageGeometry'
+import PrecisionLoupe from './components/PrecisionLoupe'
 import { calculatePantoscopicAngle, isProfileMeasurementReady } from './core/profileGeometry'
 import MeasureRuler from './components/MeasureRuler'
 
@@ -277,6 +278,25 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
       computeVertexFromAPI()
     }
   }, [vertexLine, vertexNeedsCompute, computeVertexFromAPI])
+
+  // ── Loupe de précision pendant le glissement d'une poignée ──
+  // Elle se centre sur LE POINT MESURÉ, jamais sur le doigt : pour le sommet de l'angle,
+  // l'octogone est DÉPORTÉ (HANDLE_OFFSET) — le doigt tient l'octogone et le point est
+  // ailleurs. Centrer sur le doigt montrerait à côté de la mesure.
+  const ANGLE_COLORS = ['#f59e0b', '#a78bfa', '#3b9eff']   // branche · sommet · plan du verre
+  const ANGLE_LABELS = ['Branche', 'Sommet', 'Plan verre']   // courts : la bulle les tronque sinon
+  const loupeSrc = draggingPt
+    ? ({ verify: verifyLine, angle: anglePts, vertex: vertexLine }[draggingPt.type] || [])[draggingPt.i]
+    : null
+  const loupeColor = draggingPt
+    ? (draggingPt.type === 'angle'
+      ? ANGLE_COLORS[draggingPt.i]
+      : draggingPt.type === 'verify' ? '#22d3ee' : '#10b981')
+    : null
+  const loupeLabel = draggingPt
+    ? (draggingPt.type === 'angle' ? ANGLE_LABELS[draggingPt.i]
+      : draggingPt.type === 'verify' ? 'Échelle' : 'Vertex')
+    : null
 
   const allDone = isProfileMeasurementReady(anglePts, vertexLine, vertexMm, vertexLoading, vertexAdjusted)
 
@@ -657,6 +677,19 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
               <div className="absolute" style={{ left: dr.left, top: dr.top, width: dr.width, height: dr.height }}>
                 {renderLines()}
                 {renderEndpoints()}
+                {/* Loupe partagée — la même que sur les repères et le calibrage. Elle est
+                    centrée sur LE POINT MESURÉ (loupeSrc), pas sur la poignée : au sommet
+                    de l'angle l'octogone est déporté et le doigt n'est pas sur la mesure. */}
+                {loupeSrc && (
+                  <PrecisionLoupe dr={dr} imageSize={imageSize} imageUrl={imageUrl} pos={loupeSrc}
+                    color={loupeColor} label={loupeLabel}
+                    mmPerPx={effectiveScale || null}
+                    spanMm={8}
+                    reticle={
+                      <svg width={22} height={22} viewBox="-11 -11 22 22">{pointReticle(loupeColor)}</svg>
+                    }
+                    reticleSize={22} />
+                )}
                 <MeasureRuler variant="ruler" scaleMmPerPx={effectiveScale} imageSize={imageSize} displayRect={dr} visible={toolOn.ruler} onToggle={() => toggleTool('ruler')} />
               </div>
             )
