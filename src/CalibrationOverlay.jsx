@@ -126,6 +126,18 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
   }, [imageUrl, markerSpacing])
 
   const assistOn = assistOverride ?? autoFailed
+  // Vérité de la détection des mires : « analyse… » tant qu'on ne sait pas, jamais
+  // « ok » d'office. L'API renvoie detection_confidence — on l'affiche au lieu de la
+  // garder dans un objet de débogage.
+  const detectLabel = autoDetecting
+    ? { text: 'Analyse des mires…', color: 'var(--color-text-muted)' }
+    : autoFailed
+      ? { text: 'Détection infructueuse — placez les 3 repères avec la loupe', color: 'var(--color-red)' }
+      : manuallyAdjustedRef.current
+        ? { text: 'Repères placés manuellement', color: 'var(--color-text-muted)' }
+        : debugInfo?.backendConfidence != null
+          ? { text: `Détection serveur · confiance ${Number(debugInfo.backendConfidence).toFixed(2)}`, color: '#22c55e' }
+          : { text: 'Détection serveur', color: '#22c55e' }
 
   // Réticule du repère — SOURCE UNIQUE, partagée avec la loupe (qui le grossit du même
   // facteur que l'image). La loupe dessinait sa propre croix, différente du repère.
@@ -312,14 +324,17 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
           </button>
         </div>
       )}
-      {autoFailed && (
-        <div className="px-4 py-2.5 flex items-center gap-2" style={{ background: 'var(--color-red-bg)', borderBottom: '1px solid var(--color-border)' }}>
-          <AlertTriangle size={14} style={{ color: 'var(--color-red)' }} />
-          <p className="text-xs" style={{ color: 'var(--color-red)' }}>
-            Détection infructueuse — Placez les 3 repères manuellement avec la loupe
-          </p>
+      {/* Vérité de la détection — même règle que les contrôles objectifs : un état non
+            encore connu s'annonce « analyse… », jamais « ok ». */}
+        <div data-detect="method" className="px-4 py-2.5 flex items-center gap-2"
+          style={{
+            background: autoFailed ? 'var(--color-red-bg)' : 'transparent',
+            borderBottom: autoFailed ? '1px solid var(--color-border)' : '1px solid transparent',
+          }}>
+          {autoFailed && <AlertTriangle size={14} style={{ color: 'var(--color-red)' }} />}
+          {autoDetecting && <Loader2 size={12} className="animate-spin" style={{ color: 'var(--color-text-muted)' }} />}
+          <p className="text-xs" style={{ color: detectLabel.color }}>{detectLabel.text}</p>
         </div>
-      )}
 
       {/* Image + markers */}
       <div

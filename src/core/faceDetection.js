@@ -33,7 +33,11 @@ export async function detectWithNativeAPI(img) {
       return {
         leftEye: { x: b.x + b.width * 0.29, y: b.y + b.height * 0.42 },
         rightEye: { x: b.x + b.width * 0.71, y: b.y + b.height * 0.42 },
-        nose: { x: cx, y: cy }
+        nose: { x: cx, y: cy },
+        // Pas de repère réel ici : les yeux sont posés par proportions dans la boîte
+        // du visage. Sans ce marqueur, l'écran annoncerait « API du navigateur » pour
+        // une détection aussi approximative que le repli final.
+        nativeQuality: 'bbox',
       }
     }
 
@@ -44,7 +48,8 @@ export async function detectWithNativeAPI(img) {
       return {
         leftEye: { x: eyes[0].locations.x, y: eyes[0].locations.y },
         rightEye: { x: eyes[1].locations.x, y: eyes[1].locations.y },
-        nose: { x: nose[0].locations.x, y: nose[0].locations.y }
+        nose: { x: nose[0].locations.x, y: nose[0].locations.y },
+        nativeQuality: 'landmarks',
       }
     }
 
@@ -64,7 +69,16 @@ async function ensureFaceApiModels() {
   const fa = await import('face-api.js')
 
   if (FACE_API_LOADED.tiny && FACE_API_LOADED.landmarks) return fa
-  const FALLBACK_CDN = 'https://justadudewhohacks.github.io/face-api.js/models'
+  // Repli CDN BORNÉ. Sans délai, hors connexion, l'appel restait en attente indéfiniment
+// et l'écran restait figé sur « détection… ». Au-delà du délai on abandonne : la cascade
+// passe à l'étage suivant, qui est au moins honnête sur ce qu'il fait.
+const CDN_TIMEOUT_MS = 3000
+const withTimeout = (promise, ms) => Promise.race([
+  promise,
+  new Promise((_, reject) => setTimeout(() => reject(new Error(`délai de ${ms} ms dépassé`)), ms)),
+])
+
+const FALLBACK_CDN = 'https://justadudewhohacks.github.io/face-api.js/models'
 
   const loadFromUri = async (base) => {
     if (!FACE_API_LOADED.tiny) {
@@ -83,7 +97,13 @@ async function ensureFaceApiModels() {
     console.warn('[faceDetection] Modèles locaux introuvables, bascule CDN:', err.message)
     FACE_API_LOADED.tiny = false
     FACE_API_LOADED.landmarks = false
-    await loadFromUri(FALLBACK_CDN)
+    try {
+      await withTimeout(loadFromUri(FALLBACK_CDN), CDN_TIMEOUT_MS)
+    } catch (cdnErr) {
+      console.warn('[faceDetection] Repli CDN abandonné:', cdnErr.message)
+      FACE_API_LOADED.tiny = false
+      FACE_API_LOADED.landmarks = false
+    }
   }
 
   return fa
@@ -117,7 +137,9 @@ export async function detectWithFaceApi(img) {
     return {
       leftEye: avg(leftEye),
       rightEye: avg(rightEye),
-      nose: nose && nose.length >= 3 ? avg(nose.slice(0, 4)) : null
+      nose: nose && nose.length >= 3 ? avg(nose.slice(0, 4)) : null,
+      // Score du détecteur : l'utilisateur doit savoir sur quoi il s'appuie.
+      score: typeof detection.detection?.score === 'number' ? detection.detection.score : null,
     }
   } catch (e) {
     console.warn('[faceDetection] face-api.js failed:', e.message)
@@ -146,7 +168,7 @@ export function estimateByProportions(imageSize) {
  * Pipeline complète détection faciale avec fallback cascade
  * @param {HTMLImageElement} img
  * @param {Object} imageSize - { width, height }
- * @returns {Promise<Object>} { leftEye, rightEye, nose, method }
+ * @returns {Promise<Object>} { leftEye, rightEye, nose, method, score, nativeQuality }
  */
 export async function detectFace(img, imageSize) {
   // 1. Native API
@@ -158,5 +180,5 @@ export async function detectFace(img, imageSize) {
   if (fa) return { ...fa, method: 'face-api' }
 
   // 3. Proportions
-  return { ...estimateByProportions(imageSize), method: 'proportions' }
+  return { ...estimateByProportions(imageSize), method: 'proportions', score: null }
 }

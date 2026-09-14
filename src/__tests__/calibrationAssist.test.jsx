@@ -62,6 +62,8 @@ describe('CalibrationOverlay — pointage assisté', () => {
   it('un contact VISE : loupe ouverte, aucun repère posé', async () => {
     const { container, stage } = await mount()
     await waitFor(() => expect(container.querySelector('button[data-tool="assist"]').dataset.assist).toBe('1'))
+    // L'indicateur doit DIRE l'échec, pas rester muet
+    expect(container.querySelector('[data-detect="method"]').textContent).toMatch(/infructueuse/)
 
     fireEvent.pointerDown(stage, { clientX: 200, clientY: 300 })
     expect(container.querySelector('[data-loupe]')).toBeTruthy()

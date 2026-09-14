@@ -27,6 +27,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   const [lensCenterOD, setLensCenterOD] = useState(null)
   const [lensActive, setLensActive] = useState(false) // toggle affichage/édition du Ø verre à commander
   const [activeMarker, setActiveMarker] = useState('bridge')
+  const [detectDetail, setDetectDetail] = useState(null)
   const [faceDetectStatus, setFaceDetectStatus] = useState('idle') // idle | detecting | success | failed
     const [panelPos, setPanelPos] = useState(null) // null = use default
   const panelDragRef = useRef(null) // { startX, startY, baseX, baseY }
@@ -89,6 +90,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       setBridge(initialBridge)
       setInitialPts({ left: initialLeftEye, right: initialRightEye, bridge: initialBridge })
       setFaceEstimate(false)
+      setDetectDetail({ method: 'provided' })
       setFaceDetectStatus('success')
       return
     }
@@ -113,6 +115,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
           if (detected.nose) setBridge(detected.nose)
           setInitialPts({ left: detected.leftEye, right: detected.rightEye, bridge: detected.nose || null })
           setFaceEstimate(detected.method === 'proportions')
+          setDetectDetail({ method: detected.method, score: detected.score ?? null, quality: detected.nativeQuality ?? null })
           setFaceDetectStatus('success')
         } else {
           setFaceEstimate(false)
@@ -524,6 +527,24 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   const nextMarkerId = !bridge ? 'bridge' : !leftEye ? 'left' : !rightEye ? 'right' : null
   const assistAuto = faceDetectStatus === 'failed'
   const assistOn = assistOverride ?? assistAuto
+  // Ce que la cascade a RÉELLEMENT réussi. Les échecs et le repli par proportions ont
+  // déjà leurs bandeaux plus bas : ici on ne dit QUE ce qui manquait, à savoir quelle
+  // méthode a produit les repères — et si ces repères étaient réels ou déduits.
+  const detectLabel = (() => {
+    const d = detectDetail
+    if (faceDetectStatus !== 'success' || !d) return null
+    if (d.method === 'provided' || d.method === 'proportions') return null
+    if (d.method === 'native' && d.quality === 'bbox') {
+      return { text: 'Repères du navigateur par boîte englobante — approximatif, repositionnez-les', color: 'var(--color-gold)', bg: 'rgba(201,160,90,0.12)', border: 'rgba(201,160,90,0.25)' }
+    }
+    if (d.method === 'native') {
+      return { text: 'Détection : repères du navigateur', color: '#22c55e', bg: 'rgba(34,197,94,0.10)', border: 'rgba(34,197,94,0.25)' }
+    }
+    if (d.method === 'face-api') {
+      return { text: `Détection : face-api${d.score != null ? ` · ${d.score.toFixed(2)}` : ''}`, color: '#22c55e', bg: 'rgba(34,197,94,0.10)', border: 'rgba(34,197,94,0.25)' }
+    }
+    return null
+  })()
   // Le mode reste disponible même quand les 3 repères sont posés : il sert alors
   // à REPOSITIONNER finement un repère déjà en place (lunettes, reflets…), ce qui
   // est précisément le cas où l'on veut vérifier à la loupe.
@@ -769,6 +790,15 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       )}
 
       {/* Calibration info row */}
+      {/* Vérité de la détection — n'affiche QUE ce que les bandeaux ci-dessus ne disent
+          pas : quelle méthode a réellement produit les repères. */}
+      {detectLabel && (
+        <div data-detect="method" className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs"
+          style={{ background: detectLabel.bg, color: detectLabel.color, border: `1px solid ${detectLabel.border}` }}>
+          {detectLabel.color === '#22c55e' ? <Check size={14} /> : <AlertTriangle size={14} />}
+          <span>{detectLabel.text}</span>
+        </div>
+      )}
       <div className="flex items-stretch gap-1.5 flex-wrap">
         <span className="self-center text-[10px] font-medium" style={{ color: 'var(--color-gold)' }}>Calibrage :</span>
         <span className="self-center text-xs" style={{ color: 'var(--color-text-muted)' }}>
