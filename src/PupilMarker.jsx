@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { ChevronLeft, RotateCcw, ZoomIn, Camera, Check, Loader2, AlertTriangle } from 'lucide-react'
 import BoxingRect from './BoxingRect'
+import PrecisionLoupe from './components/PrecisionLoupe'
 import MeasureRuler from './components/MeasureRuler'
 import { detectFace } from './core/faceDetection'
 import { calculateMonocularPD, calculatePont, calculateBoxingDimensions, getDefaultBoxSize as coreDefaultBoxSize, mirrorBox, resolveLensDiameter, DEFAULT_LENS_DIAMETER_MM, isFrontMeasurementReady } from './core/optics'
@@ -621,13 +622,10 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   const qualityIssues = quality.filter((c) => c.level !== 'ok').length
 
   // ── Loupe de précision ──────────────────────────────────────────────────────
-  // Bulle grossissante qui suit le marqueur pendant le drag. Le point de mesure
-  // reste EXACTEMENT au centre : on peut viser le centre de la pupille au pixel.
-  // Purement visuelle (pointerEvents: none) → ne déplace jamais la mesure.
-  const LOUPE_R = 62
+  // Instrument PARTAGÉ (components/PrecisionLoupe) : la même loupe sert ici et à
+  // l'écran de calibrage. Champ de 12 mm pendant un glissement, resserré à 8 mm en
+  // visée — on cherche alors le centre de la pupille, pas l'œil entier.
   const renderLoupe = (dr, aimPoint) => {
-    // `aimPoint` = { pos, color, label } → pointage assisté (aucun glissement en cours).
-    // Sans lui, la loupe suit le repère en cours de glissement (comportement historique).
     let pos = null, color = null, label = null
     if (aimPoint) {
       pos = aimPoint.pos; color = aimPoint.color; label = aimPoint.label
@@ -637,65 +635,12 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       color = id === 'bridge' ? BRIDGE_COLOR : id === 'left' ? PUPIL_L_COLOR : PUPIL_R_COLOR
       label = id === 'bridge' ? 'Nez' : id === 'left' ? 'OD' : 'OG'
     }
-    if (!pos || !imageSize || !imageUrl) return null
-    // Champ de vision PHYSIQUE constant (12 mm de côté) : la précision visée ne
-    // dépend ni de la résolution de la photo ni de la taille d'affichage.
-    // Sans calibrage, on se rabat sur 6 % de la largeur de l'image.
-    const mmPerPx = calibration?.scalePxToMm || null
-    // En visée, champ plus serré : on cherche le centre de la pupille, pas l'œil entier.
-    const SPAN_MM = aimPoint ? 8 : 12
-    const spanPx = mmPerPx ? SPAN_MM / mmPerPx : imageSize.width * 0.06
-    const zoom = Math.min(20, Math.max(1, (LOUPE_R * 2) / Math.max(spanPx, 1)))
-    const cx = (pos.x / imageSize.width) * dr.width
-    const cy = (pos.y / imageSize.height) * dr.height
-    // Au-dessus du doigt, bascule en dessous s'il n'y a pas la place
-    const above = cy > LOUPE_R * 2 + 30
-    const by = above ? cy - LOUPE_R - 40 : cy + LOUPE_R + 40
-    const maxX = Math.max(LOUPE_R + 6, dr.width - LOUPE_R - 6)
-    const bx = Math.min(Math.max(cx, LOUPE_R + 6), maxX)
+    if (!pos) return null
     return (
-      <div data-loupe="1" style={{
-        position: 'absolute', left: bx, top: by,
-        width: LOUPE_R * 2, height: LOUPE_R * 2,
-        transform: 'translate(-50%, -50%)',
-        borderRadius: '50%', overflow: 'hidden',
-        border: `2px solid ${color}`,
-        boxShadow: '0 8px 28px rgba(0,0,0,0.8), 0 0 0 1px rgba(0,0,0,0.6)',
-        backgroundImage: `url(${imageUrl})`,
-        backgroundSize: `${imageSize.width * zoom}px ${imageSize.height * zoom}px`,
-        backgroundPosition: `${LOUPE_R - pos.x * zoom}px ${LOUPE_R - pos.y * zoom}px`,
-        backgroundRepeat: 'no-repeat',
-        zIndex: 60, pointerEvents: 'none',
-      }}>
-        {/* Réticule — le point mesuré est pile au centre */}
-        <div style={{ position: 'absolute', left: '50%', top: '50%', width: 30, height: 1,
-          background: 'rgba(255,255,255,0.85)', transform: 'translate(-50%,-50%)' }} />
-        <div style={{ position: 'absolute', left: '50%', top: '50%', width: 1, height: 30,
-          background: 'rgba(255,255,255,0.85)', transform: 'translate(-50%,-50%)' }} />
-        <div style={{ position: 'absolute', left: '50%', top: '50%', width: 40, height: 40,
-          border: '1px solid rgba(255,255,255,0.25)', borderRadius: '50%', transform: 'translate(-50%,-50%)' }} />
-        <div style={{ position: 'absolute', left: '50%', top: '50%', width: 4, height: 4,
-          background: color, borderRadius: '50%', transform: 'translate(-50%,-50%)',
-          boxShadow: '0 0 4px rgba(0,0,0,0.9)' }} />
-        {/* Cale étalon : 1 mm à l'échelle de la photo — la loupe reste un instrument */}
-        {mmPerPx && (() => {
-          const barW = Math.max(6, (1 / mmPerPx) * zoom)
-          return (
-            <div data-mm-bar={barW.toFixed(2)} style={{ position: 'absolute', left: 9, top: '50%',
-              transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: 4 }}>
-              <div style={{ width: barW, height: 7, borderLeft: '1px solid #fff',
-                borderRight: '1px solid #fff', borderBottom: '1px solid #fff', opacity: 0.9 }} />
-              <span style={{ fontSize: 8, fontWeight: 600, color: '#fff',
-                textShadow: '0 1px 3px rgba(0,0,0,0.95)' }}>1 mm</span>
-            </div>
-          )
-        })()}
-        {/* Étiquette */}
-        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 6, textAlign: 'center',
-          fontSize: 10, fontWeight: 700, color: '#fff', textShadow: '0 1px 3px rgba(0,0,0,0.95)' }}>
-          {label} · {aimPoint ? 'relâcher pour poser' : mmPerPx ? `${SPAN_MM} mm` : `${Math.round(spanPx)} px`}
-        </div>
-      </div>
+      <PrecisionLoupe dr={dr} imageSize={imageSize} imageUrl={imageUrl} pos={pos}
+        color={color} label={label} mmPerPx={calibration?.scalePxToMm || null}
+        spanMm={aimPoint ? 8 : 12}
+        hint={aimPoint ? 'relâcher pour poser' : null} />
     )
   }
 

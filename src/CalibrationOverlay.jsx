@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { RotateCcw, Check, SkipForward, AlertTriangle, Loader2, Settings2, Camera, Ruler } from 'lucide-react'
+import { RotateCcw, Check, SkipForward, AlertTriangle, Loader2, Settings2, Camera, Ruler, ZoomIn } from 'lucide-react'
 import { analyzeCalibration } from './services/api'
 import { resolveValidatedCalibration } from './core/optics'
 import { calibrateFromKnownDistance } from './core/noClipCalibration'
+import PrecisionLoupe from './components/PrecisionLoupe'
 
 export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onRetake, initialPoints }) {
   const [points, setPoints] = useState([])
@@ -22,6 +23,15 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
   const [noClipMode, setNoClipMode] = useState(false)
   const [noClipPoints, setNoClipPoints] = useState([]) // max 2 points
   const [noClipKnownMm, setNoClipKnownMm] = useState(50)
+
+  // ── Pointage assisté ────────────────────────────────────────────────────────
+  // Le calibrage est l'étape la plus sensible de la chaîne : son échelle se
+  // répercute sur TOUTES les mesures. Le doigt masquant le bord de la cale qu'il
+  // vise, on vise d'abord (loupe) et on pose au relâchement.
+  // `null` = automatique (l'échec de la détection l'active), true/false = choix
+  // explicite de l'utilisateur, qui prime.
+  const [assistOverride, setAssistOverride] = useState(null)
+  const [aim, setAim] = useState(null)   // { pos, mode: 'points' | 'noclip' }
 
   // Rectangle réellement affiché à l'écran — source unique pour les coordonnées
   const getImageDisplayRect = useCallback(() => {
@@ -115,12 +125,48 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
     })()
   }, [imageUrl, markerSpacing])
 
+  const assistOn = assistOverride ?? autoFailed
+
+  // Pose effective d'un repère de calibrage (3 au maximum).
+  const addPoint = (pt) => {
+    const cp = pointsRef.current
+    if (cp.length >= 3) return
+    const newPoints = [...cp, pt]
+    manuallyAdjustedRef.current = true
+    setPoints(newPoints)
+    if (newPoints.length === 3) setDebugInfo(calculateScale(newPoints, markerSpacing))
+  }
+
+  // Le relâchement pose, selon le mode en cours (repères ou « sans clip »).
+  const applyAim = (pt) => {
+    if (aim && aim.mode === 'noclip') {
+      setNoClipPoints(prev => (prev.length >= 2 ? prev : [...prev, pt]))
+    } else {
+      addPoint(pt)
+    }
+    setAim(null)
+  }
+
+  const handleContainerPointerMove = (e) => {
+    if (!assistOn || !aim) return
+    const c = toImageCoords(e.clientX, e.clientY)
+    if (c) setAim((a) => ({ pos: { x: Math.round(c.x), y: Math.round(c.y) }, mode: a && a.mode }))
+  }
+
+  const handleContainerPointerUp = (e) => {
+    if (!assistOn || !aim) return
+    const c = toImageCoords(e.clientX, e.clientY)
+    applyAim(c ? { x: Math.round(c.x), y: Math.round(c.y) } : aim.pos)
+  }
+
   const handleContainerPointerDown = (e) => {
     // ── Mode « sans clip » : placer 2 points sur une distance connue ──
     if (noClipMode) {
       const coords = toImageCoords(e.clientX, e.clientY)
       if (!coords) return
-      setNoClipPoints(prev => (prev.length >= 2 ? prev : [...prev, coords]))
+      const pt = { x: Math.round(coords.x), y: Math.round(coords.y) }
+      if (assistOn) { setAim({ pos: pt, mode: 'noclip' }); return }
+      setNoClipPoints(prev => (prev.length >= 2 ? prev : [...prev, pt]))
       return
     }
 
@@ -144,12 +190,10 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
     if (cp.length >= 3) return // all 3 placed → tap outside does nothing
     const coords = toImageCoords(e.clientX, e.clientY)
     if (!coords) return
-    const newPoints = [...cp, coords]
-    manuallyAdjustedRef.current = true
-    setPoints(newPoints)
-    if (newPoints.length === 3) {
-      setDebugInfo(calculateScale(newPoints, markerSpacing))
-    }
+    const pt = { x: Math.round(coords.x), y: Math.round(coords.y) }
+    // Pointage assisté : on VISE d'abord, on POSE au relâchement.
+    if (assistOn) { setAim({ pos: pt, mode: 'points' }); return }
+    addPoint(pt)
   }
 
   // Window-level drag listeners
@@ -230,6 +274,12 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
               <Camera size={12} /> Reprendre
             </button>
           )}
+          <button onClick={() => setAssistOverride(!assistOn)} data-tool="assist" data-assist={assistOn ? '1' : '0'}
+            title="Poser les repères à la loupe : on vise, on relâche"
+            className="flex items-center gap-1 text-xs transition-all hover:opacity-80"
+            style={{ color: assistOn ? 'var(--color-gold)' : 'var(--color-text)' }}>
+            <ZoomIn size={12} /> Pointage assisté{assistOn ? ' ✓' : ''}
+          </button>
           <button onClick={onSkip} className="flex items-center gap-1 text-xs transition-all hover:opacity-80" style={{ color: 'var(--color-text-muted)' }}>
             <SkipForward size={12} /> Passer
           </button>
@@ -272,6 +322,10 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
           lineHeight: 0,
         }}
         onPointerDown={handleContainerPointerDown}
+        onPointerMove={handleContainerPointerMove}
+        onPointerUp={handleContainerPointerUp}
+        onPointerCancel={() => setAim(null)}
+        onPointerLeave={() => setAim(null)}
       >
         <img ref={imageRef} src={imageUrl} alt="Calibrage" className="block"
           style={{ maxHeight: '60vh', width: 'auto', touchAction: 'none' }}
@@ -282,6 +336,18 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
           const dr = getImageDisplayRect()
           return (
             <div style={{ position: 'absolute', left: dr.left, top: dr.top, width: dr.width, height: dr.height, zIndex: 10 }}>
+              {/* La loupe : pendant la VISÉE, et pendant le glissement d'un repère déjà posé.
+                  Aucune échelle n'est encore validée ici → pas de cale 1 mm (on n'afficherait
+                  pas un instrument sur une échelle inventée) ; champ resserré à 1,5 %. */}
+              <PrecisionLoupe dr={dr} imageSize={imageSize} imageUrl={imageUrl}
+                pos={aim?.pos || (dragTarget ? points[dragTarget.index] : null)}
+                color={noClipMode ? '#06b6d4' : '#c9a05a'}
+                label={dragTarget ? `Repère ${dragTarget.index + 1}`
+                  : noClipMode ? 'Sans clip'
+                  : `Repère ${Math.min(points.length + 1, 3)}`}
+                fallbackPct={1.5}
+                hint={aim ? 'relâcher pour poser' : null} />
+
               {points.map((p, i) => {
                 const leftPct = (p.x / imageSize.width) * 100
                 const topPct = (p.y / imageSize.height) * 100
