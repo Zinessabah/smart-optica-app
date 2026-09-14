@@ -231,4 +231,16 @@ describe('PupilMarker — loupe de précision', () => {
     expect(top).toBeLessThanOrEqual(80)      // remontée au bord, pas basculée dessous
     fireEvent.pointerUp(window)
   })
+
+  it('le repère est centré SEUL sur la mesure — le libellé reste hors flux', async () => {
+    const { container, handle } = await mountWithMarkers()
+    const marqueur = container.querySelector('[data-markerid="left"]').parentElement
+    const label = marqueur.querySelector('[data-marker-label]')
+    const ancre = marqueur.querySelector('[data-reticle-anchor]')
+    expect(label).toBeTruthy()
+    expect(ancre).toBeTruthy()
+    expect(label.style.position).toBe('absolute')          // hors flux
+    expect(ancre.style.transform).toContain('translate(-50%, -50%)')
+    expect(handle).toBeTruthy()
+  })
 })

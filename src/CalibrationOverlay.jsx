@@ -359,19 +359,34 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
                   : `Repère ${Math.min(points.length + 1, 3)}`}
                 fallbackPct={1.5}
                 reticle={reticleNode(!!dragTarget)} reticleSize={22}
-                hint={aim ? 'relâcher pour poser' : null} />
+                hint={aim ? 'relâcher' : null} />
 
               {points.map((p, i) => {
                 const leftPct = (p.x / imageSize.width) * 100
                 const topPct = (p.y / imageSize.height) * 100
                 const isDragging = dragTarget?.index === i
                 return (
-                  <div key={i} className="absolute transform -translate-x-1/2 -translate-y-1/2 transition-none"
-                    style={{ left: `${leftPct}%`, top: `${topPct}%`, zIndex: isDragging ? 30 : 10, cursor: 'grab' }}
+                  <div key={i} className="absolute transition-none"
+                    style={{ left: `${leftPct}%`, top: `${topPct}%`, zIndex: isDragging ? 30 : 10 }}
                     data-markerid={i}>
-                    {reticleNode(isDragging)}
-                    <div className="text-[10px] text-center mt-1 font-bold tracking-wider px-1 rounded-sm"
+                    {/* Cible tactile 44 px, centrée sur le point (invisible) */}
+                    <div style={{ position: 'absolute', left: 0, top: 0, width: 44, height: 44,
+                      transform: 'translate(-50%, -50%)', cursor: 'grab' }} />
+
+                    {/* Le repère est centré SEUL sur le point. Le libellé était dans le même
+                        conteneur : le −50 % se calculait alors sur repère + libellé, ce qui
+                        dessinait le réticule ~10 px AU-DESSUS de la mesure qu'il représente —
+                        on visait un bord de cale et le point enregistré était plus bas. */}
+                    <div data-reticle-anchor="1" style={{ position: 'absolute', left: 0, top: 0,
+                      transform: 'translate(-50%, -50%)', pointerEvents: 'none' }}>
+                      {reticleNode(isDragging)}
+                    </div>
+
+                    {/* Libellé SOUS le point, hors flux : ne participe plus au centrage */}
+                    <div data-marker-label="1" className="text-[10px] text-center font-bold tracking-wider px-1 rounded-sm"
                       style={{
+                        position: 'absolute', left: 0, top: 14,
+                        transform: 'translateX(-50%)', whiteSpace: 'nowrap',
                         color: isDragging ? '#ff2dd0' : 'rgba(255,255,255,0.8)',
                         background: 'rgba(10, 10, 12, 0.6)',
                         border: '1px solid rgba(255, 255, 255, 0.1)',

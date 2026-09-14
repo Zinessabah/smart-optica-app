@@ -651,7 +651,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
         color={color} label={label} mmPerPx={calibration?.scalePxToMm || null}
         reticle={reticleNode(color)} reticleSize={22}
         spanMm={aimPoint ? 8 : 12}
-        hint={aimPoint ? 'relâcher pour poser' : null} />
+        hint={aimPoint ? 'relâcher' : null} />
     )
   }
 
@@ -672,7 +672,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       pointerEvents: 'none',
     }}>
       {/* Réticule de précision — le centre est le point de mesure */}
-      <div style={{
+      <div data-reticle-anchor="1" style={{
         position: 'absolute',
         left: 0, top: 0,
         transform: 'translate(-50%, -50%)',
@@ -693,7 +693,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
       }} />
 
       {/* Étiquette — SOUS le point, jamais dessus */}
-      <div style={{
+      <div data-marker-label="1" style={{
         position: 'absolute', left: 0, top: 13,
         transform: 'translateX(-50%)',
         fontSize: '9px', fontWeight: 700, color: color,

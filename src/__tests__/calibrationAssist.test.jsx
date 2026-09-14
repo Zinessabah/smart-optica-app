@@ -146,4 +146,25 @@ describe('CalibrationOverlay — pointage assisté', () => {
     const top = parseFloat(container.querySelector('[data-loupe]').style.top)
     expect(top).toBeLessThanOrEqual(80)
   })
+
+  it('le repère est centré SEUL sur la mesure — le libellé reste hors flux', async () => {
+    const { container, stage } = await mount()
+    await waitFor(() => expect(container.querySelector('button[data-tool="assist"]').dataset.assist).toBe('1'))
+
+    fireEvent.pointerDown(stage, { clientX: 200, clientY: 300 })
+    fireEvent.pointerUp(stage, { clientX: 200, clientY: 300 })
+    await waitFor(() => expect(container.querySelector('[data-markerid="0"]')).toBeTruthy())
+
+    const marqueur = container.querySelector('[data-markerid="0"]')
+    const label = marqueur.querySelector('[data-marker-label]')
+    const ancre = marqueur.querySelector('[data-reticle-anchor]')
+    expect(label).toBeTruthy()
+    expect(ancre).toBeTruthy()
+
+    // Dans le flux, le libellé entrerait dans le −50 % du centrage : le réticule se
+    // dessinerait ~10 px AU-DESSUS du point enregistré (on visait un bord de cale,
+    // le point retenu était plus bas).
+    expect(label.style.position).toBe('absolute')
+    expect(ancre.style.transform).toContain('translate(-50%, -50%)')
+  })
 })
