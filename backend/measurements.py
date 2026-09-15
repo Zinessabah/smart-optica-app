@@ -8,6 +8,7 @@ import shutil
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query, Form
+from image_quality import validate_image_bytes
 from pydantic import BaseModel
 from sqlalchemy import String, Text, DateTime, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -129,8 +130,17 @@ def _save_upload(user_id: str, measurement_id: str, file: UploadFile, kind: str)
     os.makedirs(user_dir, exist_ok=True)
     fname = f"{measurement_id}_{kind}{ext}"
     dest = os.path.join(user_dir, fname)
+    # MÊME porte de qualité que les endpoints d'analyse. Sans elle, un envoi vide
+    # était écrit tel quel : origine des fichiers de 0 octet trouvés dans les
+    # uploads (2 sur 6 photos distinctes).
+    try:
+        file.file.seek(0)
+    except Exception:
+        pass
+    data = file.file.read()
+    validate_image_bytes(data)
     with open(dest, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+        f.write(data)
     return os.path.relpath(dest, UPLOAD_ROOT)  # ex: {user_id}/{id}_face.png
 
 

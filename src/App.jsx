@@ -227,7 +227,7 @@ export default function App() {
                 Patient avec le clip de calibration
               </p>
             </div>
-            <PhotoPicker onCapture={handleCapture} onCancel={handleReset} initialMode={photoSource} />
+            <PhotoPicker onCapture={handleCapture} onCancel={handleReset} initialMode={photoSource} kind="face" />
           </div>
         )}
 
@@ -245,7 +245,7 @@ export default function App() {
                 Patient de profil — angle pantoscopique & vertex
               </p>
             </div>
-            <PhotoPicker onCapture={handleProfileCapture} onCancel={() => setStep('photo')} initialMode={photoSource === 'camera' ? 'camera' : 'upload'} />
+            <PhotoPicker onCapture={handleProfileCapture} onCancel={() => setStep('photo')} initialMode={photoSource === 'camera' ? 'camera' : 'upload'} kind="profile" />
           </div>
         )}
 

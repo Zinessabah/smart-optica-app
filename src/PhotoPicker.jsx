@@ -2,6 +2,7 @@ import { useState, useRef, useCallback } from 'react'
 import { Camera, Upload, ArrowLeft, AlertTriangle } from 'lucide-react'
 import Webcam from './Webcam'
 import { scoreSharpness, scoreExposure, decidePhotoQuality, photoQualityMessage } from './core/photoQuality'
+import { resolutionError, readImageSize } from './core/photoChecks'
 
 // Analyse la qualité d'une image dataURL → 'good' | 'blurry' | 'too_dark' | 'too_bright'
 function analyzeDataUrlQuality(dataUrl) {
@@ -27,7 +28,7 @@ function analyzeDataUrlQuality(dataUrl) {
   })
 }
 
-export default function PhotoPicker({ onCapture, onCancel, initialMode }) {
+export default function PhotoPicker({ onCapture, onCancel, initialMode, kind = 'face' }) {
   const [mode, setMode] = useState(initialMode || null) // null=sélection, 'camera', 'upload'
   const [error, setError] = useState(null)
   const fileInputRef = useRef(null)
@@ -48,6 +49,18 @@ export default function PhotoPicker({ onCapture, onCancel, initialMode }) {
     setError(null)
     try {
       const dataUrl = await readFile(file)
+
+      // Résolution AVANT tout le reste : inutile d'analyser le flou d'une photo qui
+      // ne pourra jamais tenir la précision demandée. Le serveur applique la même
+      // règle sur les octets reçus — c'est lui qui fait foi.
+      const { width, height } = await readImageSize(dataUrl)
+      const tropPetite = resolutionError(width, height, kind)
+      if (tropPetite) {
+        setError(tropPetite)
+        e.target.value = ''
+        return
+      }
+
       // Contrôle qualité (flou / exposition) avant acceptation
       const verdict = await analyzeDataUrlQuality(dataUrl)
       if (verdict !== 'good') {
@@ -59,7 +72,7 @@ export default function PhotoPicker({ onCapture, onCancel, initialMode }) {
       setError(err.message)
     }
     e.target.value = ''
-  }, [onCapture, readFile])
+  }, [onCapture, readFile, kind])
 
   // Webcam
   if (mode === 'camera') {

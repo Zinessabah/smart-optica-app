@@ -25,6 +25,12 @@ from lateral import (
     field_width_mm,
     LATERAL_MARKER_SPACING_MM_NEW,
 )
+from image_quality import (
+    check_resolution,
+    validate_image_bytes,
+    KIND_FACE,
+    KIND_PROFILE,
+)
 from geometry import reproject_points
 
 logging.basicConfig(level=logging.INFO)
@@ -122,18 +128,9 @@ class ProfileResult(BaseModel):
 
 
 def decode_image(data: bytes) -> np.ndarray:
-    # Validation MIME réelle par signature (magic bytes) — pas seulement l'extension.
-    if not data or len(data) < 12:
-        raise HTTPException(400, "Fichier vide ou trop court")
-    # JPEG: FF D8 FF ; PNG: 89 50 4E 47 ; WebP: RIFF....WEBP
-    if data[:3] == b"\xff\xd8\xff":
-        pass
-    elif data[:8] == b"\x89PNG\r\n\x1a\n":
-        pass
-    elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        pass
-    else:
-        raise HTTPException(400, "Type de fichier non autorisé (JPEG/PNG/WebP uniquement)")
+    # Validation partagée (image_quality) — la MÊME que celle de la sauvegarde des
+    # photos : signature réelle, jamais l'extension.
+    validate_image_bytes(data)
     arr = np.frombuffer(data, np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
@@ -653,6 +650,7 @@ async def analyze_calibration(file: UploadFile = File(...)):
     contents = await file.read()
     img = decode_image(contents)
     h, w, _ = img.shape
+    check_resolution(w, h, KIND_FACE)
 
     result = detect_calibration_markers(img)
 
@@ -672,6 +670,7 @@ async def analyze(file: UploadFile = File(...)):
     contents = await file.read()
     img = decode_image(contents)
     h, w, _ = img.shape
+    check_resolution(w, h, KIND_FACE)
 
     # Conversion RGB pour MediaPipe Tasks
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -914,6 +913,7 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
     contents = await file.read()
     img = decode_image(contents)
     h, w, _ = img.shape
+    check_resolution(w, h, KIND_PROFILE)
 
     log.info(f"[analyze-profile] 📥 image {w}×{h}, scale_in={scale_mm_per_px}")
     if scale_mm_per_px:

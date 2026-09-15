@@ -14,6 +14,44 @@
  */
 
 // ── Seuils (documentés, indicatifs — ce ne sont pas des corrections) ──────────
+// ── Résolution minimale, en pixels sur le GRAND côté ────────────────────────
+// Non arbitraire : voir la dérivation complète dans backend/image_quality.py.
+//   L'erreur relative d'échelle vaut  pointé_mire / écartement_px. À 1 px de pointé
+//   et 0,3 mm de budget d'échelle sur une DP de 65 mm (0,46 %), il faut ~217 px
+//   entre les deux mires.
+//     · mires faciale  50 mm · champ ~400 mm → 12,5 % de la largeur → ~1740 px
+//     · mires latérales 25 mm · champ ~300 mm →  8,3 % de la largeur → ~2600 px
+//   Le grand côté est utilisé : indépendant de l'orientation, donc de la rotation EXIF.
+// ⚠️ Ces valeurs DOIVENT rester égales à celles de backend/image_quality.py —
+//    un test de contrat le vérifie (src/__tests__/resolutionContract.test.js).
+export const MIN_LONG_SIDE_FACE = 2000
+export const MIN_LONG_SIDE_PROFILE = 2600
+
+/**
+ * Message d'erreur si la résolution est insuffisante, null sinon.
+ * Même formulation que le serveur : c'est la même règle des deux côtés.
+ */
+export function resolutionError(width, height, kind = 'face') {
+  const seuil = kind === 'profile' ? MIN_LONG_SIDE_PROFILE : MIN_LONG_SIDE_FACE
+  const grand = Math.max(width || 0, height || 0)
+  if (!grand) return "Dimensions de l'image illisibles"
+  if (grand >= seuil) return null
+  const nom = kind === 'profile' ? 'latérale' : 'faciale'
+  return `Résolution insuffisante pour la photo ${nom} : ${width}×${height}. ` +
+    `Le grand côté doit atteindre ${seuil} px pour garantir la précision de ±0,5 mm ` +
+    `— il en fait ${grand}.`
+}
+
+/** Dimensions réelles du fichier, une fois décodé par le navigateur. */
+export function readImageSize(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight })
+    img.onerror = () => reject(new Error('Image illisible'))
+    img.src = dataUrl
+  })
+}
+
 export const SHARPNESS_MIN_RATIO = 0.25   // netteté des yeux / bloc le plus net
 export const ROLL_WARN_DEG = 3            // inclinaison de l'axe interpupillaire
 export const BRIDGE_OFFSET_WARN_PCT = 15  // décalage du pont, en % de la DP
