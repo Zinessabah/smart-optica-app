@@ -21,6 +21,9 @@ import os
 from lateral import (
     detect_lateral_markers as _detect_lateral,
     LATERAL_MARKER_SPACING_MM,
+    pair_is_plausible,
+    field_width_mm,
+    LATERAL_MARKER_SPACING_MM_NEW,
 )
 from geometry import reproject_points
 
@@ -935,12 +938,25 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
     # 2. Échelle — priorité à l'échelle calibration frontale
     d_px = np.linalg.norm(np.array(markers_px[0]) - np.array(markers_px[1]))
     scale_from_markers = effective_spacing / d_px
-    scale_consistent = True
+
+    # Le contrôle porte D'ABORD sur la géométrie, pas sur la comparaison avec une
+    # autre échelle : un couple de mires qui implique un champ hors
+    # [FIELD_MIN_MM, FIELD_MAX_MM] n'est pas le clip. Sans ce test,
+    # scale_consistent restait True par défaut faute d'échelle frontale à
+    # comparer — et a validé un champ de 2,7 m sur une vraie photo de profil.
+    scale_plausible = pair_is_plausible(d_px, effective_spacing, w, h)
+    scale_consistent = scale_plausible
+    if not scale_plausible:
+        log.warning(
+            "[analyze-profile] ⛔ échelle des mires invraisemblable : "
+            f"{d_px:.0f}px → champ de "
+            f"{field_width_mm(d_px, LATERAL_MARKER_SPACING_MM, w, h):.0f}mm")
+
     if scale_mm_per_px:
         scale = scale_mm_per_px
         # Validation croisée : l'échelle des mires doit être cohérente avec la frontale
         dev = abs(scale_from_markers - scale) / scale
-        scale_consistent = dev <= 0.10
+        scale_consistent = scale_plausible and dev <= 0.10
         log.info(f"[analyze-profile] échelle mires={scale_from_markers:.4f} vs frontale={scale:.4f} (écart {dev*100:.1f}%, cohérente={scale_consistent})")
     else:
         scale = scale_from_markers

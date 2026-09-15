@@ -32,6 +32,50 @@ log = logging.getLogger("smart-optica")
 
 LATERAL_MARKER_DIAMETER_MM = 4.0      # diamètre des mires (les deux designs)
 LATERAL_MARKER_SPACING_MM = 25.0      # clip actuel : cercles noirs à 25 mm
+
+# ── Plausibilité géométrique du couple de mires ──────────────────────────────
+# Un couple de mires distantes de S mm IMPLIQUE un champ photographié physique.
+# Sur une photo de profil qui cadre la tête et la branche, ce champ va d'environ
+# 150 mm (cadrage serré) à 1000 mm (cadrage large) sur le grand côté de l'image.
+# Hors de ces bornes, ce n'est pas le clip : ce sont deux taches sombres
+# quelconques. Cas réel mesuré : 37 px pour 25 mm → champ de 2,7 m, absurde.
+#
+# Ce contrôle est RELATIF à la taille de l'image, donc indépendant de la
+# résolution et valable sur tout appareil, du téléphone à l'iPad.
+FIELD_MIN_MM = 150.0
+FIELD_MAX_MM = 1000.0
+
+
+def field_width_mm(spacing_px: float, spacing_mm: float,
+                   img_w: int, img_h: int) -> float:
+    """Largeur du champ photographié (mm) déduite d'un couple de mires."""
+    if spacing_px is None or spacing_px <= 0:
+        return float("inf")
+    return max(img_w, img_h) * (spacing_mm / spacing_px)
+
+
+def pair_is_plausible(spacing_px: float, spacings_mm, img_w: int, img_h: int) -> bool:
+    """Le couple de mires implique-t-il un champ physiquement crédible ?
+
+    Accepte dès qu'UN des espacements candidats (25 mm clip actuel, 35 mm
+    nouveau clip) donne un champ plausible : on ne veut pas rejeter un clip
+    légitime parce qu'on a supposé le mauvais modèle.
+    """
+    if isinstance(spacings_mm, (int, float)):
+        spacings_mm = (spacings_mm,)
+    for s_mm in spacings_mm:
+        champ = field_width_mm(spacing_px, s_mm, img_w, img_h)
+        if FIELD_MIN_MM <= champ <= FIELD_MAX_MM:
+            return True
+    return False
+
+
+def spacing_px_bounds(spacings_mm, img_w: int, img_h: int):
+    """Bornes d'écartement en pixels, pour diagnostic et tests."""
+    long_side = max(img_w, img_h)
+    low = min(s * long_side / FIELD_MAX_MM for s in spacings_mm)
+    high = max(s * long_side / FIELD_MIN_MM for s in spacings_mm)
+    return low, high
 LATERAL_MARKER_SPACING_MM_NEW = 35.0  # nouveau design v3/v4 : 35 mm le long du bras
 
 Point = Tuple[int, int]
@@ -488,7 +532,20 @@ def detect_lateral_markers(image: np.ndarray, landmarker=None,
         markers = _detect_marker_pair_in_roi(gray, roi, expected_radius,
                                              expected_spacing)
         if markers:
-            spacing_mm = _derive_spacing_mm(markers, known_scale)
+            d_px = math.hypot(markers[1][0] - markers[0][0],
+                              markers[1][1] - markers[0][1])
+            # Vérifier avec l'espacement RÉELLEMENT retenu par _derive_spacing_mm : juger
+            # « plausible pour 25 OU 35 » laissait passer un couple de 732 px annoncé à
+            # 25 mm, soit un champ de 138 mm — tout aussi impossible que les 2,7 m.
+            spacing_essai = _derive_spacing_mm(markers, known_scale)
+            if not pair_is_plausible(d_px, spacing_essai, w, h):
+                lo, hi = spacing_px_bounds((LATERAL_MARKER_SPACING_MM, LATERAL_MARKER_SPACING_MM_NEW), w, h)
+                log.warning(f"  [lateral] ⛔ Cercles noirs REJETÉS : {d_px:.0f}px pour "
+                            f"{spacing_essai:.0f}mm → champ de "
+                            f"{field_width_mm(d_px, spacing_essai, w, h):.0f}mm "
+                            f"(écartement attendu {lo:.0f}-{hi:.0f}px). Ce n'est pas le clip.")
+                continue
+            spacing_mm = spacing_essai
             diag.path = "dark_circles"
             diag.roi_used = roi
             diag.spacing_mm_detected = spacing_mm
@@ -502,6 +559,15 @@ def detect_lateral_markers(image: np.ndarray, landmarker=None,
         markers, spacing_mm = _detect_checkerboard_pair_in_roi(
             gray, integral, w, h, roi, known_scale)
         if markers:
+            d_px = math.hypot(markers[1][0] - markers[0][0],
+                              markers[1][1] - markers[0][1])
+            if not pair_is_plausible(d_px, spacing_mm, w, h):
+                lo, hi = spacing_px_bounds((LATERAL_MARKER_SPACING_MM, LATERAL_MARKER_SPACING_MM_NEW), w, h)
+                log.warning(f"  [lateral] ⛔ Damier REJETÉ : {d_px:.0f}px pour "
+                            f"{spacing_mm:.0f}mm → champ de "
+                            f"{field_width_mm(d_px, spacing_mm, w, h):.0f}mm "
+                            f"(écartement attendu {lo:.0f}-{hi:.0f}px). Ce n'est pas le clip.")
+                continue
             diag.path = "checkerboard"
             diag.roi_used = roi
             diag.spacing_mm_detected = spacing_mm
@@ -509,5 +575,5 @@ def detect_lateral_markers(image: np.ndarray, landmarker=None,
                      f"(ROI {roi}): {markers}")
             return markers, diag
 
-    log.info("  [lateral] ❌ Aucune paire trouvée")
+    log.info("  [lateral] ❌ Aucune paire PLAUSIBLE trouvée — aucune échelle ne sera déduite (mieux vaut un échec explicite qu'une mesure inventée)")
     return [], diag
