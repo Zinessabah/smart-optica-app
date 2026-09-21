@@ -32,6 +32,22 @@ const octagonPoints = (r) => Array.from({ length: 8 }, (_, k) => {
 }).join(' ')
 const HANDLE_OCTAGON = octagonPoints(HANDLE_R)
 
+// Forme lentille de contact pour l'extrémité cornée (vertex index 0).
+// Courbe convexe côté cornée, base plate côté verre — signature optique.
+const contactLensPath = (r = HANDLE_R) => {
+  // r = rayon de référence (~11.5). La lentille est légèrement plus large que haute.
+  const w = r * 1.35   // largeur ~15.5 px
+  const h = r * 0.9    // hauteur ~10.4 px
+  const curve = h * 0.65  // courbure convexe
+  return `M ${-w} 0
+    Q ${-w * 0.5} ${-curve} 0 ${-h * 0.5}
+    Q ${w * 0.5} ${-curve} ${w} 0
+    L ${w * 0.7} ${h * 0.35}
+    Q 0 ${h * 0.6} ${-w * 0.7} ${h * 0.35}
+    Z`
+}
+const CONTACT_LENS_PATH = contactLensPath()
+
 // 4 chevrons fins = affordance « déplacer » (notre style, ≠ le ✥ plein d'OptiFest).
 // Tracés dans un repère de référence r=18 puis mis à l'échelle → suivent toute
 // modification de taille de l'octogone.
@@ -109,6 +125,38 @@ function handleShape(color, isDragging, dx, dy, angle) {
         <circle r="1.7" fill={color} />
       </g>
       {/* zone tactile du point (48 px) + réticule exact */}
+      <rect x={-HANDLE_HALF} y={-HANDLE_HALF} width={2 * HANDLE_HALF} height={2 * HANDLE_HALF}
+        fill="none" pointerEvents="all" />
+      {pointReticle(color)}
+    </>
+  )
+}
+
+// Forme lentille de contact — utilisée pour l'extrémité cornée (vertex index 0).
+// Même segment de liaison + zone tactile, mais forme de lentille au lieu d'octogone.
+function contactLensShape(color, isDragging, dx, dy) {
+  const onPoint = dx === 0 && dy === 0
+  const len = Math.hypot(dx, dy)
+  const ux = len ? dx / len : 0
+  const uy = len ? dy / len : 0
+  const segFrom = 9.5
+  const segTo = len - HANDLE_R + 2
+  return (
+    <>
+      {!onPoint && (
+        <line x1={(ux * segFrom).toFixed(2)} y1={(uy * segFrom).toFixed(2)}
+          x2={(ux * segTo).toFixed(2)} y2={(uy * segTo).toFixed(2)}
+          stroke={color} strokeWidth="1.4" opacity="0.75" strokeLinecap="round" />
+      )}
+      <g transform={`translate(${dx} ${dy})`}>
+        <circle r={HANDLE_GRAB} fill="none" pointerEvents="all" />
+        {/* Lentille de contact : courbe convexe vers le haut (côté cornée) */}
+        <path d={CONTACT_LENS_PATH}
+          fill={IVORY} fillOpacity={isDragging ? 0.5 : 0.35}
+          stroke={color} strokeWidth="2" strokeLinejoin="round" style={HANDLE_SHADOW} />
+        {/* Point central pour le repérage précis */}
+        <circle r="1.7" fill={color} />
+      </g>
       <rect x={-HANDLE_HALF} y={-HANDLE_HALF} width={2 * HANDLE_HALF} height={2 * HANDLE_HALF}
         fill="none" pointerEvents="all" />
       {pointReticle(color)}
@@ -543,6 +591,8 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
       const r2 = (v) => { const n = Math.round(v * 100) / 100; return n === 0 ? 0 : n }
       const dx = onPoint ? 0 : r2(HANDLE_OFFSET * Math.cos(rad))
       const dy = onPoint ? 0 : r2(HANDLE_OFFSET * Math.sin(rad))
+      // Vertex index 0 = cornée → forme lentille de contact (pas de rotation, pas de chevrons)
+      const useContactLens = type === 'vertex' && i === 0
       return (
         <div key={`${type}${k}`} data-pt-type={type} data-pt-index={i} style={{
           position: 'absolute', left: toPct(pt.x, imageSize.width), top: toPct(pt.y, imageSize.height),
@@ -560,7 +610,9 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
               <circle r="13" fill="none" stroke={color} strokeWidth="1" opacity="0.5"
                 style={{ animation: 'reticle-pulse 1.6s ease-out infinite' }} />
             )}
-            {handleShape(color, isDragging, dx, dy, deg)}
+            {useContactLens
+              ? contactLensShape(color, isDragging, dx, dy)
+              : handleShape(color, isDragging, dx, dy, deg)}
           </svg>
         </div>
       )

@@ -149,17 +149,44 @@ describe('ProfileMeasure — poignées du profil', () => {
     expect(Number(seg.getAttribute('y1'))).toBeCloseTo(0, 2)   // horizontal, comme la poignée
   })
 
-  it("vertex : les 2 octogones sont HORIZONTAUX et OPPOSÉS", async () => {
+  it('vertex : index 0 = lentille de contact, index 1 = octogone ; horizontaux et opposés', async () => {
     const { container } = await withEveryHandle()
     const [v0, v1] = byType(container, 'vertex')
     expect(v0 && v1).toBeTruthy()
-    expect(angleOf(v0) * 1 + angleOf(v1)).toBe(180)            // 180° + 0° = un de chaque côté
-    expect(octOffset(v0).dy).toBeCloseTo(0, 2)                 // bien horizontal
-    expect(octOffset(v1).dy).toBeCloseTo(0, 2)
-    const x0 = parseFloat(v0.style.left), x1 = parseFloat(v1.style.left)
-    const [gauche, droite] = x0 < x1 ? [v0, v1] : [v1, v0]
-    expect(octOffset(gauche).dx).toBeLessThan(0)
-    expect(octOffset(droite).dx).toBeGreaterThan(0)
+
+    // v0 (cornée) = lentille de contact : un <path>, pas d'octogone, pas de rotation
+    const v0Path = [...v0.querySelectorAll('path')].find(p => p.getAttribute('d') && p.getAttribute('d').includes('M -'))
+    expect(v0Path).toBeTruthy()
+    const v0Oct = [...v0.querySelectorAll('polygon')].find(p => p.getAttribute('fill') === IVORY)
+    expect(v0Oct).toBeFalsy()
+    // Pas de <g> wrapper → pas de data-handle-rot (pas de rotation pour la lentille)
+    const v0Group = v0.querySelector('svg > g') || v0.querySelector('svg > *:first-child')
+    expect(v0Group?.hasAttribute('data-handle-rot')).toBe(false)
+
+    // v1 (face arrière verre) = octogone standard
+    const v1Oct = [...v1.querySelectorAll('polygon')].find(p => p.getAttribute('fill') === IVORY)
+    expect(v1Oct).toBeTruthy()
+    const g1 = v1Oct.closest('g')
+    expect(g1.hasAttribute('data-handle-rot')).toBe(true)
+    expect(Number(g1.getAttribute('data-handle-angle'))).toBe(0)
+
+    // Les deux sont horizontaux et opposés (dx opposé, dy ≈ 0)
+    // v0: le <g> contient la lentille (si présent) ou on lit le transform du 1er enfant du svg
+    const v0Transform = v0.querySelector('g')?.getAttribute('transform') ||
+                        v0.querySelector('svg > *')?.getAttribute('transform') || ''
+    const m0 = v0Transform.match(/translate\((-?[\d.]+)\s+(-?[\d.]+)\)/)
+    const dx0 = m0 ? Number(m0[1]) : 0
+    const dy0 = m0 ? Number(m0[2]) : 0
+
+    const t1 = g1.getAttribute('transform') || ''
+    const m1 = t1.match(/translate\((-?[\d.]+)\s+(-?[\d.]+)\)/)
+    const dx1 = m1 ? Number(m1[1]) : 0
+    const dy1 = m1 ? Number(m1[2]) : 0
+
+    expect(dy0).toBeCloseTo(0, 1)
+    expect(dy1).toBeCloseTo(0, 1)
+    expect(Math.sign(dx0)).toBe(-Math.sign(dx1))
+    expect(Math.abs(dx0)).toBeCloseTo(Math.abs(dx1), 0)
   })
 
   it("sommet de l'angle pantoscopique : poignée VERTICALE", async () => {
