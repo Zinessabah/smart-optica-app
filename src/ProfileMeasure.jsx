@@ -54,6 +54,11 @@ const LENS_ARC_PTS = (() => {
   }).join(' ')
 })()
 
+// Distance vertex STANDARD (référence clinique des conversions de puissance).
+// ⚠ Sert UNIQUEMENT à l'écartement de DÉPART des 2 poignées du vertex : elle n'entre dans
+// aucun calcul de mesure — celle-ci reste (distance des 2 points × échelle réelle).
+const VERTEX_START_MM = 12
+
 // 4 chevrons fins = affordance « déplacer » (notre style, ≠ le ✥ plein d'OptiFest).
 // Tracés dans un repère de référence r=18 puis mis à l'échelle → suivent toute
 // modification de taille de l'octogone.
@@ -221,14 +226,33 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     ]
   }, [imageSize])
 
+  // ── Écartement de DÉPART des 2 poignées du vertex ──
+  // Ce n'est PAS une mesure : l'utilisateur pose ensuite les 2 points sur la cornée puis
+  // sur la face arrière du verre. Ancien défaut : `w/2 ± 30` en pixels IMAGE → sur une
+  // photo de 4032 px les 2 repères n'étaient écartés que d'une douzaine de px à l'écran,
+  // donc CONFONDUS (on ne distinguait pas les 2 points).
+  //   • échelle connue  → distance vertex STANDARD (12 mm) convertie par l'échelle RÉELLE :
+  //     la valeur affichée au départ est donc plausible, et les 2 repères sont distincts ;
+  //   • échelle inconnue → repli proportionnel : 14 % de la largeur, la convention des
+  //     2 poignées de l'échelle (0,43 / 0,57).
+  const vertexStartHalfPx = useCallback(() => {
+    if (!imageSize) return 0
+    const half = effectiveScale && effectiveScale > 0
+      ? VERTEX_START_MM / effectiveScale / 2
+      : imageSize.width * 0.07
+    // borne : les 2 points restent dans le cadre
+    return Math.round(Math.min(half, imageSize.width * 0.40))
+  }, [imageSize, effectiveScale])
+
   const defaultVertexPts = useCallback(() => {
     if (!imageSize) return []
     const w = imageSize.width, h = imageSize.height
+    const half = vertexStartHalfPx()
     return [
-      { x: Math.round(w / 2 - 30), y: Math.round(h * 0.62) },
-      { x: Math.round(w / 2 + 30), y: Math.round(h * 0.62) },
+      { x: Math.round(w / 2 - half), y: Math.round(h * 0.62) },
+      { x: Math.round(w / 2 + half), y: Math.round(h * 0.62) },
     ]
-  }, [imageSize])
+  }, [imageSize, vertexStartHalfPx])
 
   // Les 2 poignées de l'échelle (les marqueurs du clip) : c'est leur écartement
   // qui donne les px/mm. Positions de départ à ajuster sur les 2 cercles noirs.

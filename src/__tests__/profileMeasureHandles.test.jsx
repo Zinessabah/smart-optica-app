@@ -217,6 +217,38 @@ describe('ProfileMeasure — poignées du profil', () => {
     expect(Math.abs(dx0)).toBeCloseTo(Math.abs(dx1), 0)
   })
 
+  // ── DÉFAUT CORRIGÉ : les 2 points du vertex naissaient CONFONDUS ──
+  // (`w/2 ± 30` en pixels IMAGE → une douzaine de px d'écart à l'écran sur une photo 4032 px)
+  const pctLeft = (el) => parseFloat(el.style.left) / 100
+
+  it('vertex : les 2 points de départ ne sont plus CONFONDUS sur une photo de 4032 px', async () => {
+    stubImageLoad(4032, 3024)
+    const { container } = await withEveryHandle()
+    const [v0, v1] = byType(container, 'vertex')
+    const gapPx = (pctLeft(v1) - pctLeft(v0)) * 4032
+    expect(gapPx).toBeGreaterThan(200)           // AVANT : 60 px (± 30) → repères empilés
+    expect(gapPx).toBeLessThan(4032 * 0.5)       // …mais les 2 points restent dans le cadre
+  })
+
+  it('vertex : avec une échelle connue, l’écartement de départ vaut la distance vertex standard (12 mm)', async () => {
+    stubImageLoad(4032, 3024)
+    const { container } = render(
+      <ProfileMeasure imageUrl="blob:fake" calibrationScale={0.0976}
+        onCapture={() => {}} onSkip={() => {}} onBack={() => {}} />)
+    await waitFor(() => expect(container.querySelector('img')).toBeTruthy())
+    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2))
+    clickTool(container, 'Angle pantoscopique')
+    clickTool(container, 'Vertex')
+    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="vertex"]').length).toBe(2))
+
+    const [v0, v1] = byType(container, 'vertex')
+    const gapPx = (pctLeft(v1) - pctLeft(v0)) * 4032
+    // échelle réelle = celle que l'app dérive des 2 poignées de l'échelle (mires 25 mm)
+    const [m0, m1] = byType(container, 'verify')
+    const scale = 25 / ((pctLeft(m1) - pctLeft(m0)) * 4032)
+    expect(gapPx * scale).toBeCloseTo(12, 0)     // 12 mm ± 0,5
+  })
+
   it("sommet de l'angle pantoscopique : poignée VERTICALE", async () => {
     const { container } = await withEveryHandle()
     const sommet = byType(container, 'angle')[1]
