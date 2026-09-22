@@ -124,42 +124,24 @@ function handleShape(color, isDragging, dx, dy, angle) {
         ))}
         <circle r="1.7" fill={color} />
       </g>
-      {/* zone tactile du point (48 px) + réticule exact */}
+      {/* zone tactile du point (48 px) — le marqueur visuel est rendu séparément */}
       <rect x={-HANDLE_HALF} y={-HANDLE_HALF} width={2 * HANDLE_HALF} height={2 * HANDLE_HALF}
         fill="none" pointerEvents="all" />
-      {pointReticle(color)}
     </>
   )
 }
 
-// Forme lentille de contact — utilisée pour l'extrémité cornée (vertex index 0).
-// Même segment de liaison + zone tactile, mais forme de lentille au lieu d'octogone.
-function contactLensShape(color, isDragging, dx, dy) {
-  const onPoint = dx === 0 && dy === 0
-  const len = Math.hypot(dx, dy)
-  const ux = len ? dx / len : 0
-  const uy = len ? dy / len : 0
-  const segFrom = 9.5
-  const segTo = len - HANDLE_R + 2
+// Forme lentille de contact — affichée AU POINT DE MESURE (cornée, vertex index 0).
+// C'est le marqueur visuel "cornée ici", pas la poignée de drag.
+function contactLensAtPoint(color) {
   return (
     <>
-      {!onPoint && (
-        <line x1={(ux * segFrom).toFixed(2)} y1={(uy * segFrom).toFixed(2)}
-          x2={(ux * segTo).toFixed(2)} y2={(uy * segTo).toFixed(2)}
-          stroke={color} strokeWidth="1.4" opacity="0.75" strokeLinecap="round" />
-      )}
-      <g transform={`translate(${dx} ${dy})`}>
-        <circle r={HANDLE_GRAB} fill="none" pointerEvents="all" />
-        {/* Lentille de contact : courbe convexe vers le haut (côté cornée) */}
-        <path d={CONTACT_LENS_PATH}
-          fill={IVORY} fillOpacity={isDragging ? 0.5 : 0.35}
-          stroke={color} strokeWidth="2" strokeLinejoin="round" style={HANDLE_SHADOW} />
-        {/* Point central pour le repérage précis */}
-        <circle r="1.7" fill={color} />
-      </g>
-      <rect x={-HANDLE_HALF} y={-HANDLE_HALF} width={2 * HANDLE_HALF} height={2 * HANDLE_HALF}
-        fill="none" pointerEvents="all" />
-      {pointReticle(color)}
+      {/* Lentille de contact : courbe convexe vers le haut (côté cornée), base plate vers le verre */}
+      <path d={CONTACT_LENS_PATH}
+        fill={IVORY} fillOpacity={0.35}
+        stroke={color} strokeWidth="2" strokeLinejoin="round" style={HANDLE_SHADOW} />
+      {/* Point central pour le repérage précis */}
+      <circle r="1.7" fill={color} />
     </>
   )
 }
@@ -591,8 +573,9 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
       const r2 = (v) => { const n = Math.round(v * 100) / 100; return n === 0 ? 0 : n }
       const dx = onPoint ? 0 : r2(HANDLE_OFFSET * Math.cos(rad))
       const dy = onPoint ? 0 : r2(HANDLE_OFFSET * Math.sin(rad))
-      // Vertex index 0 = cornée → forme lentille de contact (pas de rotation, pas de chevrons)
-      const useContactLens = type === 'vertex' && i === 0
+      // Vertex index 0 = cornée → lentille DE CONTACT AU POINT (marqueur visuel)
+// + poignée octogone déportée pour le drag (identique à index 1)
+      const isCornea = type === 'vertex' && i === 0
       return (
         <div key={`${type}${k}`} data-pt-type={type} data-pt-index={i} style={{
           position: 'absolute', left: toPct(pt.x, imageSize.width), top: toPct(pt.y, imageSize.height),
@@ -610,9 +593,14 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
               <circle r="13" fill="none" stroke={color} strokeWidth="1" opacity="0.5"
                 style={{ animation: 'reticle-pulse 1.6s ease-out infinite' }} />
             )}
-            {useContactLens
-              ? contactLensShape(color, isDragging, dx, dy)
-              : handleShape(color, isDragging, dx, dy, deg)}
+            {/* Marqueur visuel AU POINT : lentille de contact pour cornée, réticule pour les autres */}
+            <g transform="translate(0,0)">
+              {isCornea
+                ? contactLensAtPoint(color)
+                : pointReticle(color)}
+            </g>
+            {/* Poignée de drag (toujours octogone) — déportée si angle != 0° sur le point */}
+            {handleShape(color, isDragging, dx, dy, deg)}
           </svg>
         </div>
       )

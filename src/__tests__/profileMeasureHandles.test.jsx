@@ -149,35 +149,48 @@ describe('ProfileMeasure — poignées du profil', () => {
     expect(Number(seg.getAttribute('y1'))).toBeCloseTo(0, 2)   // horizontal, comme la poignée
   })
 
-  it('vertex : index 0 = lentille de contact, index 1 = octogone ; horizontaux et opposés', async () => {
+  it('vertex : index 0 = lentille de contact AU POINT, index 1 = octogone ; horizontaux et opposés', async () => {
     const { container } = await withEveryHandle()
     const [v0, v1] = byType(container, 'vertex')
     expect(v0 && v1).toBeTruthy()
 
-    // v0 (cornée) = lentille de contact : un <path>, pas d'octogone, pas de rotation
-    const v0Path = [...v0.querySelectorAll('path')].find(p => p.getAttribute('d') && p.getAttribute('d').includes('M -'))
+    // v0 (cornée) = lentille de contact AU POINT (dans <g transform="translate(0,0)">)
+    const v0Groups = v0.querySelectorAll('svg > g')
+    expect(v0Groups.length).toBe(2) // 1er = lentille au point, 2e = poignée octogone
+    const lensGroup = v0Groups[0]
+    const v0Path = lensGroup.querySelector('path')
     expect(v0Path).toBeTruthy()
-    const v0Oct = [...v0.querySelectorAll('polygon')].find(p => p.getAttribute('fill') === IVORY)
-    expect(v0Oct).toBeFalsy()
-    // Pas de <g> wrapper → pas de data-handle-rot (pas de rotation pour la lentille)
-    const v0Group = v0.querySelector('svg > g') || v0.querySelector('svg > *:first-child')
-    expect(v0Group?.hasAttribute('data-handle-rot')).toBe(false)
+    expect(v0Path.getAttribute('d')).toContain('M -')
+    // Pas d'octogone au point
+    const lensOct = lensGroup.querySelector('polygon')
+    expect(lensOct).toBeFalsy()
+    // Pas de rotation sur le marqueur
+    expect(lensGroup.hasAttribute('data-handle-rot')).toBe(false)
 
-    // v1 (face arrière verre) = octogone standard
+    // La poignée de drag (2e <g>) = octogone standard avec rotation
+    const handleGroup = v0Groups[1]
+    const v0HandleOct = handleGroup.querySelector('polygon')
+    expect(v0HandleOct).toBeTruthy()
+    expect(v0HandleOct.getAttribute('fill')).toBe(IVORY)
+    expect(handleGroup.hasAttribute('data-handle-rot')).toBe(true)
+
+    // Lire transform AVANT de vérifier l'angle (dx0 nécessaire pour savoir si gauche)
+    const h0Transform = handleGroup.getAttribute('transform') || ''
+    const m0 = h0Transform.match(/translate\((-?[\d.]+)\s+(-?[\d.]+)\)/)
+    const dx0 = m0 ? Number(m0[1]) : 0
+    const dy0 = m0 ? Number(m0[2]) : 0
+
+    // Angle par défaut : cornée (gauche) = 180°, face arrière (droite) = 0°
+    expect(Number(handleGroup.getAttribute('data-handle-angle'))).toBe(dx0 < 0 ? 180 : 0)
+
+    // v1 (face arrière verre) = octogone standard (1 seul <g> = la poignée)
     const v1Oct = [...v1.querySelectorAll('polygon')].find(p => p.getAttribute('fill') === IVORY)
     expect(v1Oct).toBeTruthy()
     const g1 = v1Oct.closest('g')
     expect(g1.hasAttribute('data-handle-rot')).toBe(true)
     expect(Number(g1.getAttribute('data-handle-angle'))).toBe(0)
 
-    // Les deux sont horizontaux et opposés (dx opposé, dy ≈ 0)
-    // v0: le <g> contient la lentille (si présent) ou on lit le transform du 1er enfant du svg
-    const v0Transform = v0.querySelector('g')?.getAttribute('transform') ||
-                        v0.querySelector('svg > *')?.getAttribute('transform') || ''
-    const m0 = v0Transform.match(/translate\((-?[\d.]+)\s+(-?[\d.]+)\)/)
-    const dx0 = m0 ? Number(m0[1]) : 0
-    const dy0 = m0 ? Number(m0[2]) : 0
-
+    // Les deux sont horizontaux et opposés (dx opposé, dy ≈ 0) — lecture sur les poignées de drag
     const t1 = g1.getAttribute('transform') || ''
     const m1 = t1.match(/translate\((-?[\d.]+)\s+(-?[\d.]+)\)/)
     const dx1 = m1 ? Number(m1[1]) : 0
