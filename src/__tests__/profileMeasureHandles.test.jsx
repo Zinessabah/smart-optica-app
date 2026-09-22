@@ -154,18 +154,33 @@ describe('ProfileMeasure — poignées du profil', () => {
     const [v0, v1] = byType(container, 'vertex')
     expect(v0 && v1).toBeTruthy()
 
-    // v0 (cornée) = lentille de contact AU POINT (dans <g transform="translate(0,0)">)
+    // v0 (cornée) = marqueur « lentille de contact » AU POINT : UN SEUL ARC, fin
     const v0Groups = v0.querySelectorAll('svg > g')
     expect(v0Groups.length).toBe(2) // 1er = lentille au point, 2e = poignée octogone
     const lensGroup = v0Groups[0]
-    const v0Path = lensGroup.querySelector('path')
-    expect(v0Path).toBeTruthy()
-    expect(v0Path.getAttribute('d')).toContain('M -')
-    // Pas d'octogone au point
-    const lensOct = lensGroup.querySelector('polygon')
-    expect(lensOct).toBeFalsy()
-    // Pas de rotation sur le marqueur
+
+    // UN SEUL ARC : des <polyline>, et AUCUN <path> → jamais deux courbes (pas de biconvexe)
+    expect(lensGroup.querySelectorAll('path').length).toBe(0)
+    const strokes = lensGroup.querySelectorAll('polyline')
+    expect(strokes.length).toBe(2)                    // liseré clair + trait vert
+    expect(strokes[0].getAttribute('points')).toBe(strokes[1].getAttribute('points'))
+
+    // Le SOMMET de l'arc est exactement sur le point de mesure (0,0)
+    expect(strokes[1].getAttribute('points')).toContain('0.00,0.00')
+
+    // Bande FINE (Driss) — et l'arc est bien plus haut que large (marqueur vertical)
+    expect(Number(strokes[1].getAttribute('stroke-width'))).toBeLessThanOrEqual(2.5)
+    const pts = strokes[1].getAttribute('points').trim().split(/\s+/).map(p => p.split(',').map(Number))
+    const spanY = Math.max(...pts.map(p => p[1])) - Math.min(...pts.map(p => p[1]))
+    const spanX = Math.max(...pts.map(p => p[0])) - Math.min(...pts.map(p => p[0]))
+    expect(spanY).toBeGreaterThan(spanX * 3)          // vertical, nettement
+
+    // Pas d'octogone, pas de rotation manuelle sur le marqueur
+    expect(lensGroup.querySelector('polygon')).toBeFalsy()
     expect(lensGroup.hasAttribute('data-handle-rot')).toBe(false)
+
+    // Orienté sur l'axe cornée → verre (ici horizontal) : la cornée est sur le plan vertical
+    expect(lensGroup.getAttribute('transform')).toBe('rotate(0)')
 
     // La poignée de drag (2e <g>) = octogone standard avec rotation
     const handleGroup = v0Groups[1]

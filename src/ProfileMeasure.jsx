@@ -32,21 +32,27 @@ const octagonPoints = (r) => Array.from({ length: 8 }, (_, k) => {
 }).join(' ')
 const HANDLE_OCTAGON = octagonPoints(HANDLE_R)
 
-// Forme lentille de contact pour l'extrémité cornée (vertex index 0).
-// Courbe convexe côté cornée, base plate côté verre — signature optique.
-const contactLensPath = (r = HANDLE_R) => {
-  // r = rayon de référence (~11.5). La lentille est légèrement plus large que haute.
-  const w = r * 1.35   // largeur ~15.5 px
-  const h = r * 0.9    // hauteur ~10.4 px
-  const curve = h * 0.65  // courbure convexe
-  return `M ${-w} 0
-    Q ${-w * 0.5} ${-curve} 0 ${-h * 0.5}
-    Q ${w * 0.5} ${-curve} ${w} 0
-    L ${w * 0.7} ${h * 0.35}
-    Q 0 ${h * 0.6} ${-w * 0.7} ${h * 0.35}
-    Z`
-}
-const CONTACT_LENS_PATH = contactLensPath()
+// ── Marqueur « lentille de contact » du point CORNÉE (vertex index 0) ──
+// UN SEUL ARC (jamais deux) : il suit la courbure de la cornée, son SOMMET est
+// exactement sur le point de mesure, et il bombe vers le VERRE (côté verre).
+// Rendu en BANDE FINE (Driss : « comme D1, mais l'arc beaucoup plus fin »).
+const LENS_SPAN_H = HANDLE_R        // demi-hauteur du marqueur (= HANDLE_R) → marqueur VERTICAL
+const LENS_ARC_R  = HANDLE_R * 2.9  // rayon APPARENT de la cornée à l'échelle du marqueur.
+                                    // ⚠ CHOIX DE DESSIN uniquement : ce rayon n'entre dans
+                                    // AUCUN calcul de mesure (aucun facteur empirique métrologique).
+const LENS_ARC_W  = 1.8             // largeur de la bande en px — « beaucoup plus fin »
+// Points de l'arc, sommet en (0,0) : x = R·cos φ − R (donc x = 0 au sommet),
+// y = R·sin φ → l'arc s'ouvre vers +X, c'est-à-dire vers le verre après rotation.
+const LENS_ARC_PTS = (() => {
+  const phi = Math.asin(Math.min(1, LENS_SPAN_H / LENS_ARC_R))
+  const n = 32
+  return Array.from({ length: n + 1 }, (_, i) => {
+    const a = -phi + (2 * phi * i) / n
+    const x = LENS_ARC_R * Math.cos(a) - LENS_ARC_R
+    const y = LENS_ARC_R * Math.sin(a)
+    return `${x.toFixed(2)},${y.toFixed(2)}`
+  }).join(' ')
+})()
 
 // 4 chevrons fins = affordance « déplacer » (notre style, ≠ le ✥ plein d'OptiFest).
 // Tracés dans un repère de référence r=18 puis mis à l'échelle → suivent toute
@@ -131,18 +137,22 @@ function handleShape(color, isDragging, dx, dy, angle) {
   )
 }
 
-// Forme lentille de contact — affichée AU POINT DE MESURE (cornée, vertex index 0).
-// C'est le marqueur visuel "cornée ici", pas la poignée de drag.
-function contactLensAtPoint(color) {
+// Marqueur « cornée » — affiché AU POINT DE MESURE (vertex index 0), pas sur la poignée.
+// UN SEUL ARC fin qui suit la courbure cornéenne ; son sommet est sur le point et il
+// bombe vers le VERRE. `thetaDeg` oriente le marqueur sur l'axe du segment vertex
+// (cornée → verre) : la cornée étant sur le plan vertical, l'arc se présente vertical.
+function contactLensAtPoint(color, thetaDeg = 0) {
   return (
-    <>
-      {/* Lentille de contact : courbe convexe vers le haut (côté cornée), base plate vers le verre */}
-      <path d={CONTACT_LENS_PATH}
-        fill={IVORY} fillOpacity={0.35}
-        stroke={color} strokeWidth="2" strokeLinejoin="round" style={HANDLE_SHADOW} />
-      {/* Point central pour le repérage précis */}
+    <g transform={`rotate(${thetaDeg})`}>
+      {/* trait principal TRÈS FIN + ombre portée (lisible sur photo claire) */}
+      <polyline points={LENS_ARC_PTS} fill="none" stroke={color}
+        strokeWidth={LENS_ARC_W} strokeLinecap="round" style={HANDLE_SHADOW} />
+      {/* cœur clair : aspect « section de lentille » sans épaissir la bande */}
+      <polyline points={LENS_ARC_PTS} fill="none" stroke={IVORY} strokeOpacity="0.5"
+        strokeWidth={LENS_ARC_W * 0.5} strokeLinecap="round" />
+      {/* point de mesure exact, au sommet de l'arc */}
       <circle r="1.7" fill={color} />
-    </>
+    </g>
   )
 }
 
@@ -559,6 +569,15 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
       return null
     })()
 
+    // Angle de l'axe CORNÉE → VERRE : oriente le marqueur « lentille » du point cornée.
+    // La cornée étant sur le plan vertical, l'arc se présente vertical quand cet axe
+    // est horizontal — et il suit toujours la photo si le profil est incliné.
+    const corneaTheta = (() => {
+      if (vertexLine.length < 2) return 0
+      const [c, v] = vertexLine
+      return Math.round((Math.atan2(v.y - c.y, v.x - c.x) * 180) / Math.PI * 10) / 10
+    })()
+
     return items.map(({ pt, color, type, i }, k) => {
       const isLast = lastPlaced && lastPlaced.type === type && lastPlaced.i === i
       const isDragging = !!draggingPt && draggingPt.type === type && draggingPt.i === i
@@ -593,12 +612,8 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
               <circle r="13" fill="none" stroke={color} strokeWidth="1" opacity="0.5"
                 style={{ animation: 'reticle-pulse 1.6s ease-out infinite' }} />
             )}
-            {/* Marqueur visuel AU POINT : lentille de contact pour cornée, réticule pour les autres */}
-            <g transform="translate(0,0)">
-              {isCornea
-                ? contactLensAtPoint(color)
-                : pointReticle(color)}
-            </g>
+            {/* Marqueur visuel AU POINT : lentille de contact pour la cornée, réticule pour les autres */}
+            {isCornea ? contactLensAtPoint(color, corneaTheta) : pointReticle(color)}
             {/* Poignée de drag (toujours octogone) — déportée si angle != 0° sur le point */}
             {handleShape(color, isDragging, dx, dy, deg)}
           </svg>
