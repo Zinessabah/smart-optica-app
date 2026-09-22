@@ -59,6 +59,12 @@ const LENS_ARC_PTS = (() => {
 // aucun calcul de mesure — celle-ci reste (distance des 2 points × échelle réelle).
 const VERTEX_START_MM = 12
 
+// Hauteur de la LIGNE D'ŒIL sur une photo de profil. Les mires du clip latéral sont montées
+// SUR la monture → elles marquent cette ligne ; l'échelle (mires) et le vertex
+// (cornée → face arrière du verre) se mesurent tous deux à cette hauteur.
+// ⚠ Constante PARTAGÉE par `defaultVerifyPts` et `defaultVertexPts` — une seule source.
+const EYE_LINE_Y_RATIO = 0.40
+
 // 4 chevrons fins = affordance « déplacer » (notre style, ≠ le ✥ plein d'OptiFest).
 // Tracés dans un repère de référence r=18 puis mis à l'échelle → suivent toute
 // modification de taille de l'octogone.
@@ -248,9 +254,11 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     if (!imageSize) return []
     const w = imageSize.width, h = imageSize.height
     const half = vertexStartHalfPx()
+    // Même hauteur que les mires de l'échelle : le vertex se mesure à la ligne d'œil.
+    const y = Math.round(h * EYE_LINE_Y_RATIO)
     return [
-      { x: Math.round(w / 2 - half), y: Math.round(h * 0.62) },
-      { x: Math.round(w / 2 + half), y: Math.round(h * 0.62) },
+      { x: Math.round(w / 2 - half), y },
+      { x: Math.round(w / 2 + half), y },
     ]
   }, [imageSize, vertexStartHalfPx])
 
@@ -259,9 +267,10 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
   const defaultVerifyPts = useCallback(() => {
     if (!imageSize) return []
     const { width: w, height: h } = imageSize
+    const y = Math.round(h * EYE_LINE_Y_RATIO)
     return [
-      { x: Math.round(w * 0.43), y: Math.round(h * 0.40) },
-      { x: Math.round(w * 0.57), y: Math.round(h * 0.40) },
+      { x: Math.round(w * 0.43), y },
+      { x: Math.round(w * 0.57), y },
     ]
   }, [imageSize])
 

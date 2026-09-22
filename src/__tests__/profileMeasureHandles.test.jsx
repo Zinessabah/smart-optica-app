@@ -220,6 +220,7 @@ describe('ProfileMeasure — poignées du profil', () => {
   // ── DÉFAUT CORRIGÉ : les 2 points du vertex naissaient CONFONDUS ──
   // (`w/2 ± 30` en pixels IMAGE → une douzaine de px d'écart à l'écran sur une photo 4032 px)
   const pctLeft = (el) => parseFloat(el.style.left) / 100
+  const pctTop = (el) => parseFloat(el.style.top) / 100
 
   it('vertex : les 2 points de départ ne sont plus CONFONDUS sur une photo de 4032 px', async () => {
     stubImageLoad(4032, 3024)
@@ -247,6 +248,14 @@ describe('ProfileMeasure — poignées du profil', () => {
     const [m0, m1] = byType(container, 'verify')
     const scale = 25 / ((pctLeft(m1) - pctLeft(m0)) * 4032)
     expect(gapPx * scale).toBeCloseTo(12, 0)     // 12 mm ± 0,5
+  })
+
+  it('échelle et vertex démarrent à la MÊME hauteur (ligne d’œil, constante partagée)', async () => {
+    const { container } = await withEveryHandle()
+    const [v0] = byType(container, 'vertex')
+    const [m0] = byType(container, 'verify')
+    expect(pctTop(v0)).toBeCloseTo(pctTop(m0), 4)   // même ligne que les mires du clip
+    expect(pctTop(v0)).toBeCloseTo(0.40, 3)
   })
 
   it("sommet de l'angle pantoscopique : poignée VERTICALE", async () => {
