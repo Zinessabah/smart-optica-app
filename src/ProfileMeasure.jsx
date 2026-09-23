@@ -4,6 +4,8 @@ import { computeContainedImageRect, screenPointToImage } from './core/imageGeome
 import PrecisionLoupe from './components/PrecisionLoupe'
 import { calculatePantoscopicAngle, isProfileMeasurementReady } from './core/profileGeometry'
 import MeasureRuler from './components/MeasureRuler'
+import { analyzeProfile } from './services/api'
+import { seedFromProfile } from './core/profileSeed'
 
 // ── Poignée de drag DÉPORTÉE (design validé par Driss) ──
 // Le point de mesure exact reste SUR la mire ; la poignée (octogone translucide)
@@ -64,6 +66,14 @@ const VERTEX_START_MM = 12
 // (cornée → face arrière du verre) se mesurent tous deux à cette hauteur.
 // ⚠ Constante PARTAGÉE par `defaultVerifyPts` et `defaultVertexPts` — une seule source.
 const EYE_LINE_Y_RATIO = 0.40
+
+// Délai maximum accordé à la détection des mires du profil (garde-fou CÔTÉ CLIENT).
+// Mesuré sur une vraie photo : 0,9 s AVEC `scale_mm_per_px`.
+// ⚠ Sans cette contrainte, l'endpoint `/api/analyze-profile` part en recherche exhaustive :
+// il ne répond pas (> 60 s mesurées) et il BLOQUE le serveur (le handler fait du calcul
+// CPU dans une coroutine, donc la boucle d'événements est immobilisée — `/health` devient
+// injoignable). On n'appelle donc JAMAIS sans échelle.
+const SEED_TIMEOUT_MS = 8000
 
 // 4 chevrons fins = affordance « déplacer » (notre style, ≠ le ✥ plein d'OptiFest).
 // Tracés dans un repère de référence r=18 puis mis à l'échelle → suivent toute
@@ -232,6 +242,15 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     ]
   }, [imageSize])
 
+  // ── Amorçage depuis le BACKEND ──
+  // Les 2 mires du clip latéral sont détectées dans la photo de profil : on pose les 2
+  // poignées de l'échelle DESSUS (l'échelle est juste d'emblée, plus rien à tirer), et leur
+  // hauteur moyenne donne la LIGNE D'ŒIL du vertex (les mires sont montées sur la monture).
+  const [seedStatus, setSeedStatus] = useState('idle')  // idle | loading | done | failed
+  const [seed, setSeed] = useState(null)   // { markers, eyeLine, centerX } — état : les défauts en dépendent
+  const seedTriedRef = useRef(false)       // un seul essai par photo
+  const autoVerifyRef = useRef(null)       // dernières positions posées AUTOMATIQUEMENT
+
   // ── Écartement de DÉPART des 2 poignées du vertex ──
   // Ce n'est PAS une mesure : l'utilisateur pose ensuite les 2 points sur la cornée puis
   // sur la face arrière du verre. Ancien défaut : `w/2 ± 30` en pixels IMAGE → sur une
@@ -254,13 +273,15 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     if (!imageSize) return []
     const w = imageSize.width, h = imageSize.height
     const half = vertexStartHalfPx()
-    // Même hauteur que les mires de l'échelle : le vertex se mesure à la ligne d'œil.
-    const y = Math.round(h * EYE_LINE_Y_RATIO)
+    // Hauteur : LIGNE D'ŒIL réelle (mires détectées par le backend) si on l'a, sinon le
+    // repli proportionnel. Abscisse : centrée sur le clip, donc sur l'œil, si détecté.
+    const y = seed ? seed.eyeLine : Math.round(h * EYE_LINE_Y_RATIO)
+    const cx = seed ? seed.centerX : w / 2
     return [
-      { x: Math.round(w / 2 - half), y },
-      { x: Math.round(w / 2 + half), y },
+      { x: Math.round(cx - half), y },
+      { x: Math.round(cx + half), y },
     ]
-  }, [imageSize, vertexStartHalfPx])
+  }, [imageSize, vertexStartHalfPx, seed])
 
   // Les 2 poignées de l'échelle (les marqueurs du clip) : c'est leur écartement
   // qui donne les px/mm. Positions de départ à ajuster sur les 2 cercles noirs.
@@ -297,12 +318,51 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
 
   // ── L'échelle est active dès l'arrivée : on crée donc ses 2 poignées tout de
   // suite (Driss : « en appuyant sur le bouton échelle tu devrais activer les 2
-  // poignées »). Elles sont prêtes à être posées sur les 2 cercles noirs.
+  // poignées »). Si le backend a DÉJÀ détecté les mires, on les pose dessus.
   useEffect(() => {
     if (toolOn.scale && verifyLine.length === 0 && imageSize) {
-      setVerifyLine(defaultVerifyPts())
+      const pts = seed ? seed.markers : defaultVerifyPts()
+      autoVerifyRef.current = pts   // mémorisé : si l'utilisateur les déplace, on n'y touche plus
+      setVerifyLine(pts)
     }
-  }, [toolOn.scale, verifyLine.length, imageSize, defaultVerifyPts])
+  }, [toolOn.scale, verifyLine.length, imageSize, defaultVerifyPts, seed])
+
+  // ── Détection des mires du clip (une seule fois par photo) ──
+  // ⚠ On n'appelle QUE si l'échelle frontale est connue : cet endpoint, sans
+  //    `scale_mm_per_px`, ne répond pas et bloque le serveur (voir SEED_TIMEOUT_MS).
+  useEffect(() => {
+    if (!imageUrl || !imageSize || !calibrationScale || seedTriedRef.current) return
+    seedTriedRef.current = true
+    setSeedStatus('loading')
+    let alive = true
+    const timer = setTimeout(() => { if (alive) setSeedStatus('failed') }, SEED_TIMEOUT_MS)
+
+    ;(async () => {
+      try {
+        const blob = await (await fetch(imageUrl)).blob()
+        const result = await analyzeProfile(blob, calibrationScale)
+        if (!alive) return
+        const found = seedFromProfile(result, imageSize)
+        if (!found.ok) { setSeedStatus('failed'); return }
+        setSeed(found)
+        setSeedStatus('done')
+        // Les poignées de l'échelle : on les déplace sur les mires DÉTECTÉES, mais
+        // uniquement si l'utilisateur ne les a pas déjà prises en main.
+        setVerifyLine(prev => {
+          const auto = autoVerifyRef.current
+          if (!auto || JSON.stringify(prev) !== JSON.stringify(auto)) return prev
+          autoVerifyRef.current = found.markers
+          return found.markers
+        })
+      } catch {
+        if (alive) setSeedStatus('failed')
+      } finally {
+        clearTimeout(timer)
+      }
+    })()
+
+    return () => { alive = false; clearTimeout(timer) }
+  }, [imageUrl, imageSize, calibrationScale])
 
   // ── Vertex auto-placé quand l'angle est fait ──
   useEffect(() => {
@@ -696,9 +756,17 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
       }
     }
     if (toolOn.scale) {
+      // État de la détection automatique des mires — UNE seule ligne, et surtout un repli
+      // jamais annoncé comme une réussite (règle des contrôles objectifs).
+      const detect = seedStatus === 'loading' ? 'détection des mires…'
+        : seedStatus === 'done' ? 'mires détectées'
+          : seedStatus === 'failed' ? 'mires non détectées' : null
       return {
         text: verifyLine.length === 2
-          ? <>🔷 Échelle <strong>{effectiveScale ? `${(1 / effectiveScale).toFixed(2)} px/mm` : '—'}</strong> — posez les 2 poignées sur les <strong>2 cercles noirs</strong></>
+          ? <>🔷 Échelle <strong>{effectiveScale ? `${(1 / effectiveScale).toFixed(2)} px/mm` : '—'}</strong>
+            {detect
+              ? <> · {detect}</>
+              : <> — posez les 2 poignées sur les <strong>2 cercles noirs</strong></>}</>
           : <>🔷 Placez les 2 poignées sur les <strong>2 cercles noirs</strong> ({verifyLine.length}/2)</>,
         color: GOLD, bg: 'var(--color-gold-bg)', border: 'rgba(201,160,90,0.3)',
       }
