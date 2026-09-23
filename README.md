@@ -28,13 +28,53 @@ Le frontend appelle le backend via le proxy Vite (`/api` → `http://localhost:8
 Sans backend, l'app reste utilisable : détection native/face-api.js en local, calibration
 et mesures manuelles.
 
-## Démarrage rapide
+## Installation (script automatique)
+
+Un seul script installe et démarre l'ensemble — backend FastAPI, front, interface
+d'administration, PostgreSQL, certificats HTTPS et services systemd :
+
+```bash
+./install.sh                # installation complète (front servi en build figé)
+./install.sh --dev          # développement : serveurs Vite avec rechargement à chaud (HMR)
+./install.sh --help         # toutes les options
+```
+
+| Étape | Ce que le script fait |
+|---|---|
+| Paquets système | `apt-get install` (postgresql, mkcert, python3-venv, build-essential…) — `--no-apt` pour ne pas y toucher |
+| Dépendances JS | `npm ci` (versions verrouillées par `package-lock.json`, repli `npm install`) |
+| Dépendances Python | venv + `backend/requirements.txt` (versions épinglées) |
+| Base de données | rôle + base PostgreSQL et mot de passe **aléatoire** ; ou `--db-url` (base existante, ou SQLite) |
+| Secrets | `backend/.env` généré en mode 600 (JWT_SECRET 256 bits) — **jamais réécrit** s'il existe déjà |
+| Certificats | CA mkcert + certificat couvrant **toutes les IP détectées** de la machine |
+| Services | unités systemd utilisateur + démarrage automatique sans session ouverte (`linger`) |
+| Compte administrateur | créé (ou promu) pendant l'installation |
+| Contrôle final | les 3 services en HTTP 200, SAN du certificat vérifié, URL récapitulées |
+
+Le script est **idempotent** : le relancer ne casse rien et ne réécrit aucun secret.
+
+> **Sur chaque iPad, une seule fois** : ouvrir `certs/rootCA.pem` (AirDrop ou navigateur),
+> puis Réglages → Général → VPN et gestion de l'appareil → approuver. Sans cette étape,
+> Safari refuse le certificat et la caméra reste bloquée.
+
+**Deux installations sur la même machine** (recette, démonstration) :
+`./install.sh --instance test` crée des services, journaux et base distincts
+(`smart-optica-test-*`, `smartoptica_test`) **sans toucher** à l'installation principale.
+
+### Désinstaller
+
+```bash
+./uninstall.sh              # retire les services, CONSERVE toutes les données
+./uninstall.sh --purge      # supprime en plus base, photos, secrets, venv et node_modules
+```
+
+## Démarrage rapide (développement manuel)
 
 ### 1. Frontend
 
 ```bash
 npm install
-npm run dev        # https://localhost:5173 (HTTPS auto via plugin-basic-ssl — requis pour getUserMedia)
+npm run dev        # https://localhost:5173 — HTTPS par certificat mkcert (certs/), requis pour getUserMedia
 ```
 
 > Si `~/.npm` n'est pas accessible en écriture : `npm install --cache /tmp/npm-cache`.
@@ -44,7 +84,7 @@ npm run dev        # https://localhost:5173 (HTTPS auto via plugin-basic-ssl —
 ```bash
 cd backend
 python3 -m venv venv && source venv/bin/activate
-pip install fastapi uvicorn mediapipe opencv-python-headless python-multipart scipy numpy
+pip install -r requirements.txt      # versions épinglées (fastapi, mediapipe, opencv, python-jose…)
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 

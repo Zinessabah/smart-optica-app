@@ -27,6 +27,19 @@ export default defineConfig({
       '/health': 'http://localhost:8000',
     },
   },
-  preview: { host: '0.0.0.0', port: 5174 },
+  preview: {
+    host: '0.0.0.0',
+    port: 5174,
+    // ⚠️ Le preview sert le build figé : sans HTTPS il serait inaccessible à l'iPad, et le
+    // proxy /api doit rester actif (sinon la connexion admin échoue).
+    https: hasCert ? {
+      key: fs.readFileSync(keyPath),
+      cert: fs.readFileSync(certPath),
+    } : undefined,
+    proxy: {
+      '/api': 'http://localhost:8000',
+      '/health': 'http://localhost:8000',
+    },
+  },
   build: { outDir: path.resolve(__dirname, '../admin/dist') }
 })

@@ -1,0 +1,81 @@
+# Smart Optica — dépendances Python du backend (verrouillées depuis le venv réel)
+# Python 3.12 (Ubuntu 24.04). Installation :
+#   python3 -m venv backend/venv
+#   backend/venv/bin/pip install -r backend/requirements.txt
+#
+# ⚠️ `pyorbbecsdk` est VOLONTAIREMENT EXCLU : ce SDK de caméra 3D Orbbec n'existe que comme
+#    fichier local (`pip freeze` le liste en `file:///tmp/pyorbbecsdk_v1`, chemin disparu).
+#    Il ne concerne pas l'app clip (il appartient à la branche `v2-3d`).
+absl-py==2.5.0
+annotated-doc==0.0.4
+annotated-types==0.8.0
+anyio==4.14.2
+av==12.3.0
+bcrypt==5.0.0
+certifi==2026.7.22
+cffi==2.1.0
+click==8.4.2
+contourpy==1.3.3
+cryptography==50.0.1
+cycler==0.12.1
+dnspython==2.8.0
+ecdsa==0.19.2
+email-validator==2.3.0
+evdev==1.9.3
+fastapi==0.139.2
+flatbuffers==25.12.19
+fonttools==4.63.0
+greenlet==3.5.5
+h11==0.16.0
+httpcore==1.0.9
+httpcore2==2.12.0
+httpx==0.28.1
+httpx2==2.12.0
+idna==3.18
+iniconfig==2.3.0
+kiwisolver==1.5.0
+matplotlib==3.11.1
+mediapipe==0.10.35
+numpy==2.5.1
+onnxruntime==1.28.0
+opencv-contrib-python==5.0.0.93
+opencv-python==5.0.0.93
+opencv-python-headless==5.0.0.93
+packaging==26.2
+passlib==1.7.4
+pillow==12.3.0
+pluggy==1.6.0
+protobuf==7.35.1
+psycopg2-binary==2.9.12
+pyasn1==0.6.4
+pybind11==3.1.0
+pyclipper==1.4.0
+pycparser==3.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+pydantic-settings==2.15.0
+pygame==2.6.1
+Pygments==2.21.0
+pynput==1.8.2
+pyparsing==3.3.2
+pytest==9.1.1
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.3
+python-jose==3.5.0
+python-multipart==0.0.32
+python-xlib==0.33
+PyYAML==6.0.3
+qrcode==8.2
+rapidocr-onnxruntime==1.4.4
+rsa==4.9.1
+scipy==1.18.0
+shapely==2.1.2
+six==1.17.0
+sounddevice==0.5.5
+SQLAlchemy==2.0.52
+starlette==1.3.1
+tqdm==4.70.0
+truststore==0.10.4
+typing_extensions==4.16.0
+typing-inspection==0.4.2
+uvicorn==0.51.0
