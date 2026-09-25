@@ -19,12 +19,39 @@ import urllib.request
 import os
 
 from lateral import (
-    detect_lateral_markers as _detect_lateral,
     LATERAL_MARKER_SPACING_MM,
     pair_is_plausible,
     field_width_mm,
     LATERAL_MARKER_SPACING_MM_NEW,
 )
+# Détection latérale — clip v19.5 : **damier unifié** en chemin PRINCIPAL (IDs identiques → position/rôle).
+# Clip v16 : ArUco 4×4 en SECOURS. Clips antérieurs : disques/damier en DERNIER RECOURS.
+import logging as _logging
+from lateral_checker import detect_lateral_markers as _detect_lateral_checker
+from lateral_aruco import detect_lateral_markers as _detect_lateral_aruco
+from lateral import detect_lateral_markers as _detect_lateral_legacy
+
+# Version de clip déclarée côté backend (doit matcher le clip et l'app)
+CLIP_VERSION = "clip-v19.5-all-checkerboard"
+
+
+def _detect_lateral(image, landmarker=None, known_scale=None, marker_spacing_mm=None):
+    """Damier unifié d'abord (clip v19.5) ; ArUco (clip v16) en secours ; legacy en dernier."""
+    markers, diag = _detect_lateral_checker(
+        image, landmarker, known_scale=known_scale, marker_spacing_mm=marker_spacing_mm)
+    if markers:
+        return markers, diag
+    _logging.getLogger("smart-optica").info(
+        "  [lateral] Damier non trouvé → repli sur ArUco (clip v16)")
+    markers, diag = _detect_lateral_aruco(
+        image, landmarker, known_scale=known_scale, marker_spacing_mm=marker_spacing_mm)
+    if markers:
+        return markers, diag
+    _logging.getLogger("smart-optica").info(
+        "  [lateral] ArUco non trouvé → repli sur les variantes antérieures")
+    return _detect_lateral_legacy(
+        image, landmarker, known_scale=known_scale, marker_spacing_mm=marker_spacing_mm)
+
 from image_quality import (
     check_resolution,
     validate_image_bytes,
@@ -904,9 +931,9 @@ async def compute_vertex(req: VertexRequest):
 async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optional[float] = Form(None), spacing_mm: Optional[float] = Form(None)):
     """
     Analyse une photo de PROFIL DROIT du patient avec le clip de calibration.
-    Détecte les 2 marqueurs latéraux (4mm, 25mm verticaux) sur la face latérale du clip.
+    Détecte les 2 marqueurs latéraux (damier 2×2, 5 mm, 25 mm — clip v19.5) sur la face latérale du clip.
     Retourne l'angle pantoscopique et la distance vertex estimée.
-    
+
     Si scale_mm_per_px est fourni (depuis la calibration frontale), il est utilisé
     pour guider la détection des marqueurs latéraux.
     """
