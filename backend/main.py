@@ -17,6 +17,11 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import urllib.request
 import os
+from itertools import combinations
+
+# Géométrie MESURÉE du clip v19.5 (revérifiée sur les STL par
+# tests/test_clip_geometry.py) — source unique des cotes.
+import clip_geometry as clip
 
 from lateral import (
     LATERAL_MARKER_SPACING_MM,
@@ -173,9 +178,118 @@ def to_px(pt, w, h):
 # ── Détection des 3 repères de calibration (face-guided) ──
 
 CALIB_MARKER_SPACING_MM = 50.0
+# L'échelle faciale se prend sur les DEUX MIRES EXTRÊMES de la barre, distantes de
+# 100,00 mm (mesuré sur le STL — clip_geometry.FACIAL_SPACING_EXTREME_MM). Un span
+# deux fois plus long qu'une paire adjacente divise par deux l'erreur relative due
+# au bruit de pixel.
+CALIB_MARKER_SPAN_MM = clip.FACIAL_SPACING_EXTREME_MM
 
 
-def detect_calibration_markers(image: np.ndarray) -> dict:
+# ── Damier facial : paramètres pris dans la GÉOMÉTRIE du clip ────────────────
+# Carreau de 5,00 mm → quadrants échantillonnés à ±2,50 mm (mesuré sur le STL).
+# Sans échelle connue, on balaie les tailles de carreau plausibles : AUCUNE hypothèse
+# d'IPD (le « 63 mm pour tout le monde » que le clip existe pour supprimer).
+FACIAL_QUADRANT_MM = clip.PATTERN_QUADRANT_MM
+FACIAL_QUADRANT_SWEEP = (3, 4, 5, 6, 8, 10, 12, 16, 20)
+FACIAL_EQUIDISTANCE_TOL = 0.15
+
+
+def _facial_quadrant_offsets(known_scale: Optional[float] = None) -> list:
+    """Décalages quadrant (px) à essayer, du plus probable au balayage complet."""
+    offsets = []
+    if known_scale and known_scale > 0:
+        offsets.append(max(3, int(round(FACIAL_QUADRANT_MM / known_scale))))
+    offsets.extend(q for q in FACIAL_QUADRANT_SWEEP if q not in offsets)
+    return offsets
+
+
+def _scan_facial_strip(gray: np.ndarray, integral: np.ndarray,
+                       x0: int, x1: int, clip_y: int,
+                       quadrant_offset: int, w: int, h: int) -> list:
+    """Pics de corrélation du motif damier le long de la bande horizontale du clip."""
+    from scipy.ndimage import gaussian_filter1d
+
+    strip_h = max(4, quadrant_offset)
+    half_h = strip_h // 2
+    sample_size = max(2, quadrant_offset // 3)
+    scores = np.zeros(x1 - x0, dtype=np.float32)
+
+    def rect_mean(px, py, size):
+        px0 = max(0, px - size)
+        px1 = min(w, px + size + 1)
+        py0 = max(0, py - size)
+        py1 = min(h, py + size + 1)
+        area = (px1 - px0) * (py1 - py0)
+        if area <= 0:
+            return 128.0
+        total = (integral[py1, px1] - integral[py0, px1] -
+                 integral[py1, px0] + integral[py0, px0])
+        return total / area
+
+    for i in range(len(scores)):
+        cx = x0 + i
+        score_sum = 0.0
+        count_y = 0
+        for dy in range(-half_h, half_h + 1):
+            cy = clip_y + dy
+            nw = rect_mean(cx - quadrant_offset, cy - quadrant_offset, sample_size)
+            ne = rect_mean(cx + quadrant_offset, cy - quadrant_offset, sample_size)
+            sw = rect_mean(cx - quadrant_offset, cy + quadrant_offset, sample_size)
+            se = rect_mean(cx + quadrant_offset, cy + quadrant_offset, sample_size)
+            # Motif : NW=noir, NE=blanc, SW=blanc, SE=noir
+            diag = abs(nw - se) + abs(ne - sw)
+            adj = abs(nw - ne) + abs(nw - sw) + abs(se - ne) + abs(se - sw)
+            contrast = adj - diag * 0.5
+            if contrast > 0:
+                score_sum += contrast
+                count_y += 1
+        if count_y > 0:
+            scores[i] = score_sum / count_y
+
+    smoothed = gaussian_filter1d(scores.astype(np.float64),
+                                 sigma=max(0.5, quadrant_offset / 4.0))
+    peaks = []
+    for i in range(1, len(smoothed) - 1):
+        if smoothed[i] > smoothed[i - 1] and smoothed[i] >= smoothed[i + 1]:
+            if smoothed[i] > 5:
+                peaks.append({"x": x0 + i, "score": float(smoothed[i])})
+    return peaks
+
+
+def _best_facial_triplet(peaks: list, w: int, h: int) -> tuple:
+    """Meilleur triplet ÉQUIDISTANT de mires faciales, sans supposer aucune échelle.
+
+    Les 3 mires de la barre sont à −50 / 0 / +50 mm : elles sont donc ÉQUIDISTANTES.
+    C'est un critère intrinsèque du clip, indépendant des mm/px. Le champ que
+    l'écartement connu (100,00 mm) implique est ensuite borné comme pour les mires
+    latérales : hors bornes, ce n'est pas le clip.
+
+    Retourne (triplet, info) ; triplet vide si rien de crédible.
+    """
+    if len(peaks) < 3:
+        return [], {"score": -1.0}
+    top = sorted(peaks, key=lambda p: -p["score"])[:15]
+    meilleur, info = [], {"score": -1.0}
+    for a, b, c in combinations(sorted(top, key=lambda p: p["x"]), 3):
+        d1, d2 = b["x"] - a["x"], c["x"] - b["x"]
+        if min(d1, d2) < 5:
+            continue
+        equi = abs(d1 - d2) / max(d1, d2)
+        if equi > FACIAL_EQUIDISTANCE_TOL:
+            continue                                  # les mires faciales sont équidistantes
+        span_px = c["x"] - a["x"]
+        if not pair_is_plausible(span_px, clip.FACIAL_SPACING_EXTREME_MM, w, h):
+            continue                                  # champ physiquement invraisemblable
+        score = (a["score"] + b["score"] + c["score"]) - equi * 200.0
+        if score > info["score"]:
+            meilleur = [a, b, c]
+            info = {"score": score, "equi": equi, "span_px": span_px,
+                    "scale": clip.scale_from_span(clip.FACIAL_SPACING_EXTREME_MM, span_px)}
+    return meilleur, info
+
+
+def detect_calibration_markers(image: np.ndarray,
+                             known_scale: Optional[float] = None) -> dict:
     """
     Détecte les 3 mires de calibration (damier 2×2) sur le clip frontal.
     
@@ -229,147 +343,70 @@ def detect_calibration_markers(image: np.ndarray) -> dict:
             left_eye = landmarks[468] if count > 468 else landmarks[33]
             right_eye = landmarks[473] if count > 473 else landmarks[263]
 
-    # ── 2. Échelle via IPD ──
-    ipd_px = abs(right_eye.x - left_eye.x) * w
-    mm_per_px = 63.0 / ipd_px if ipd_px > 20 else 0.3
+    # ── 2. Damier facial : recherche MULTI-ÉCHELLE, sans hypothèse d'IPD ──
+    # Le carreau du clip fait 5,00 mm, donc les quadrants sont échantillonnés à
+    # ±2,50 mm — mais l'échelle de la photo n'est PAS supposée (fini le « 63 mm
+    # pour tout le monde » : c'est le facteur empirique que le clip supprime).
+    # On retient le triplet de mires ÉQUIDISTANT, propriété intrinsèque du clip.
 
-    # Dimensions connues en pixels
-    quadrant_offset = max(3, int(2.5 / mm_per_px))   # 2.5mm → px
-    expected_spacing = int(50.0 / mm_per_px)           # 50mm → px
-
-    # Position Y : niveau des sourcils
+    # Position de la barre : niveau des sourcils, bande X entre les tempes.
+    # Les marges sont RELATIVES (largeur inter-tempes mesurée), donc sans échelle.
     brow_y = min(
         landmarks[105].y if count > 105 else landmarks[33].y,
         landmarks[334].y if count > 334 else landmarks[263].y,
     )
-    clip_y = int(brow_y * h) - quadrant_offset
-
-    # Plage X : entre les tempes
     temple_l = landmarks[234].x if count > 234 else landmarks[33].x
     temple_r = landmarks[454].x if count > 454 else landmarks[263].x
+    clip_y_base = int(brow_y * h)
     x0 = max(0, int(temple_l * w))
     x1 = min(w, int(temple_r * w))
+    marge = int(0.05 * max(1, x1 - x0))          # 5 % de la largeur inter-tempes
+    x0 = max(0, x0 - marge)
+    x1 = min(w, x1 + marge)
 
-    # Marge : on élargit pour capturer les marqueurs extérieurs
-    x0 = max(0, x0 - int(expected_spacing * 0.2))
-    x1 = min(w, x1 + int(expected_spacing * 0.2))
-
-    log.info(f"Calibration 1D: scale={mm_per_px:.4f}mm/px offset={quadrant_offset}px "
-             f"spacing={expected_spacing}px strip_y={clip_y} x=[{x0},{x1}]")
-
-    # ── 3. Corrélation 1D le long de la bande horizontale ──
-    # On scanne chaque position X et on calcule le score damier
-    strip_h = max(4, quadrant_offset)  # on moyenne sur une petite hauteur
-    half_h = strip_h // 2
-    scores = np.zeros(x1 - x0, dtype=np.float32)
+    log.info(f"Calibration 1D multi-échelle : bande y≈{clip_y_base}px "
+             f"x=[{x0},{x1}] (marge {marge}px, aucun IPD supposé)")
 
     integral = cv2.integral(gray)
-    def rect_mean(px, py, size):
-        px0 = max(0, px - size)
-        px1 = min(w, px + size + 1)
-        py0 = max(0, py - size)
-        py1 = min(h, py + size + 1)
-        area = (px1 - px0) * (py1 - py0)
-        if area <= 0:
-            return 128.0
-        total = (integral[py1, px1] - integral[py0, px1] -
-                 integral[py1, px0] + integral[py0, px0])
-        return total / area
+    meilleur = None
+    for quadrant_offset in _facial_quadrant_offsets(known_scale):
+        if 2 * quadrant_offset >= max(6, min(w, h) // 4):
+            continue
+        clip_y = clip_y_base - quadrant_offset
+        if clip_y <= 0 or clip_y >= h:
+            continue
+        peaks = _scan_facial_strip(gray, integral, x0, x1, clip_y,
+                                   quadrant_offset, w, h)
+        triplet, info = _best_facial_triplet(peaks, w, h)
+        if triplet and (meilleur is None or info["score"] > meilleur[2]["score"]):
+            meilleur = (triplet, quadrant_offset, info)
 
-    sample_size = max(2, quadrant_offset // 3)
-
-    for i in range(len(scores)):
-        cx = x0 + i
-        cy_base = clip_y
-
-        # Moyenner verticalement sur strip_h pixels
-        score_sum = 0.0
-        count_y = 0
-        for dy in range(-half_h, half_h + 1):
-            cy = cy_base + dy
-            nw = rect_mean(cx - quadrant_offset, cy - quadrant_offset, sample_size)
-            ne = rect_mean(cx + quadrant_offset, cy - quadrant_offset, sample_size)
-            sw = rect_mean(cx - quadrant_offset, cy + quadrant_offset, sample_size)
-            se = rect_mean(cx + quadrant_offset, cy + quadrant_offset, sample_size)
-
-            # Motif : NW=noir, NE=blanc, SW=blanc, SE=noir
-            # → NW≈SE (sombres), NE≈SW (claires), adjacents contrastés
-            diag = abs(nw - se) + abs(ne - sw)
-            adj  = abs(nw - ne) + abs(nw - sw) + abs(se - ne) + abs(se - sw)
-            contrast = adj - diag * 0.5
-            if contrast > 0:
-                score_sum += contrast
-                count_y += 1
-
-        if count_y > 0:
-            scores[i] = score_sum / count_y
-
-    # ── 3. Trouver les 3 pics espacés de ~expected_spacing ──
-    # Lissage de la courbe de score
-    from scipy.ndimage import gaussian_filter1d
-    smoothed = gaussian_filter1d(scores.astype(np.float64), sigma=quadrant_offset / 4)
-
-    # Trouver tous les maxima locaux
-    peaks = []
-    for i in range(1, len(smoothed) - 1):
-        if smoothed[i] > smoothed[i-1] and smoothed[i] >= smoothed[i+1]:
-            if smoothed[i] > 5:  # seuil minimal
-                peaks.append({"x": x0 + i, "score": float(smoothed[i])})
-
-    if len(peaks) < 3:
-        log.info(f"Calibration: only {len(peaks)} peaks, falling back")
+    if meilleur is None:
+        log.info("Calibration: aucun triplet équidistant crédible → repli Hough")
         fallback = _fallback_hough(gray, h, w)
         if inverse_rot_mat is not None and fallback.get("markers"):
             restored = reproject_points(fallback["markers"], inverse_rot_mat)
-            fallback["markers"] = [{"x": round(p["x"]), "y": round(p["y"])} for p in restored]
+            fallback["markers"] = [{"x": round(p["x"]), "y": round(p["y"])}
+                                   for p in restored]
         return fallback
 
-    # Trier par score décroissant
-    peaks.sort(key=lambda p: p["score"], reverse=True)
-    top_peaks = peaks[:15]
-
-    # Chercher le meilleur triplet avec espacement ≈ expected_spacing
-    best_triple = None
-    best_score = 0
-    for i in range(len(top_peaks)):
-        for j in range(i + 1, len(top_peaks)):
-            for k in range(j + 1, len(top_peaks)):
-                a, b, c = sorted([top_peaks[i], top_peaks[j], top_peaks[k]], key=lambda p: p["x"])
-                d1 = b["x"] - a["x"]
-                d2 = c["x"] - b["x"]
-                if d1 < 5 or d2 < 5:
-                    continue
-                # Pénaliser l'écart à l'espacement attendu
-                spacing_err = abs(d1 - expected_spacing) + abs(d2 - expected_spacing)
-                spacing_score = max(0, 200 - spacing_err)
-                quality = a["score"] + b["score"] + c["score"]
-                total = quality + spacing_score * 2
-                if total > best_score:
-                    best_score = total
-                    best_triple = [a, b, c]
-
-    if not best_triple:
-        log.info("Calibration: no valid triple")
-        fallback = _fallback_hough(gray, h, w)
-        if inverse_rot_mat is not None and fallback.get("markers"):
-            restored = reproject_points(fallback["markers"], inverse_rot_mat)
-            fallback["markers"] = [{"x": round(p["x"]), "y": round(p["y"])} for p in restored]
-        return fallback
-
-    # ── 4. Résultat ──
+    best_triple, quadrant_offset, info = meilleur
     best_triple.sort(key=lambda p: p["x"])
-    # Ajuster Y au niveau du pic pour chaque marqueur
     for m in best_triple:
         m["y"] = clip_y
 
+    total_px = best_triple[2]["x"] - best_triple[0]["x"]
     avg_spacing = ((best_triple[1]["x"] - best_triple[0]["x"]) +
                    (best_triple[2]["x"] - best_triple[1]["x"])) / 2
-    total_px = best_triple[2]["x"] - best_triple[0]["x"]
-    scale = (CALIB_MARKER_SPACING_MM * 2) / total_px if total_px > 0 else 0
+    # Échelle = écartement CONNU des mires extrêmes / distance mesurée.
+    scale = clip.scale_from_span(clip.FACIAL_SPACING_EXTREME_MM, total_px) \
+        if total_px > 0 else 0.0
     confidence = min(1.0, sum(m["score"] for m in best_triple) / 400)
 
-    log.info(f"Calibration DONE: markers={[(m['x'],m['y']) for m in best_triple]} "
-             f"span={total_px}px spacing={avg_spacing:.0f}px scale={scale:.4f}mm/px conf={confidence:.2f}")
+    log.info(f"Calibration DONE: markers={[(m['x'], m['y']) for m in best_triple]} "
+             f"span={total_px}px (carreau {2 * quadrant_offset}px, équidistance "
+             f"{info['equi'] * 100:.1f}%) spacing={avg_spacing:.0f}px "
+             f"scale={scale:.4f}mm/px conf={confidence:.2f}")
 
     detected_markers = [{"x": float(m["x"]), "y": float(m["y"])} for m in best_triple]
     restored_markers = reproject_points(detected_markers, inverse_rot_mat)
@@ -383,56 +420,6 @@ def detect_calibration_markers(image: np.ndarray) -> dict:
         "width": w,
         "height": h,
     }
-
-
-def _find_best_triple(candidates: list, estimated=None) -> list:
-    """Trouve le meilleur triplet de 3 marqueurs : alignés horizontalement, écartement uniforme."""
-    if len(candidates) < 3:
-        return []
-    candidates.sort(key=lambda c: c["score"], reverse=True)
-    top = candidates[:15]
-    sorted_x = sorted(top, key=lambda c: c["x"])
-
-    best_triple = None
-    best_score = 0
-
-    for i in range(len(sorted_x)):
-        for j in range(i + 1, len(sorted_x)):
-            for k in range(j + 1, len(sorted_x)):
-                a, b, c = sorted_x[i], sorted_x[j], sorted_x[k]
-
-                # Alignement vertical strict
-                y_mean = (a["y"] + b["y"] + c["y"]) / 3
-                y_dev = abs(a["y"] - y_mean) + abs(b["y"] - y_mean) + abs(c["y"] - y_mean)
-                if y_dev > 25:
-                    continue
-                if not (a["x"] < b["x"] < c["x"]):
-                    continue
-
-                d1 = b["x"] - a["x"]   # gauche→centre
-                d2 = c["x"] - b["x"]   # centre→droite
-                if d1 < 8 or d2 < 8:
-                    continue
-
-                # Contrainte d'espacement uniforme (50mm entre chaque)
-                d_avg = (d1 + d2) / 2
-                spacing_ratio = max(d1, d2) / max(1, min(d1, d2)) if min(d1, d2) > 0 else 999
-                if spacing_ratio > 1.6:  # trop déséquilibré
-                    continue
-
-                alignment_score = max(0, 50 - y_dev * 2)
-                spacing_score = max(0, 150 - abs(d1 - d2) * 3)  # pénalise l'écart
-                quality_score = a["score"] + b["score"] + c["score"]
-                composite = quality_score + spacing_score * 2 + alignment_score
-
-                if composite > best_score:
-                    best_score = composite
-                    best_triple = [a, b, c]
-
-    if best_triple:
-        best_triple.sort(key=lambda p: p["x"])
-        return best_triple
-    return []
 
 
 def _fallback_hough(gray: np.ndarray, h: int, w: int) -> dict:
@@ -516,7 +503,7 @@ def _fallback_hough(gray: np.ndarray, h: int, w: int) -> dict:
     avg_spacing = ((best_triple[1]["x"] - best_triple[0]["x"]) +
                    (best_triple[2]["x"] - best_triple[1]["x"])) / 2
     total_px = best_triple[2]["x"] - best_triple[0]["x"]
-    scale = (CALIB_MARKER_SPACING_MM * 2) / total_px if total_px > 0 else 0
+    scale = (CALIB_MARKER_SPAN_MM) / total_px if total_px > 0 else 0
     confidence = min(1.0, best_score / 500)
 
     return {
@@ -647,7 +634,7 @@ def _detect_by_contours(image: np.ndarray, gray: np.ndarray) -> dict:
 
                 avg_spacing = (d1 + d2) / 2
                 total_px = c["x"] - a["x"]
-                scale = (CALIB_MARKER_SPACING_MM * 2) / total_px if total_px > 0 else 0
+                scale = (CALIB_MARKER_SPAN_MM) / total_px if total_px > 0 else 0
                 markers = [{"x": p["x"], "y": p["y"]} for p in (a, b, c)]
 
                 return {

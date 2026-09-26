@@ -92,6 +92,14 @@ class LateralDiagnostics:
     expected_spacing_px: Optional[float] = None
     expected_radius_px: Optional[int] = None
     spacing_mm_detected: Optional[float] = None  # espacement réel des mires (25/35)
+    # ── Pairage explicite (clip v19.5 : 3 mires latérales par côté) ──────────
+    candidates: List[tuple] = field(default_factory=list)  # (x, y, score) de TOUTES les mires vues
+    n_candidates: int = 0
+    pair_is_metrological: Optional[bool] = None   # la paire retenue est-elle celle des 2 BASSES ?
+    raised_rejected: Optional[bool] = None        # la mire surélevée a-t-elle été écartée du pairage ?
+    trap_spacing_rejected: Optional[bool] = None  # une paire à ~20,30 mm (surélevée) a été REFUSÉE
+    triangle_isoceles: Optional[bool] = None      # pairage déduit du triangle (critère sans échelle)
+    pair_roles: Optional[tuple] = None            # rôles déduits de la géométrie du clip
 
 
 def _progressive_rois(w: int, h: int) -> List[Tuple[int, int, int, int]]:
