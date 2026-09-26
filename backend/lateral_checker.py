@@ -272,12 +272,22 @@ def _detect_checker_pair_in_roi(gray: np.ndarray, integral: np.ndarray,
 
     best = None  # (markers, spacing_mm, score_total, qo, info)
     info_dernier = {}
+    # Toutes les mires du clip v19.5 sont des damiers IDENTIQUES : si on en voit une
+    # seule, c'est le clip v19.5. Ce compteur sert au garde-fou de la chaîne d'appel
+    # (`main._detect_lateral`) : ne JAMAIS retomber sur ArUco/disques noirs quand des
+    # damiers du clip sont visibles — ces chemins rendraient une paire fausse (mesuré :
+    # 27,69 mm au lieu de 25,00 mm, soit 10,8 % d'erreur d'échelle).
+    vus = 0
+    vus_cands: List = []
     for qo in checker_quadrant_offsets(scale):
         step = max(2, qo // 2)
         pts = _scan_checkerboard_grid(gray, integral, w, h, x0, y0, x1, y1, qo, step)
-        if len(pts) < 2:
+        if not pts:
             continue
         cands = _nms_points(pts, merge_r=qo + step)
+        if len(cands) > vus:
+            vus = len(cands)
+            vus_cands = [(c["x"], c["y"], round(float(c["score"]), 1)) for c in cands]
         if len(cands) < 2:
             continue
 
@@ -294,6 +304,15 @@ def _detect_checker_pair_in_roi(gray: np.ndarray, integral: np.ndarray,
             best = ([r0, r1], spacing, score, qo, info)
 
     if not best:
+        if not info_dernier:
+            info_dernier = {"n_candidates": vus, "candidates": vus_cands,
+                            "isoceles": False, "trap_rejected": False,
+                            "raised_rejected": False, "pair_is_metrological": None,
+                            "spacing_mm": None, "pair_roles": None}
+        else:
+            info_dernier["n_candidates"] = max(vus, info_dernier.get("n_candidates", 0))
+            if vus > len(info_dernier.get("candidates") or []):
+                info_dernier["candidates"] = vus_cands
         return None, None, info_dernier
     return best[0], best[1], best[4]
 
@@ -342,9 +361,14 @@ def detect_lateral_markers(image: np.ndarray, landmarker=None,
     for roi in rois:
         markers, spacing_mm, info = _detect_checker_pair_in_roi(
             gray, integral, w, h, roi, known_scale)
-        # les diagnostics sont renseignés même en cas de refus (piège surélevée)
-        diag.n_candidates = info.get("n_candidates", 0)
-        diag.candidates = info.get("candidates", [])
+        # Les diagnostics sont renseignés même en cas de refus (piège surélevée) et
+        # ACCUMULÉS sur les ROI : un damier vu dans une ROI ne doit pas être effacé par
+        # une ROI vide, sinon la chaîne d'appel croirait le clip absent et retomberait
+        # sur ArUco/disques noirs.
+        n_vus = info.get("n_candidates", 0) or 0
+        if n_vus > (diag.n_candidates or 0):
+            diag.n_candidates = n_vus
+            diag.candidates = info.get("candidates", [])
         diag.pair_is_metrological = info.get("pair_is_metrological")
         diag.raised_rejected = info.get("raised_rejected")
         diag.triangle_isoceles = info.get("isoceles")

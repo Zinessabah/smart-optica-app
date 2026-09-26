@@ -41,19 +41,36 @@ CLIP_VERSION = "clip-v19.5-all-checkerboard"
 
 
 def _detect_lateral(image, landmarker=None, known_scale=None, marker_spacing_mm=None):
-    """Damier unifié d'abord (clip v19.5) ; ArUco (clip v16) en secours ; legacy en dernier."""
+    """Damier unifié d'abord (clip v19.5) ; ArUco (clip v16) en secours ; legacy en dernier.
+
+    ⚠️ GARDE-FOU — toutes les mires du clip v19.5 sont des damiers IDENTIQUES. Si le chemin
+    damier a VU au moins une mire du clip (`n_candidates >= 1`) sans produire de paire
+    métrologique valide, et qu'aucun marqueur ArUco réel n'est présent, on s'arrête là :
+    laisser les « disques noirs » chercher sur des damiers rend une paire FAUSSE — mesuré
+    sur une scène du clip dont une mire basse manque : **27,69 mm au lieu de 25,00 mm**
+    (10,8 % d'erreur d'échelle, qui contaminerait toutes les mesures). Mieux vaut un échec
+    explicite : l'app laisse alors les poignées à poser à la main.
+    """
     markers, diag = _detect_lateral_checker(
         image, landmarker, known_scale=known_scale, marker_spacing_mm=marker_spacing_mm)
     if markers:
         return markers, diag
-    _logging.getLogger("smart-optica").info(
-        "  [lateral] Damier non trouvé → repli sur ArUco (clip v16)")
-    markers, diag = _detect_lateral_aruco(
+    damiers_vus = getattr(diag, "n_candidates", 0) or 0
+
+    markers_aruco, diag_aruco = _detect_lateral_aruco(
         image, landmarker, known_scale=known_scale, marker_spacing_mm=marker_spacing_mm)
-    if markers:
-        return markers, diag
+    if markers_aruco:
+        return markers_aruco, diag_aruco
+
+    if damiers_vus >= 1:
+        _logging.getLogger("smart-optica").warning(
+            "  [lateral] ⛔ %d damier(s) du clip v19.5 vu(s) mais paire métrologique "
+            "incomplète, et aucun ArUco → PAS de repli sur les disques noirs (ils "
+            "rendraient une paire fausse sur des damiers). Échec explicite.", damiers_vus)
+        return [], diag
+
     _logging.getLogger("smart-optica").info(
-        "  [lateral] ArUco non trouvé → repli sur les variantes antérieures")
+        "  [lateral] Ni damier ni ArUco → repli sur les variantes antérieures")
     return _detect_lateral_legacy(
         image, landmarker, known_scale=known_scale, marker_spacing_mm=marker_spacing_mm)
 
