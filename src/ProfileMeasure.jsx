@@ -1,3 +1,4 @@
+import { fetchWithTimeout, LONG_TIMEOUT_MS } from './core/http'
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { ArrowLeft, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react'
 import { computeContainedImageRect, screenPointToImage } from './core/imageGeometry'
@@ -339,7 +340,7 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
 
     ;(async () => {
       try {
-        const blob = await (await fetch(imageUrl)).blob()
+        const blob = await (await fetchWithTimeout(imageUrl)).blob()
         const result = await analyzeProfile(blob, calibrationScale)
         if (!alive) return
         const found = seedFromProfile(result, imageSize)
@@ -386,7 +387,7 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     setVertexError(null)
     setVertexMm(null)
     try {
-      const res = await fetch('/api/compute-vertex', {
+      const res = await fetchWithTimeout('/api/compute-vertex', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

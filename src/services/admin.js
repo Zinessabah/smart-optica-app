@@ -8,16 +8,17 @@ const headers = () => ({
   'Content-Type': 'application/json',
 })
 
+import { fetchWithTimeout, LONG_TIMEOUT_MS } from '../core/http'
 export async function listUsers({ page = 1, per_page = 20, search = '' } = {}) {
   const params = new URLSearchParams({ page, per_page })
   if (search) params.set('search', search)
-  const res = await fetch(`/api/admin/users?${params}`, { headers: headers() })
+  const res = await fetchWithTimeout(`/api/admin/users?${params}`, { headers: headers() })
   if (!res.ok) throw new Error((await res.json()).detail || 'Erreur liste')
   return res.json()
 }
 
 export async function createUser(data) {
-  const res = await fetch('/api/admin/users', {
+  const res = await fetchWithTimeout('/api/admin/users', {
     method: 'POST', headers: headers(), body: JSON.stringify(data),
   })
   if (!res.ok) throw new Error((await res.json()).detail || 'Erreur création')
@@ -25,7 +26,7 @@ export async function createUser(data) {
 }
 
 export async function updateUser(id, data) {
-  const res = await fetch(`/api/admin/users/${id}`, {
+  const res = await fetchWithTimeout(`/api/admin/users/${id}`, {
     method: 'PATCH', headers: headers(), body: JSON.stringify(data),
   })
   if (!res.ok) throw new Error((await res.json()).detail || 'Erreur modification')
@@ -33,7 +34,7 @@ export async function updateUser(id, data) {
 }
 
 export async function resetPassword(id, newPassword) {
-  const res = await fetch(`/api/admin/users/${id}/reset-password`, {
+  const res = await fetchWithTimeout(`/api/admin/users/${id}/reset-password`, {
     method: 'POST', headers: headers(), body: JSON.stringify({ new_password: newPassword }),
   })
   if (!res.ok) throw new Error((await res.json()).detail || 'Erreur reset')
@@ -41,7 +42,7 @@ export async function resetPassword(id, newPassword) {
 }
 
 export async function deleteUser(id) {
-  const res = await fetch(`/api/admin/users/${id}`, {
+  const res = await fetchWithTimeout(`/api/admin/users/${id}`, {
     method: 'DELETE', headers: headers(),
   })
   if (!res.ok) throw new Error((await res.json()).detail || 'Erreur suppression')

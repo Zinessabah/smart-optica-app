@@ -3,14 +3,15 @@
  * Utilise le proxy Vite pour contacter le backend Python.
  */
 
+import { fetchWithTimeout, LONG_TIMEOUT_MS } from '../core/http'
 export async function analyzeCalibration(imageBlob) {
   const formData = new FormData()
   formData.append('file', imageBlob, 'photo.jpg')
 
-  const res = await fetch('/api/analyze-calibration', {
+  const res = await fetchWithTimeout('/api/analyze-calibration', {
     method: 'POST',
     body: formData,
-  })
+  }, LONG_TIMEOUT_MS)
 
   if (!res.ok) {
     throw new Error(`API calibration error: ${res.status}`)
@@ -23,10 +24,10 @@ export async function analyzeImage(imageBlob) {
   const formData = new FormData()
   formData.append('file', imageBlob, 'photo.jpg')
 
-  const res = await fetch('/api/analyze', {
+  const res = await fetchWithTimeout('/api/analyze', {
     method: 'POST',
     body: formData,
-  })
+  }, LONG_TIMEOUT_MS)
 
   if (!res.ok) {
     throw new Error(`API error: ${res.status}`)
@@ -47,10 +48,10 @@ export async function analyzeProfile(imageBlob, scaleMmPerPx) {
   formData.append('file', imageBlob, 'profile.jpg')
   if (scaleMmPerPx) formData.append('scale_mm_per_px', String(scaleMmPerPx))
 
-  const res = await fetch('/api/analyze-profile', {
+  const res = await fetchWithTimeout('/api/analyze-profile', {
     method: 'POST',
     body: formData,
-  })
+  }, LONG_TIMEOUT_MS)
 
   if (!res.ok) {
     throw new Error(`API profile error: ${res.status}`)
@@ -61,7 +62,7 @@ export async function analyzeProfile(imageBlob, scaleMmPerPx) {
 
 export async function checkHealth() {
   try {
-    const res = await fetch('/health')
+    const res = await fetchWithTimeout('/health')
     return res.ok
   } catch {
     return false
