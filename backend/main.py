@@ -174,6 +174,8 @@ class ProfileResult(BaseModel):
     vertex_distance: Optional[float] = None  # mm
     face_detected: bool = False
     temple_angle: Optional[float] = None  # degrés, angle de la branche
+    # ── Exigences du profil Clip : rôles + diagnostic latéral ────────────────
+    lateral_diag: Optional[dict] = None
 
 
 def decode_image(data: bytes) -> np.ndarray:
@@ -1015,6 +1017,21 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
 
     log.info(f"Profil: scale={scale:.4f} mm/px, angle_pantoscopique={pantoscopic}°, vertex={vertex}mm, face={face_detected}")
 
+    # Construire le diagnostic latéral complet (rôles + chemin + candidats + ROI)
+    ld = lateral_diag
+    lateral_diag_out = {
+        "path": getattr(ld, "path", None),
+        "roi_used": getattr(ld, "roi_used", None),
+        "spacing_mm_detected": getattr(ld, "spacing_mm_detected", None),
+        "n_candidates": getattr(ld, "n_candidates", 0),
+        "candidates": getattr(ld, "candidates", []),
+        "pair_is_metrological": getattr(ld, "pair_is_metrological", None),
+        "pair_roles": getattr(ld, "pair_roles", None),
+        "raised_rejected": getattr(ld, "raised_rejected", False),
+        "trap_spacing_rejected": getattr(ld, "trap_spacing_rejected", False),
+        "triangle_isoceles": getattr(ld, "triangle_isoceles", False),
+    }
+
     return ProfileResult(
         width=w,
         height=h,
@@ -1026,6 +1043,7 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
         vertex_distance=vertex,
         face_detected=face_detected,
         temple_angle=round(temple_angle, 1) if temple_angle is not None else None,
+        lateral_diag=lateral_diag_out,
     )
 
 
