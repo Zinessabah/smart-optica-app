@@ -271,39 +271,88 @@ def _scan_facial_strip(gray: np.ndarray, integral: np.ndarray,
     for i in range(1, len(smoothed) - 1):
         if smoothed[i] > smoothed[i - 1] and smoothed[i] >= smoothed[i + 1]:
             if smoothed[i] > 5:
-                peaks.append({"x": x0 + i, "score": float(smoothed[i])})
+                peaks.append({"x": x0 + i, "y": clip_y, "score": float(smoothed[i])})
     return peaks
 
 
-def _best_facial_triplet(peaks: list, w: int, h: int) -> tuple:
-    """Meilleur triplet ÉQUIDISTANT de mires faciales, sans supposer aucune échelle.
+def _best_facial_quadruplet(peaks: list, gray: np.ndarray, integral: np.ndarray,
+                            w: int, h: int,
+                            clip_y: int, quadrant_offset: int,
+                            x0: int, x1: int,
+                            known_scale: Optional[float] = None) -> tuple:
+    """Meilleur QUADRUPLET de mires faciales : 3 alignées (−50/0/+50) + 1 hors rangée (30, 17).
 
-    Les 3 mires de la barre sont à −50 / 0 / +50 mm : elles sont donc ÉQUIDISTANTES.
-    C'est un critère intrinsèque du clip, indépendant des mm/px. Le champ que
-    l'écartement connu (100,00 mm) implique est ensuite borné comme pour les mires
-    latérales : hors bornes, ce n'est pas le clip.
+    Critères (indépendants de l'échelle) :
+      1. Les 3 mires de la barre sont ÉQUIDISTANTES (±15 %) — propriété intrinsèque.
+      2. La 4ᵉ mire est à x = +30 mm (entre centre et droite) et z = +17 mm
+         par rapport à la rangée (donc y = clip_y - 17/scale ≈ clip_y - 17/scale).
+      3. L'écartement extrêmes (100 mm) implique un champ plausible.
+    Sans échelle connue, on accepte ±25 % sur z pour absorber l'incertitude de clip_y.
 
-    Retourne (triplet, info) ; triplet vide si rien de crédible.
+    Retourne (quadruplet, info) ; quadruplet vide si rien de crédible.
     """
     if len(peaks) < 3:
         return [], {"score": -1.0}
     top = sorted(peaks, key=lambda p: -p["score"])[:15]
+    sorted_x = sorted(top, key=lambda p: p["x"])
     meilleur, info = [], {"score": -1.0}
-    for a, b, c in combinations(sorted(top, key=lambda p: p["x"]), 3):
-        d1, d2 = b["x"] - a["x"], c["x"] - b["x"]
-        if min(d1, d2) < 5:
+
+    # La rangée : on cherche d'abord le triplet équidistant
+    for a, b, c in combinations(sorted_x, 3):
+        d1, d2 = b["x"] - a["x"], c["x"] - a["x"]  # a<b<c
+        # triplet ordonné : gauche=a, centre=b, droite=c
+        if not (d1 > 0 and d2 > d1):
             continue
-        equi = abs(d1 - d2) / max(d1, d2)
+        equi = abs(d1 - (d2 - d1)) / max(d1, d2 - d1)
         if equi > FACIAL_EQUIDISTANCE_TOL:
-            continue                                  # les mires faciales sont équidistantes
+            continue
         span_px = c["x"] - a["x"]
         if not pair_is_plausible(span_px, clip.FACIAL_SPACING_EXTREME_MM, w, h):
-            continue                                  # champ physiquement invraisemblable
-        score = (a["score"] + b["score"] + c["score"]) - equi * 200.0
-        if score > info["score"]:
-            meilleur = [a, b, c]
-            info = {"score": score, "equi": equi, "span_px": span_px,
-                    "scale": clip.scale_from_span(clip.FACIAL_SPACING_EXTREME_MM, span_px)}
+            continue
+
+        # échelle provisoire pour convertir 17 mm → pixels
+        scale_prov = clip.scale_from_span(clip.FACIAL_SPACING_EXTREME_MM, span_px)
+        dy_17mm = int(round(17.0 / scale_prov)) if scale_prov > 0 else 0
+        if dy_17mm == 0:
+            continue
+
+        # La 4e mire doit être proche de x_centre + 30 mm = a + 2*d1 + 0.6*(d2-d1) ??
+        # En fait : centres à x=0, droite=+50 => 4e mire à +30 = centre + 30
+        # En pixels : centre = a + d1, 4e mire = centre + 0.6*(d2-d1) = a + d1 + 0.6*d1 = a + 1.6*d1
+        x_centre = a["x"] + d1
+        x_4e_attendu = x_centre + int(round(0.6 * d1))  # 30/50 = 0.6
+        tol_x = max(8, int(0.15 * d1))  # ±15 % de l'écart adjacent
+
+        # Scanner la 4e mire à son y attendu (clip_y - dy_17mm)
+        y_4e = clip_y - dy_17mm
+        if y_4e < 0 or y_4e >= h:
+            continue
+        # Scan limité autour de x_4e_attendu
+        x_search_min = max(x0, x_4e_attendu - tol_x)
+        x_search_max = min(x1, x_4e_attendu + tol_x)
+        if x_search_max <= x_search_min:
+            continue
+        # On relance le scan à y_4e
+        peaks_4e = _scan_facial_strip(gray, integral, x_search_min, x_search_max, y_4e,
+                                       quadrant_offset, w, h)
+        if not peaks_4e:
+            continue
+        # Prendre le meilleur pic à x proche
+        for p4 in sorted(peaks_4e, key=lambda p: -p["score"]):
+            if abs(p4["x"] - x_4e_attendu) > tol_x:
+                continue
+            # Vérifier y : doit être plus haut (y plus petit car origine en haut) de ~17 mm
+            dy = clip_y - p4.get("y", clip_y)
+            if dy < dy_17mm // 2 or dy > dy_17mm * 2:
+                continue  # hors tolérance ±100 % (large car clip_y imprécis)
+
+            # Quadruplet valide
+            score = (a["score"] + b["score"] + c["score"] + p4["score"]) \
+                    - equi * 200.0 - abs(dy - dy_17mm) * 5.0
+            if score > info["score"]:
+                meilleur = [a, b, c, p4]
+                info = {"score": score, "equi": equi, "span_px": span_px,
+                        "scale": scale_prov, "dy_17mm": dy, "quadrant_offset": quadrant_offset}
     return meilleur, info
 
 
@@ -396,12 +445,15 @@ def detect_calibration_markers(image: np.ndarray,
             continue
         peaks = _scan_facial_strip(gray, integral, x0, x1, clip_y,
                                    quadrant_offset, w, h)
-        triplet, info = _best_facial_triplet(peaks, w, h)
-        if triplet and (meilleur is None or info["score"] > meilleur[2]["score"]):
-            meilleur = (triplet, quadrant_offset, info)
+        # Si on a un triplet, chercher la 4e mire plus haut (17 mm au-dessus)
+        quadruplet, info = _best_facial_quadruplet(peaks, gray, integral, w, h,
+                                                   clip_y, quadrant_offset,
+                                                   x0, x1, known_scale)
+        if quadruplet and (meilleur is None or info["score"] > meilleur[2]["score"]):
+            meilleur = (quadruplet, quadrant_offset, info)
 
     if meilleur is None:
-        log.info("Calibration: aucun triplet équidistant crédible → repli Hough")
+        log.info("Calibration: aucun quadruplet valide crédible → repli Hough")
         fallback = _fallback_hough(gray, h, w)
         if inverse_rot_mat is not None and fallback.get("markers"):
             restored = reproject_points(fallback["markers"], inverse_rot_mat)
@@ -409,25 +461,25 @@ def detect_calibration_markers(image: np.ndarray,
                                    for p in restored]
         return fallback
 
-    best_triple, quadrant_offset, info = meilleur
-    best_triple.sort(key=lambda p: p["x"])
-    for m in best_triple:
+    best_quad, quadrant_offset, info = meilleur
+    # best_quad = [gauche, centre, droite, 4e_mire] déjà ordonnés par x
+    for m in best_quad:
         m["y"] = clip_y
 
-    total_px = best_triple[2]["x"] - best_triple[0]["x"]
-    avg_spacing = ((best_triple[1]["x"] - best_triple[0]["x"]) +
-                   (best_triple[2]["x"] - best_triple[1]["x"])) / 2
+    total_px = best_quad[2]["x"] - best_quad[0]["x"]  # span de la rangée (gauche→droite)
+    avg_spacing = ((best_quad[1]["x"] - best_quad[0]["x"]) +
+                   (best_quad[2]["x"] - best_quad[1]["x"])) / 2
     # Échelle = écartement CONNU des mires extrêmes / distance mesurée.
     scale = clip.scale_from_span(clip.FACIAL_SPACING_EXTREME_MM, total_px) \
         if total_px > 0 else 0.0
-    confidence = min(1.0, sum(m["score"] for m in best_triple) / 400)
+    confidence = min(1.0, sum(m["score"] for m in best_quad) / 500)
 
-    log.info(f"Calibration DONE: markers={[(m['x'], m['y']) for m in best_triple]} "
+    log.info(f"Calibration DONE: markers={[(m['x'], m['y']) for m in best_quad]} "
              f"span={total_px}px (carreau {2 * quadrant_offset}px, équidistance "
-             f"{info['equi'] * 100:.1f}%) spacing={avg_spacing:.0f}px "
-             f"scale={scale:.4f}mm/px conf={confidence:.2f}")
+             f"{info['equi'] * 100:.1f}%, 4e mire Δy={info.get('dy_17mm', '?')}px) "
+             f"spacing={avg_spacing:.0f}px scale={scale:.4f}mm/px conf={confidence:.2f}")
 
-    detected_markers = [{"x": float(m["x"]), "y": float(m["y"])} for m in best_triple]
+    detected_markers = [{"x": float(m["x"]), "y": float(m["y"])} for m in best_quad]
     restored_markers = reproject_points(detected_markers, inverse_rot_mat)
 
     return {

@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
-import { History, Search, Trash2, Eye, ArrowLeft, FileText, UserRound, Calendar, Ruler, X } from 'lucide-react'
+import { Search, Trash2, Eye, ArrowLeft, FileText, UserRound, Calendar, Ruler, X } from 'lucide-react'
 import { listMeasurements, deleteMeasurement, getMeasurement } from '../services/measurements'
 import { getStoredUser } from '../services/auth'
+import { filterHistoryItems } from '../core/historyFilter'
 
 const cardStyle = { background: 'var(--color-card)', border: '1px solid var(--color-border)' }
 
@@ -16,6 +17,7 @@ export default function HistoryPage({ onBackToHome }) {
   const [error, setError] = useState(null)
   const [detail, setDetail] = useState(null)
   const [confirmDel, setConfirmDel] = useState(null)
+  const [query, setQuery] = useState('')
   const [user, setUser] = useState(null)
 
   useEffect(() => { setUser(getStoredUser()) }, [])
@@ -38,11 +40,18 @@ export default function HistoryPage({ onBackToHome }) {
   }
 
   const doDelete = async (id) => {
-    await deleteMeasurement(id)
-    setConfirmDel(null)
-    if (detail?.id === id) setDetail(null)
-    load()
+    try {
+      await deleteMeasurement(id)
+      setConfirmDel(null)
+      if (detail?.id === id) setDetail(null)
+      load()
+    } catch (e) {
+      setError(e.message)
+      setConfirmDel(null)
+    }
   }
+
+  const visible = filterHistoryItems(items, query)
 
   if (detail) {
     return (
@@ -110,7 +119,10 @@ export default function HistoryPage({ onBackToHome }) {
         <h2 className="text-lg font-semibold" style={{ color: 'var(--color-text)', fontFamily: "'Playfair Display', Georgia, serif'" }}>
           Historique des mesures
         </h2>
-        <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>{items.length} mesure(s) enregistrée(s)</p>
+        <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+          {items.length} mesure(s) enregistrée(s)
+          {query.trim() && items.length > 0 ? ` · ${visible.length} affichée(s)` : ''}
+        </p>
       </div>
 
       {onBackToHome && (
@@ -119,13 +131,36 @@ export default function HistoryPage({ onBackToHome }) {
         </button>
       )}
 
+      {items.length > 0 && (
+        <div className="relative">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--color-text-muted)' }} />
+          <input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Escape') setQuery('') }}
+            placeholder="Rechercher nom, monture, notes…"
+            aria-label="Rechercher dans l'historique"
+            className="w-full pl-9 pr-9 py-2 rounded-lg text-sm outline-none"
+            style={{ background: 'var(--color-card)', border: '1px solid var(--color-border)', color: 'var(--color-text)' }}
+          />
+          {query && (
+            <button type="button" onClick={() => setQuery('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1"
+              style={{ color: 'var(--color-text-muted)' }} aria-label="Effacer la recherche">
+              <X size={14} />
+            </button>
+          )}
+        </div>
+      )}
+
       {error && <div className="rounded-lg px-3 py-2 text-xs text-center" style={{ background: 'rgba(239,68,68,.12)', color: '#ef4444' }}>{error}</div>}
 
       {loading ? <p className="text-center text-xs" style={{ color: 'var(--color-text-muted)' }}>Chargement…</p>
         : items.length === 0 ? <p className="text-center text-xs" style={{ color: 'var(--color-text-muted)' }}>Aucune mesure enregistrée</p>
+          : visible.length === 0 ? <p className="text-center text-xs" style={{ color: 'var(--color-text-muted)' }}>Aucun résultat pour « {query.trim()} »</p>
           : (
             <div className="space-y-2">
-              {items.map(m => (
+              {visible.map(m => (
                 <div key={m.id} className="rounded-xl p-3 flex items-center gap-3" style={cardStyle}>
                   {/* Miniatures Face + Profil */}
                   <div className="flex gap-1.5 shrink-0" onClick={() => openDetail(m.id)} role="button">
