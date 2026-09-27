@@ -96,10 +96,15 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
         const blob = await resp.blob()
         if (cancelAutoRef.current) { setAutoDetecting(false); setAutoFailed(true); return }
         const apiResult = await analyzeCalibration(blob)
-        if (!cancelAutoRef.current && apiResult.markers && apiResult.markers.length === 3) {
-          setPoints(apiResult.markers)
+        // Le backend renvoie 3 mires… ou 4 : le clip v19.5 en a une QUATRIÈME,
+        // surélevée, qui sert à l'auto-contrôle des étalons et à la mesure du roll.
+        // Exiger `=== 3` rejetait donc une détection RÉUSSIE sur le clip v19.5.
+        // Le calibrage n'utilise que la rangée (les 3 premières, dans l'ordre).
+        const detected = Array.isArray(apiResult.markers) ? apiResult.markers : []
+        if (cancelAutoRef.current) return
+        if (detected.length >= 3) {
+          setPoints(detected.slice(0, 3))
           setAutoDetecting(false)
-          // Utiliser l'échelle calculée par le backend — plus de recalcul frontal
           const scaleInfo = {
             scalePxToMm: apiResult.scale_mm_per_px,
             pixelDist1: Math.round(apiResult.spacing_px),
@@ -109,10 +114,27 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
             poseAssessment: 'Automatique (backend)',
             source: 'backend_auto',
           }
-          setDebugInfo({ ...scaleInfo, backendConfidence: apiResult.detection_confidence })
+          setDebugInfo({
+            ...scaleInfo,
+            backendConfidence: apiResult.detection_confidence,
+            nClipMarkers: detected.length,
+            // Roll du clip (C) : référence MÉCANIQUE (les mires du clip), mesurée
+            // sans dépendre d'un visage. Affiché en degrés, pas en %.
+            clipRollDeg: apiResult.facial_quad_check?.roll_deg ?? null,
+            clipRollOk: apiResult.facial_quad_check?.roll_consistent ?? null,
+          })
           backendScaleRef.current = scaleInfo  // stocker pour confirmCalibration
           return
         }
+        // Détection PARTIELLE (moins de 3 mires de rangée) : c'est un échec, pas
+        // une attente. Sans ce cas, l'écran restait figé sur « Analyse des mires… »
+        // et l'utilisateur n'avait aucun moyen de reprendre la main.
+        setAutoDetecting(false)
+        setAutoFailed(true)
+        setDebugInfo({
+          error: `Détection incomplète : ${detected.length} mire(s) sur 3 — pointage manuel`,
+        })
+        return
       } catch (e) {
         console.error('Calibration API échouée:', e.message)
         if (!cancelAutoRef.current) {
@@ -136,7 +158,16 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
       : manuallyAdjustedRef.current
         ? { text: 'Repères placés manuellement', color: 'var(--color-text-muted)' }
         : debugInfo?.backendConfidence != null
-          ? { text: `Détection serveur · confiance ${Number(debugInfo.backendConfidence).toFixed(2)}`, color: '#22c55e' }
+          ? {
+              text: `Détection serveur · confiance ${Number(debugInfo.backendConfidence).toFixed(2)}`
+                + (debugInfo.nClipMarkers === 4 ? ' · 4 mires' : '')
+                + (debugInfo.clipRollDeg != null
+                  ? ` · clip ${debugInfo.clipRollDeg >= 0 ? '+' : ''}${Number(debugInfo.clipRollDeg).toFixed(1)}°`
+                  : ''),
+              // Le roll vient des mires du CLIP (référence mécanique) : un désaccord
+              // entre les deux directions du quadrilatère signale une détection douteuse.
+              color: debugInfo.clipRollOk === false ? 'var(--color-red)' : '#22c55e',
+            }
           : { text: 'Détection serveur', color: '#22c55e' }
 
   // Réticule du repère — SOURCE UNIQUE, partagée avec la loupe (qui le grossit du même

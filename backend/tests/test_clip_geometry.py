@@ -112,6 +112,73 @@ def test_mires_faciales_et_ecartements():
     assert haute[1] == 17.0 and haute[0] == 30.0             # 4e mire, surélevée
 
 
+def test_ecart_vertical_de_la_4e_mire_vaut_14_et_pas_17():
+    """L'ÉCART vertical vaut 14,00 mm : « 17 » est une POSITION (stem_top_z).
+
+    Confondre les deux (17 au lieu de 14) surestime le décalage de 21 % — sans
+    conséquence tant que la tolérance de détection restait large, mais faux dès
+    qu'on veut en tirer une inclinaison.
+    """
+    assert cg.FACIAL_RAISED_Z_GAP_MM == pytest.approx(14.00)
+    assert cg.FACIAL_RAISED_Z_GAP_MM != 17.0
+    # la position absolue reste bien 17, et la barre est à 3
+    assert cg.facial_plan_pos("facial_haute")[1] == 17.0
+    assert cg.FACIAL_BAR_Z_MM == 3.00
+    assert cg.FACIAL_RAISED_Z_GAP_MM == 17.0 - 3.0
+    # décalage horizontal de la 4e mire par rapport au centre
+    assert cg.FACIAL_RAISED_X_FROM_CENTRE_MM == pytest.approx(30.00)
+
+
+def test_quadrilatere_facial_distances_et_rapports():
+    """Les écartements dérivés du quadrilatère, et leurs rapports invariants."""
+    spans = cg.FACIAL_QUAD_SPANS_MM
+    assert spans["extreme"] == pytest.approx(100.0000, abs=1e-6)
+    assert spans["adjacente"] == pytest.approx(50.0000, abs=1e-6)
+    assert spans["haute_centre"] == pytest.approx(math.hypot(30, 14), abs=1e-6)
+    assert spans["haute_droite"] == pytest.approx(math.hypot(20, 14), abs=1e-6)
+    assert spans["haute_gauche"] == pytest.approx(math.hypot(80, 14), abs=1e-6)
+    assert spans["haute_centre"] == pytest.approx(33.1059, abs=1e-3)
+    assert spans["haute_droite"] == pytest.approx(24.4131, abs=1e-3)
+    assert spans["haute_gauche"] == pytest.approx(81.2158, abs=1e-3)
+
+    # rapports invariants d'échelle : vérifiables sans connaître les mm/px
+    ratios = cg.FACIAL_QUAD_RATIOS
+    assert ratios["extreme"] == pytest.approx(1.0)
+    assert ratios["adjacente"] == pytest.approx(0.5)
+    assert ratios["haute_centre"] == pytest.approx(33.1059 / 100.0, abs=1e-5)
+    assert ratios["haute_droite"] == pytest.approx(24.4131 / 100.0, abs=1e-5)
+    assert ratios["haute_centre"] / ratios["adjacente"] == pytest.approx(0.66212, abs=1e-4)
+
+
+def test_directions_du_quadrilatere_sont_les_references_de_roll():
+    """La 4e mire sort de la rangée : ses directions sont la référence du roll."""
+    refs = cg.FACIAL_ROLL_REFS_DEG
+    # atan2(14, 30) et atan2(14, 80) — mesurés depuis le centre et depuis la gauche
+    assert refs["haute_centre"] == pytest.approx(math.degrees(math.atan2(14, 30)), abs=1e-9)
+    assert refs["haute_centre"] == pytest.approx(25.0169, abs=1e-3)
+    assert refs["haute_gauche"] == pytest.approx(9.9262, abs=1e-3)
+    # les deux références sont franchement distinctes : contrôle croisé utile
+    assert abs(refs["haute_centre"] - refs["haute_gauche"]) > 10.0
+    # la 4e mire est bien HORS de la rangée (sinon pas de référence de roll)
+    assert refs["haute_centre"] > 5.0
+
+
+def test_triangle_centre_droite_haute_angles():
+    """Le triangle C-D-H est scalène : 25,00° / 34,99° / 120,0°."""
+    def angle_at(sommet, p1, p2):
+        a, b = cg.facial_plan_pos(p1), cg.facial_plan_pos(p2)
+        s = cg.facial_plan_pos(sommet)
+        v1 = (a[0] - s[0], a[1] - s[1])
+        v2 = (b[0] - s[0], b[1] - s[1])
+        cosv = ((v1[0] * v2[0] + v1[1] * v2[1])
+                / (math.hypot(*v1) * math.hypot(*v2)))
+        return math.degrees(math.acos(max(-1.0, min(1.0, cosv))))
+
+    assert angle_at("facial_centre", "facial_droite", "facial_haute") == pytest.approx(25.0169, abs=1e-3)
+    assert angle_at("facial_droite", "facial_centre", "facial_haute") == pytest.approx(34.9920, abs=1e-3)
+    assert angle_at("facial_haute", "facial_centre", "facial_droite") == pytest.approx(120.0, abs=0.02)
+
+
 def test_echelle_vient_des_ecartements_connus():
     """L'échelle se déduit d'un écartement CONNU — jamais d'un IPD supposé."""
     # 100 mm faciaux sur 959 px
@@ -209,3 +276,156 @@ def test_stl_motif_damier(mesure):
 def test_stl_encombrement(mesure):
     for axe, valeur in cg.BODY_BBOX_MM.items():
         assert mesure["bbox"][axe] == pytest.approx(valeur, abs=0.06)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 3. Quadrilatère facial — auto-contrôle des étalons (A), ratios sans échelle
+#    (B), et roll mécanique (C). Fonctions PURES : testables sans image.
+# ════════════════════════════════════════════════════════════════════════════
+
+ROLES_FACIAUX = ("facial_gauche", "facial_centre", "facial_droite", "facial_haute")
+
+
+def _points_du_clip(scale=0.25, ox=400.0, oy=900.0, rot_deg=0.0):
+    """Les 4 mires faciales projetées comme sur une photo, puis pivotées.
+
+    Repère image : x vers la droite, y vers le BAS (d'où le signe de z).
+    """
+    th = math.radians(rot_deg)
+    pts = {}
+    for role in ROLES_FACIAUX:
+        x, z = cg.facial_plan_pos(role)
+        px, py = x / scale, -z / scale
+        pts[role] = (ox + px * math.cos(th) - py * math.sin(th),
+                     oy + px * math.sin(th) + py * math.cos(th))
+    return pts
+
+
+def test_A_auto_controle_des_etalons_sur_un_quadruplet_juste():
+    """Un quadruplet correct : les 3 étalons donnent LA MÊME échelle."""
+    pts = _points_du_clip(scale=0.25)
+    chk = cg.facial_quad_check(pts)
+
+    assert chk["n_points"] == 4
+    assert chk["scale_mm_per_px"] == pytest.approx(0.25, rel=1e-6)
+    assert chk["scale_spread"] == pytest.approx(0.0, abs=1e-9)
+    assert chk["scale_consistent"] is True
+    assert chk["ratios_consistent"] is True
+    # les 4 étalons sont bien exploités (extrême, adjacente, 2 inclinés)
+    assert set(chk["scale_by_span"]) == {"extreme", "adjacente",
+                                         "haute_centre", "haute_droite",
+                                         "haute_gauche"}
+
+
+def test_A_une_mire_decalee_fait_diverger_les_etalons():
+    """Une mire prise pour une autre ⇒ échelles incompatibles ⇒ contrôle négatif."""
+    pts = _points_du_clip(scale=0.25)
+    pts["facial_haute"] = (pts["facial_haute"][0] + 30.0, pts["facial_haute"][1])
+    chk = cg.facial_quad_check(pts)
+
+    assert chk["scale_consistent"] is False
+    assert chk["scale_spread"] > cg.FACIAL_SCALE_TOL
+
+
+def test_B_les_ratios_valident_sans_connaitre_l_echelle():
+    """Les rapports d'écartements sont invariants d'échelle (aucun mm/px requis)."""
+    petit = cg.facial_quad_check(_points_du_clip(scale=0.10))
+    grand = cg.facial_quad_check(_points_du_clip(scale=0.60))
+
+    # échelles très différentes…
+    assert petit["scale_mm_per_px"] == pytest.approx(0.10, rel=1e-6)
+    assert grand["scale_mm_per_px"] == pytest.approx(0.60, rel=1e-6)
+    # …mais MÊMES rapports, donc même verdict
+    assert petit["ratio_by_span"] == pytest.approx(grand["ratio_by_span"], rel=1e-9)
+    assert petit["ratios_consistent"] and grand["ratios_consistent"]
+    # Chaque écartement mesuré est proportionnel à son écartement théorique :
+    # les rapports normalisés valent donc 1,0, sans qu'aucun mm/px n'intervienne.
+    assert all(v == pytest.approx(1.0) for v in petit["ratio_by_span"].values())
+    assert petit["ratio_spread"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_B_les_rapports_du_quadrilatere_sont_ceux_du_clip():
+    """Contrôle indépendant : les rapports MESURÉS valent ceux du clip."""
+    pts = _points_du_clip(scale=0.25)
+    spans = {"extreme": cg._dist2(pts["facial_gauche"], pts["facial_droite"]),
+             "adjacente": cg._dist2(pts["facial_centre"], pts["facial_droite"]),
+             "haute_centre": cg._dist2(pts["facial_centre"], pts["facial_haute"])}
+    # 100 / 50 / 33,106 mm ⇒ mêmes proportions en pixels
+    assert spans["adjacente"] / spans["extreme"] == pytest.approx(0.5, rel=1e-9)
+    assert (spans["haute_centre"] / spans["extreme"]
+            == pytest.approx(cg.FACIAL_QUAD_RATIOS["haute_centre"], rel=1e-9))
+    assert (spans["haute_centre"] / spans["adjacente"]
+            == pytest.approx(0.66212, rel=1e-4))
+
+
+def test_B_un_quadruplet_faux_est_rejete_sans_echelle():
+    """Sans aucune échelle, des rapports faux suffisent à écarter le candidat."""
+    pts = _points_du_clip(scale=0.25)
+    pts["facial_droite"] = (pts["facial_droite"][0] * 0.5, pts["facial_droite"][1])
+    chk = cg.facial_quad_check(pts)
+    assert chk["ratios_consistent"] is False
+    assert chk["ratio_spread"] > cg.FACIAL_SCALE_TOL
+
+
+def test_C_roll_nul_quand_le_clip_est_droit():
+    """Clip droit sur la photo ⇒ roll 0°, et les 2 références concordent."""
+    chk = cg.facial_quad_check(_points_du_clip(scale=0.25))
+    assert chk["roll_deg"] == pytest.approx(0.0, abs=1e-6)
+    assert chk["roll_by_ref"]["haute_centre"] == pytest.approx(0.0, abs=1e-6)
+    assert chk["roll_by_ref"]["haute_gauche"] == pytest.approx(0.0, abs=1e-6)
+    assert chk["roll_disagreement_deg"] == pytest.approx(0.0, abs=1e-6)
+    assert chk["roll_consistent"] is True
+
+
+@pytest.mark.parametrize("angle", [-12.0, -3.5, 4.0, 11.0])
+def test_C_le_roll_mesure_l_inclinaison_du_clip(angle):
+    """Le clip pivoté de θ donne un roll de −θ (repère image, y vers le bas)."""
+    chk = cg.facial_quad_check(_points_du_clip(scale=0.25, rot_deg=angle))
+    assert chk["roll_deg"] == pytest.approx(-angle, abs=1e-6)
+    assert chk["roll_disagreement_deg"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_C_le_roll_ne_depend_ni_de_l_echelle_ni_de_la_position():
+    """Le roll est une pure rotation : ni l'échelle ni la translation n'y entrent."""
+    ref = cg.facial_quad_check(_points_du_clip(scale=0.25, rot_deg=7.0))["roll_deg"]
+    for kwargs in ({"scale": 0.5}, {"scale": 0.12}, {"ox": 120.0, "oy": 240.0},
+                   {"ox": 1800.0, "oy": 1500.0}):
+        chk = cg.facial_quad_check(_points_du_clip(rot_deg=7.0, **kwargs))
+        assert chk["roll_deg"] == pytest.approx(ref, abs=1e-6)
+
+
+def test_C_les_deux_references_divergent_si_une_mire_est_fausse():
+    """Un désaccord entre les 2 références trahit une détection douteuse."""
+    pts = _points_du_clip(scale=0.25)
+    pts["facial_haute"] = (pts["facial_haute"][0], pts["facial_haute"][1] + 25.0)
+    chk = cg.facial_quad_check(pts)
+    assert chk["roll_disagreement_deg"] > cg.FACIAL_ROLL_TOL_DEG
+    assert chk["roll_consistent"] is False
+
+
+def test_facial_points_from_markers_respecte_l_ordre_du_clip():
+    """L'ordre est celui du clip — pas un tri par x (la 4e mire est au milieu)."""
+    markers = [{"x": 100, "y": 700}, {"x": 200, "y": 700},
+               {"x": 300, "y": 700}, {"x": 260, "y": 644}]  # la 4e entre 200 et 300
+    pts = cg.facial_points_from_markers(markers)
+    assert set(pts) == set(ROLES_FACIAUX)
+    assert pts["facial_gauche"][0] == 100
+    assert pts["facial_haute"][0] == 260
+    # moins de 4 mires : pas de diagnostic plutôt qu'un diagnostic faux
+    assert cg.facial_points_from_markers(markers[:3]) == {}
+
+
+def test_le_diagnostic_est_serialisable_meme_incomplet():
+    """`facial_quad_check` doit rester sûr avec des points manquants."""
+    partiel = cg.facial_quad_check({"facial_centre": (10.0, 10.0),
+                                    "facial_haute": (40.0, -5.0)})
+    assert partiel["n_points"] == 2
+    assert partiel["scale_consistent"] is False
+    assert partiel["roll_deg"] == pytest.approx(
+        math.degrees(math.atan2(15.0, 30.0)) - cg.FACIAL_ROLL_REFS_DEG["haute_centre"],
+        abs=1e-9)
+    assert partiel["roll_disagreement_deg"] is None
+    assert partiel["roll_consistent"] is False
+    # sérialisable : aucun objet exotique
+    import json
+    json.dumps(partiel)

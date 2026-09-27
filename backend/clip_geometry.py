@@ -83,6 +83,233 @@ FACIAL_MARKERS: Tuple[Dict, ...] = (
     {"role": "facial_haute", "x": 30.00, "y": -0.75, "z": 17.00},   # 4e mire, hors de la barre
 )
 
+# ── Quadrilatère facial : tout ce qui suit est DÉRIVÉ des positions ci-dessus ─
+# Les 3 mires de la barre sont à z = 3,00 (= bar_height/2, une barre de 6 mm de
+# haut) et la 4ᵉ à z = 17,00 (= stem_top_z, le haut du montant). **L'ÉCART
+# VERTICAL qui pilote la détection vaut donc 14,00 mm** : la cote « 17 » est une
+# POSITION, pas un décalage. Le code a longtemps utilisé 17,0 comme décalage —
+# 21 % de trop. Inoffensif tant que la tolérance restait large, mais faux dès
+# qu'on veut mesurer une inclinaison (rôle de la 4ᵉ mire).
+FACIAL_BAR_Z_MM = 3.00                     # = bar_height / 2 (SCAD : bar_height = 6)
+FACIAL_RAISED_ROLE = "facial_haute"
+FACIAL_CENTRE_ROLE = "facial_centre"
+FACIAL_BAR_ROLES = ("facial_gauche", FACIAL_CENTRE_ROLE, "facial_droite")
+
+
+def facial_marker(role: str) -> Dict:
+    """La mire faciale d'un rôle donné (positions mesurées sur le STL)."""
+    return next(m for m in FACIAL_MARKERS if m["role"] == role)
+
+
+def facial_plan_pos(role: str) -> Tuple[float, float]:
+    """Position (x, z) d'une mire faciale dans son plan (y = −0,75 constant).
+
+    Les 4 mires faciales sont COPLANAIRES : la pose du clip se résout dans un
+    plan (2D), pas dans l'espace — c'est ce qui rend l'ajustement stable.
+    """
+    m = facial_marker(role)
+    return m["x"], m["z"]
+
+
+def facial_span_mm(role_a: str, role_b: str) -> float:
+    """Distance réelle entre deux mires faciales, dans leur plan commun."""
+    xa, za = facial_plan_pos(role_a)
+    xb, zb = facial_plan_pos(role_b)
+    return math.hypot(xb - xa, zb - za)
+
+
+def facial_direction_deg(role_from: str, role_to: str) -> float:
+    """Direction du segment `role_from → role_to` (degrés, + = vers le haut).
+
+    C'est la RÉFÉRENCE DU ROLL : l'angle mesuré sur la photo moins cette valeur
+    donne l'inclinaison du clip dans le plan image. Comme la 4ᵉ mire sort de la
+    rangée, la photo peut être redressée **sans aucune détection de visage** —
+    la référence est mécanique.
+    """
+    xa, za = facial_plan_pos(role_from)
+    xb, zb = facial_plan_pos(role_to)
+    return math.degrees(math.atan2(zb - za, xb - xa))
+
+
+FACIAL_RAISED_Z_GAP_MM = facial_marker(FACIAL_RAISED_ROLE)["z"] - FACIAL_BAR_Z_MM
+FACIAL_RAISED_X_FROM_CENTRE_MM = (facial_marker(FACIAL_RAISED_ROLE)["x"]
+                                  - facial_marker(FACIAL_CENTRE_ROLE)["x"])
+
+# Écartements du quadrilatère, en mm, nommés par le couple qu'ils joignent.
+# `extreme` (100,00 mm) est l'étalon de référence : les rapports ci-dessous sont
+# INVARIANTS D'ÉCHELLE, donc vérifiables sans connaître les mm/px.
+FACIAL_QUAD_SPANS_MM: Dict[str, float] = {
+    "extreme":      facial_span_mm("facial_gauche", "facial_droite"),
+    "adjacente":    facial_span_mm(FACIAL_CENTRE_ROLE, "facial_droite"),
+    "haute_centre": facial_span_mm(FACIAL_CENTRE_ROLE, FACIAL_RAISED_ROLE),
+    "haute_droite": facial_span_mm("facial_droite", FACIAL_RAISED_ROLE),
+    "haute_gauche": facial_span_mm("facial_gauche", FACIAL_RAISED_ROLE),
+}
+
+FACIAL_QUAD_RATIOS: Dict[str, float] = {
+    name: span / FACIAL_QUAD_SPANS_MM["extreme"]
+    for name, span in FACIAL_QUAD_SPANS_MM.items()
+}
+
+# Références de roll : deux directions indépendantes vers la 4ᵉ mire. Les
+# comparer entre elles contrôle la mesure d'inclinaison sans autre information.
+FACIAL_ROLL_REFS_DEG: Dict[str, float] = {
+    "haute_centre": facial_direction_deg(FACIAL_CENTRE_ROLE, FACIAL_RAISED_ROLE),
+    "haute_gauche": facial_direction_deg("facial_gauche", FACIAL_RAISED_ROLE),
+}
+
+# Les couples de mires qui portent un étalon, dans l'ordre (rôle A, rôle B).
+# Chaque entrée de FACIAL_QUAD_SPANS_MM en vient : une seule liste à tenir à jour.
+_FACIAL_PAIRES: Dict[str, Tuple[str, str]] = {
+    "extreme":      ("facial_gauche", "facial_droite"),
+    "adjacente":    (FACIAL_CENTRE_ROLE, "facial_droite"),
+    "haute_centre": (FACIAL_CENTRE_ROLE, FACIAL_RAISED_ROLE),
+    "haute_droite": ("facial_droite", FACIAL_RAISED_ROLE),
+    "haute_gauche": ("facial_gauche", FACIAL_RAISED_ROLE),
+}
+
+# Tolérances du contrôle croisé du quadrilatère.
+FACIAL_SCALE_TOL = 0.02          # les étalons doivent concorder à ±2 %
+FACIAL_ROLL_TOL_DEG = 3.0        # accord exigé entre les 2 références de roll
+
+
+def _dist2(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    return math.hypot(b[0] - a[0], b[1] - a[1])
+
+
+def facial_scale_estimates(points_px: Dict[str, Tuple[float, float]]) -> Dict[str, float]:
+    """Échelle (mm/px) déduite de CHAQUE écartement connu du quadrilatère facial.
+
+    Le clip n'a ni réglette ni graduation : chacun de ses écartements est un
+    étalon. Les confronter est un auto-contrôle — une mire prise pour une autre,
+    ou un damier parasite, les fait diverger. L'échelle faciale n'était jusqu'ici
+    tirée que du span des extrêmes (100 mm) ; la 4ᵉ mire en donne deux autres,
+    dont deux INCLINÉS (donc insensibles à une rotation dans le plan).
+
+    `points_px` : centres MESURÉS par rôle, dans un repère quelconque (les
+    rapports seuls comptent, l'unité est le pixel de l'image).
+    """
+    out: Dict[str, float] = {}
+    for nom, (ra, rb) in _FACIAL_PAIRES.items():
+        if ra not in points_px or rb not in points_px:
+            continue
+        span = _dist2(points_px[ra], points_px[rb])
+        if span > 0:
+            out[nom] = FACIAL_QUAD_SPANS_MM[nom] / span
+    return out
+
+
+def facial_roll_by_ref(points_px: Dict[str, Tuple[float, float]]) -> Dict[str, float]:
+    """Inclinaison du clip (degrés) vue depuis CHAQUE référence vers la 4ᵉ mire.
+
+    `roll = direction_mesurée − direction_du_clip`. La 4ᵉ mire sort de la
+    rangée, donc le segment qui la joint a une pente connue du clip (25,02° depuis
+    le centre, 9,93° depuis la gauche) : toute rotation du clip s'y ajoute. Deux
+    références indépendantes ⇒ contrôle croisé, et aucune détection de visage
+    n'est nécessaire — la référence est mécanique.
+
+    ⚠ Repère image : `y` croît vers le BAS. On inverse son signe pour parler la
+    même langue que le clip (z = hauteur, croissante vers le haut) ; sans cela le
+    roll sortirait de signe opposé.
+    """
+    out: Dict[str, float] = {}
+    for nom, (ra, rb) in {"haute_centre": (FACIAL_CENTRE_ROLE, FACIAL_RAISED_ROLE),
+                          "haute_gauche": ("facial_gauche", FACIAL_RAISED_ROLE)}.items():
+        if ra not in points_px or rb not in points_px:
+            continue
+        (ax, ay), (bx, by) = points_px[ra], points_px[rb]
+        mesure = math.degrees(math.atan2(-(by - ay), bx - ax))
+        out[nom] = mesure - FACIAL_ROLL_REFS_DEG[nom]
+    return out
+
+
+def facial_quad_check(points_px: Dict[str, Tuple[float, float]],
+                      scale_tol: float = FACIAL_SCALE_TOL,
+                      roll_tol_deg: float = FACIAL_ROLL_TOL_DEG) -> Dict:
+    """Diagnostic complet du quadrilatère facial : échelle, cohérence, roll.
+
+    Trois apports, tous fondés sur la géométrie mesurée du clip :
+
+    **A. Auto-contrôle des étalons** — `scale_by_span` donne l'échelle déduite de
+    chaque écartement ; `scale_spread` leur dispersion relative. Une dispersion
+    au-delà de `scale_tol` signale une mire prise pour une autre (ou un damier
+    parasite), donc une échelle fausse pour TOUTES les mesures.
+
+    **B. Validation sans échelle** — `ratio_spread` compare les rapports
+    d'écartements MESURÉS à ceux du clip. Comme ils sont invariants d'échelle, le
+    quadruplet est validable avant même de connaître les mm/px (même principe que
+    le rapport 1,2313 du triangle latéral).
+
+    **C. Roll du clip** — `roll_deg` est l'inclinaison dans le plan image, vue
+    par deux références indépendantes ; `roll_disagreement_deg` est leur écart.
+    Il permet de redresser la photo sur une référence MÉCANIQUE plutôt que sur
+    l'angle inter-pupillaire (qui dépend d'un visage détecté), et de signaler un
+    clip posé de travers.
+
+    Retourne un dict sérialisable (JSON), sûr même si des mires manquent.
+    """
+    est = facial_scale_estimates(points_px)
+    roll = facial_roll_by_ref(points_px)
+
+    scale = None
+    spread = None
+    if len(est) >= 2:
+        vals = sorted(est.values())
+        med = vals[len(vals) // 2]
+        if med > 0:
+            scale = med
+            spread = (vals[-1] - vals[0]) / med
+
+    # Rapports normalisés : chaque écartement mesuré / théorique, puis divisé par
+    # le plus grand. Tous valent 1,0 pour un quadruplet correct, quelle que soit
+    # l'échelle ; leur dispersion est la mesure d'incohérence.
+    ratios: Dict[str, float] = {}
+    ratio_spread = None
+    if len(est) >= 2:
+        maxi = max(est.values())
+        ratios = {nom: v / maxi for nom, v in est.items()}
+        rs = sorted(ratios.values())
+        ratio_spread = (rs[-1] - rs[0]) / rs[-1] if rs[-1] > 0 else None
+
+    roll_deg = None
+    disagreement = None
+    if roll:
+        vals_r = sorted(roll.values())
+        if len(vals_r) == 1:
+            roll_deg = vals_r[0]
+        else:
+            roll_deg = sum(vals_r) / len(vals_r)
+            disagreement = vals_r[-1] - vals_r[0]
+
+    return {
+        "n_points": len(points_px),
+        "scale_mm_per_px": scale,
+        "scale_by_span": est,
+        "scale_spread": spread,
+        "scale_consistent": spread is not None and spread <= scale_tol,
+        "ratio_by_span": ratios,
+        "ratio_spread": ratio_spread,
+        "ratios_consistent": ratio_spread is not None and ratio_spread <= scale_tol,
+        "roll_deg": roll_deg,
+        "roll_by_ref": roll,
+        "roll_disagreement_deg": disagreement,
+        "roll_consistent": (disagreement is not None
+                            and disagreement <= roll_tol_deg),
+    }
+
+
+def facial_points_from_markers(markers: List[Dict]) -> Dict[str, Tuple[float, float]]:
+    """Associe les 4 mires MESURÉES à leurs rôles, pour `facial_quad_check`.
+
+    `markers` : liste de dicts `{'x', 'y', ...}` dans l'ordre rendu par le
+    détecteur — `[gauche, centre, droite, 4ᵉ mire]`. L'ordre est celui du clip
+    (et non un tri par x), car la 4ᵉ mire tombe ENTRE le centre et la droite.
+    """
+    if len(markers) < 4:
+        return {}
+    roles = ("facial_gauche", FACIAL_CENTRE_ROLE, "facial_droite", FACIAL_RAISED_ROLE)
+    return {role: (float(m["x"]), float(m["y"])) for role, m in zip(roles, markers)}
+
 # ── Mires latérales (6 : 3 par côté, symétriques) ────────────────────────────
 # positions dans le plan |x| = 76,00 (Ø 12,00 mm chacune)
 LATERAL_SPACING_MM = 25.00            # paire MÉTROLOGIQUE = les deux mires basses

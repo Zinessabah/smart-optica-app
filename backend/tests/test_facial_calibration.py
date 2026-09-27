@@ -1,13 +1,22 @@
-"""Détection FACIALE du clip v19.5 — 4 mires (3 alignées + 1 surélevée), multi-échelle, sans IPD supposé.
+"""Détection FACIALE du clip v19.5 — 4 mires (3 alignées + 1 surélevée), multi-échelle, sans IPD.
 
 Ce que ces tests verrouillent :
   1. l'échelle faciale vient de l'écartement CONNU des 2 mires extrêmes (100,00 mm),
      jamais d'un « IPD de 63 mm pour tout le monde » — le facteur empirique que le
      clip de référence existe précisément pour supprimer ;
   2. le triplet de base est ÉQUIDISTANT (−50/0/+50 mm), puis la 4ᵉ mire est validée
-     à x = +30 mm (entre centre et droite) et Δy = +17 mm ;
-  3. un damier de carreau inconnu est trouvé quand même (balayage multi-échelle) ;
-  4. un champ physiquement invraisemblable est refusé.
+     à x = +30 mm du centre et à 14,00 mm AU-DESSUS de la rangée ;
+  3. l'ÉCART vertical vaut 14,00 mm (z 17,00 − z 3,00) : « 17 » est une POSITION
+     (`stem_top_z`), pas un décalage — confondre les deux le surestime de 21 % ;
+  4. la NON-MAXIMUM SUPPRESSION ne laisse qu'UN pic par mire : sans elle, un triplet
+     s'apparie sur des maxima secondaires du damier et l'échelle sort fausse de 18 % ;
+  5. un damier de carreau inconnu est trouvé quand même (balayage multi-échelle) ;
+  6. un champ physiquement invraisemblable est refusé.
+
+⚠ CONVENTION : `_scan_facial_strip` attend le **QUADRANT** (PATTERN_QUADRANT_MM,
+2,50 mm), pas le carreau (5,00 mm). Les tests ont longtemps passé le carreau : ils
+ne reproduisaient donc pas l'appel de l'app (pitfall « reproduire l'appel exact »),
+et toléraient des positions à ±35 px d'erreur.
 """
 import math
 import pathlib
@@ -26,17 +35,28 @@ SCALE = 0.25                      # mm/px → 100 mm ⇒ 400 px ; champ 300 mm (
 Y_CLIP = 700
 
 
-def _damiers_4_mires(scale=SCALE):
-    """Les 4 mires faciales : −50 / 0 / +50 (rangée) + (30, 17) (surélevée).
+def quadrant_px(scale=SCALE):
+    """Décalage d'échantillonnage des quadrants, comme le fait l'app."""
+    return int(round(clip.PATTERN_QUADRANT_MM / scale))
 
-    Retourne (image BGR, [x des 3 mires de la rangée, (x, y) de la 4e]).
+
+def _damiers_4_mires(scale=SCALE, dy_mm=None, x4_frac=0.6):
+    """Les 4 mires faciales : −50 / 0 / +50 (rangée) + la surélevée.
+
+    `dy_mm` = écart vertical de la 4ᵉ mire (défaut : la valeur du clip, 14,00 mm).
+    `x4_frac` = position horizontale de la 4ᵉ mire, en fraction de l'écartement
+    adjacent (30/50 = 0,6 dans le clip).
+
+    Retourne (image niveaux de gris, [x des 3 mires de la rangée], (x, y) de la 4ᵉ).
     """
+    if dy_mm is None:
+        dy_mm = clip.FACIAL_RAISED_Z_GAP_MM
     img = np.full((H, W), 150, np.uint8)
     demi = int(round(clip.PATTERN_SQUARE_MM / scale))       # carreau de 5 mm
     ecart_px = int(round(clip.FACIAL_SPACING_ADJACENT_MM / scale))
     xs_rang = [300, 300 + ecart_px, 300 + 2 * ecart_px]
-    x_4e = xs_rang[1] + int(round(0.6 * ecart_px))  # 30/50 = 0.6
-    y_4e = Y_CLIP - int(round(17.0 / scale))
+    x_4e = xs_rang[1] + int(round(x4_frac * ecart_px))
+    y_4e = Y_CLIP - int(round(dy_mm / scale))
 
     for px in xs_rang:
         for (sx, sy) in ((-1, -1), (1, 1)):                 # carreaux NW et SE noirs
@@ -44,17 +64,36 @@ def _damiers_4_mires(scale=SCALE):
             y0 = Y_CLIP + (0 if sy > 0 else -demi)
             img[y0:y0 + demi, x0:x0 + demi] = 30
 
-    # 4e mire (même motif)
-    for (sx, sy) in ((-1, -1), (1, 1)):
+    for (sx, sy) in ((-1, -1), (1, 1)):                     # 4ᵉ mire, même motif
         x0 = x_4e + (0 if sx > 0 else -demi)
         y0 = y_4e + (0 if sy > 0 else -demi)
         img[y0:y0 + demi, x0:x0 + demi] = 30
 
-    return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR), xs_rang, (x_4e, y_4e)
+    return img, xs_rang, (x_4e, y_4e)
 
 
-def _make_peaks(xs, score=50.0, y=700):
+def _make_peaks(xs, score=50.0, y=Y_CLIP):
     return [{"x": x, "y": y, "score": score} for x in xs]
+
+
+def _bande_reelle(scale=SCALE):
+    """Le scan de la rangée sur l'image de référence (convention de l'app)."""
+    gray, xs_rang, x4 = _damiers_4_mires(scale)
+    q = quadrant_px(scale)
+    peaks = main._scan_facial_strip(gray, cv2.integral(gray), 0, W, Y_CLIP, q, W, H)
+    return gray, xs_rang, x4, q, peaks
+
+
+def _call_quad(peaks, gray, integral, clip_y=Y_CLIP, quadrant=10, known_scale=None,
+               x0=0, x1=W):
+    """Wrapper sur la signature réelle de `_best_facial_quadruplet`."""
+    return main._best_facial_quadruplet(peaks, gray, integral, W, H,
+                                         clip_y, quadrant, x0, x1, known_scale)
+
+
+def _gray_vide():
+    g = np.full((H, W), 150, np.uint8)
+    return g, cv2.integral(g)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -76,162 +115,339 @@ def test_le_span_vient_des_mires_externes():
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 2. Balayage multi-échelle des décalages quadrant
+# 2. L'écart vertical de la 4e mire : 14,00 mm (pas 17)
+# ════════════════════════════════════════════════════════════════════════════
+
+def test_le_14_mm_vient_de_la_geometrie_du_clip():
+    """L'écart vertical est DÉRIVÉ des positions, jamais recopié."""
+    assert clip.FACIAL_RAISED_Z_GAP_MM == pytest.approx(14.00)
+    assert clip.FACIAL_BAR_Z_MM == 3.00
+    assert clip.FACIAL_RAISED_Z_GAP_MM == (clip.facial_plan_pos("facial_haute")[1]
+                                           - clip.FACIAL_BAR_Z_MM)
+    # « 17 » reste la POSITION absolue, et ne doit jamais servir de décalage
+    assert clip.facial_plan_pos("facial_haute")[1] == 17.0
+    assert clip.FACIAL_RAISED_Z_GAP_MM != 17.0
+    assert clip.FACIAL_RAISED_X_FROM_CENTRE_MM == pytest.approx(30.00)
+
+
+def test_une_4e_mire_a_17_mm_est_refusee():
+    """Preuve que la correction est active : la mire construite à 17 mm est REJETÉE.
+
+    Avec l'ancien décalage (17 mm), ce cas passait pour valide — c'est exactement
+    l'erreur corrigée.
+    """
+    gray, _, _, q, peaks = _bande_reelle()
+    quad, _ = _call_quad(peaks, gray, cv2.integral(gray), Y_CLIP, q, SCALE)
+    assert quad, "la bande de référence doit d'abord être reconnue"
+
+    gray17, _, _ = _damiers_4_mires(SCALE, dy_mm=17.0)
+    quad17, _ = _call_quad(peaks, gray17, cv2.integral(gray17), Y_CLIP, q, SCALE)
+    assert not quad17 or quad17 == [], "une 4e mire à 17 mm ne doit plus être validée"
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 3. Balayage multi-échelle des décalages quadrant
 # ════════════════════════════════════════════════════════════════════════════
 
 def test_offsets_quadrant_multi_echelle():
-    """Sans échelle: balayage. Avec échelle: le carreau du clip d'abord."""
+    """Sans échelle: balayage. Avec échelle: le quadrant du clip d'abord."""
     offsets = main._facial_quadrant_offsets(None)
     assert offsets == list(main.FACIAL_QUADRANT_SWEEP)
     assert main.FACIAL_QUADRANT_MM == clip.PATTERN_QUADRANT_MM == 2.5
 
     connus = main._facial_quadrant_offsets(SCALE)
-    assert connus[0] == int(round(2.5 / SCALE))        # 10 px pour un carreau de 5 mm
+    assert connus[0] == quadrant_px(SCALE)             # 10 px = quadrant à 0,25 mm/px
     assert len(connus) == len(set(connus)), "pas de doublon dans le balayage"
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 3. Sélection du quadruplet (3 équidistantes + 4e validée)
+# 4. Non-maximum suppression : UN pic par mire
 # ════════════════════════════════════════════════════════════════════════════
 
-def _call_quad(peaks, gray, integral, clip_y=Y_CLIP, quadrant_offset=10, known_scale=None):
-    """Wrapper pour appeler la nouvelle signature."""
-    return main._best_facial_quadruplet(peaks, gray, integral, W, H,
-                                         clip_y, quadrant_offset, 0, W, known_scale)
+def test_nms_laisse_un_seul_pic_par_mire():
+    """Sans NMS, un damier donne ~4 maxima et le triplet s'apparie de travers."""
+    _, _, _, _, peaks = _bande_reelle()
+    assert len(peaks) == 3, f"3 mires de rangée ⇒ 3 pics, {len(peaks)} trouvés"
+    ecarts = [peaks[i + 1]["x"] - peaks[i]["x"] for i in range(len(peaks) - 1)]
+    assert max(ecarts) - min(ecarts) <= 4, f"rangée irrégulière : {ecarts}"
 
+
+def test_positions_exactes_sur_la_bande_reelle():
+    """Le détecteur doit tomber sur les mires à ±2 px (convention correcte)."""
+    gray, xs_rang, x4, q, peaks = _bande_reelle()
+    quad, info = _call_quad(peaks, gray, cv2.integral(gray), Y_CLIP, q, SCALE)
+    assert quad, "aucun quadruplet retenu"
+    xs = [p["x"] for p in quad]
+    for i in range(3):
+        assert abs(xs[i] - xs_rang[i]) <= 2, f"mire {i} : {xs[i]} vs {xs_rang[i]}"
+    assert abs(xs[3] - x4[0]) <= 2, f"4e mire : {xs[3]} vs {x4[0]}"
+    assert math.isclose(info["scale"], SCALE, rel_tol=0.01)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 5. Sélection du quadruplet (3 équidistantes + 4e validée)
+# ════════════════════════════════════════════════════════════════════════════
 
 def test_quadruplet_valide_est_retenu():
-    """4 mires valides : 3 équidistantes + 4e au bon x et bon Δy."""
-    bgr, xs_rang, (x4, y4) = _damiers_4_mires()
-    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    integral = cv2.integral(gray)
+    """4 mires valides : 3 équidistantes + 4e au bon x et au bon Δy."""
+    gray, xs_rang, (x4, y4), q, peaks = _bande_reelle()
     carreau = int(round(clip.PATTERN_SQUARE_MM / SCALE))
 
-    peaks = main._scan_facial_strip(gray, integral, 0, W, Y_CLIP, carreau, W, H)
-    assert len(peaks) >= 4, f"4 mires attendues, {len(peaks)} pics trouvés"
-
-    quad, info = _call_quad(peaks, gray, integral, Y_CLIP, carreau, SCALE)
+    quad, info = _call_quad(peaks, gray, cv2.integral(gray), Y_CLIP, q, SCALE)
     assert quad, "aucun quadruplet valide retenu"
     xs = [p["x"] for p in quad]
-    # Tolérance ±1.5 carreau sur les positions (le scan trouve des pics proches,
-    # l'algorithme prend les meilleurs scores qui peuvent décaler un peu)
-    tol = max(carreau, 35)
-    assert all(abs(xs[i] - xs_rang[i]) <= tol for i in range(3)), \
-        f"rangée trouvée en {xs[:3]}, attendue en {xs_rang} (±{tol})"
-    assert abs(xs[3] - x4) <= carreau, f"4e mire trouvée en {xs[3]}, attendue en {x4}"
-    # Δy : la 4e mire est plus haute (y plus petit) de ~17 mm
+    assert xs[:3] == pytest.approx(xs_rang, abs=2)
+    assert xs[3] == pytest.approx(x4, abs=2)
+    # Δy : 14,00 mm au-dessus de la rangée (ÉCART, pas position absolue)
     dy = abs(quad[3]["y"] - quad[0]["y"])
-    expected_dy = int(round(17.0 / SCALE))
-    assert dy == pytest.approx(expected_dy, abs=carreau), f"Δy={dy} vs attendu {expected_dy}"
-
+    expected_dy = int(round(clip.FACIAL_RAISED_Z_GAP_MM / SCALE))
+    assert expected_dy == 56, "14,00 mm à 0,25 mm/px = 56 px"
+    assert dy == pytest.approx(expected_dy, abs=carreau)
     # l'échelle se déduit des 100,00 mm connus, sans aucun IPD supposé
     span = xs[2] - xs[0]
     assert info["scale"] == pytest.approx(clip.FACIAL_SPACING_EXTREME_MM / span)
-    assert math.isclose(info["scale"], SCALE, rel_tol=0.10)
+    assert math.isclose(info["scale"], SCALE, rel_tol=0.01)
 
 
 def test_4e_mire_hors_x_refusee():
-    """La 4e mire trop loin en x fait échouer le quadruplet."""
-    gray = np.full((H, W), 150, np.uint8)
-    integral = cv2.integral(gray)
-    peaks = _make_peaks([300, 500, 700, 950], y=700)
-    quad, info = _call_quad(peaks, gray, integral, 700, 10)
+    """La 4e mire trop à droite (fraction 1,6 au lieu de 0,6) est refusée."""
+    gray, _, _, q, peaks = _bande_reelle()
+    gray_hx, _, _ = _damiers_4_mires(SCALE, x4_frac=1.6)
+    quad, _ = _call_quad(peaks, gray_hx, cv2.integral(gray_hx), Y_CLIP, q, SCALE)
     assert quad == []
 
 
-def test_4e_mire_hors_y_refusee():
-    """La 4e mire au mauvais y fait échouer le quadruplet."""
-    gray = np.full((H, W), 150, np.uint8)
-    integral = cv2.integral(gray)
-    peaks = _make_peaks([300, 500, 700, 620], y=700)  # 4e mire même y (Δy=0 au lieu de ~68)
-    quad, info = _call_quad(peaks, gray, integral, 700, 10)
+def test_4e_mire_sur_la_rangee_refusee():
+    """Une 4e mire au même niveau que la rangée (Δy = 0) est refusée."""
+    gray, _, _, q, peaks = _bande_reelle()
+    gray_0, _, _ = _damiers_4_mires(SCALE, dy_mm=0.0)
+    quad, _ = _call_quad(peaks, gray_0, cv2.integral(gray_0), Y_CLIP, q, SCALE)
+    assert quad == []
+
+
+def test_4e_mire_bien_trop_haute_refusee():
+    """Une 4e mire à 30 mm au-dessus (au lieu de 14) est refusée."""
+    gray, _, _, q, peaks = _bande_reelle()
+    gray_h, _, _ = _damiers_4_mires(SCALE, dy_mm=30.0)
+    quad, _ = _call_quad(peaks, gray_h, cv2.integral(gray_h), Y_CLIP, q, SCALE)
     assert quad == []
 
 
 def test_triplet_non_equidistant_refuse():
     """Des pics irréguliers ne sont pas les mires de la barre."""
-    gray = np.full((H, W), 150, np.uint8)
-    integral = cv2.integral(gray)
-    peaks = _make_peaks([300, 400, 700], 90.0) + [{"x": 620, "y": 700, "score": 80.0}]
-    quad, _ = _call_quad(peaks, gray, integral, 700, 10)
+    gray, integral = _gray_vide()
+    peaks = _make_peaks([300, 400, 700], 90.0) + [{"x": 620, "y": Y_CLIP, "score": 80.0}]
+    quad, _ = _call_quad(peaks, gray, integral, Y_CLIP, 10)
     assert quad == []
 
 
 def test_champ_invraisemblable_refuse():
     """Un span qui implique un champ hors bornes n'est pas le clip."""
-    gray = np.full((H, W), 150, np.uint8)
-    integral = cv2.integral(gray)
-    peaks = _make_peaks([10, 12, 14], 90.0) + [{"x": 17, "y": 700, "score": 80.0}]
-    quad, _ = _call_quad(peaks, gray, integral, 700, 10)
+    gray, integral = _gray_vide()
+    peaks = _make_peaks([10, 12, 14], 90.0) + [{"x": 17, "y": Y_CLIP, "score": 80.0}]
+    quad, _ = _call_quad(peaks, gray, integral, Y_CLIP, 10)
     assert quad == []
 
 
 def test_trois_pics_ne_suffisent_pas():
-    """Il faut 4 pics minimum pour un quadruplet."""
-    gray = np.full((H, W), 150, np.uint8)
-    integral = cv2.integral(gray)
-    peaks = _make_peaks([300, 500, 700], 9.0)
-    quad, info = _call_quad(peaks, gray, integral, 700, 10)
+    """Trois pics alignés ne suffisent pas : la 4e mire doit exister."""
+    gray, integral = _gray_vide()
+    quad, info = _call_quad(_make_peaks([300, 500, 700], 9.0), gray, integral, Y_CLIP, 10)
     assert quad == []
     assert info["score"] < 0
 
 
 def test_deux_pics_ne_suffisent_pas():
-    gray = np.full((H, W), 150, np.uint8)
-    integral = cv2.integral(gray)
-    peaks = _make_peaks([300, 500], 9.0)
-    quad, info = _call_quad(peaks, gray, integral, 700, 10)
+    gray, integral = _gray_vide()
+    quad, info = _call_quad(_make_peaks([300, 500], 9.0), gray, integral, Y_CLIP, 10)
     assert quad == []
     assert info["score"] < 0
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 4. Bout en bout : détection du damier facial 4 mires sur image synthétique
+# 6. Bout en bout : damier facial trouvé sans échelle connue
 # ════════════════════════════════════════════════════════════════════════════
 
-@pytest.mark.parametrize("carreau_px", [10, 14])     # carreau de 5 mm à 0,5 puis 0,36 mm/px
-def test_scan_trouve_les_4_mires_sans_echelle(carreau_px):
+@pytest.mark.parametrize("carreau_px", [10, 14])   # carreau de 5 mm à 0,50 puis 0,357 mm/px
+def test_scan_trouve_le_quadruplet_sans_echelle(carreau_px):
     """Le motif est trouvé même quand l'échelle de la photo n'est pas connue."""
-    bgr, xs_rang, (x4, y4) = _damiers_4_mires(scale=clip.PATTERN_SQUARE_MM / carreau_px)
-    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    scale = clip.PATTERN_SQUARE_MM / carreau_px
+    gray, xs_rang, (x4, y4) = _damiers_4_mires(scale)
+    q = quadrant_px(scale)
     integral = cv2.integral(gray)
 
-    peaks = main._scan_facial_strip(gray, integral, 0, W, Y_CLIP, carreau_px, W, H)
-    assert len(peaks) >= 4, f"4 mires attendues, {len(peaks)} pics trouvés"
+    peaks = main._scan_facial_strip(gray, integral, 0, W, Y_CLIP, q, W, H)
+    assert len(peaks) == 3, f"3 mires de rangée ⇒ 3 pics, {len(peaks)} trouvés"
 
-    quad, info = _call_quad(peaks, gray, integral, Y_CLIP, carreau_px, clip.PATTERN_SQUARE_MM / carreau_px)
+    quad, info = _call_quad(peaks, gray, integral, Y_CLIP, q, scale)
     assert quad, "aucun quadruplet valide retenu"
     xs = [p["x"] for p in quad]
-    tol = max(carreau_px * 2, 30)  # ±2 carreaux ou 30 px min
-    assert all(abs(xs[i] - xs_rang[i]) <= tol for i in range(3)), \
-        f"rangée trouvée en {xs[:3]}, attendue en {xs_rang} (±{tol})"
-    assert abs(xs[3] - x4) <= max(carreau_px, 30), f"4e mire trouvée en {xs[3]}, attendue en {x4}"
+    assert xs[:3] == pytest.approx(xs_rang, abs=2)
+    assert xs[3] == pytest.approx(x4, abs=2)
 
     span = xs[2] - xs[0]
     assert info["scale"] == pytest.approx(clip.FACIAL_SPACING_EXTREME_MM / span)
-    assert math.isclose(info["scale"], clip.PATTERN_SQUARE_MM / carreau_px, rel_tol=0.10)
+    assert math.isclose(info["scale"], scale, rel_tol=0.01)
 
 
 def test_bande_vide_aucun_quadruplet():
-    gray = np.full((H, W), 150, np.uint8)
-    peaks = main._scan_facial_strip(gray, cv2.integral(gray), 0, W, Y_CLIP, 10, W, H)
-    quad, _ = _call_quad(peaks, gray, cv2.integral(gray), Y_CLIP, 10)
+    gray, integral = _gray_vide()
+    peaks = main._scan_facial_strip(gray, integral, 0, W, Y_CLIP, 10, W, H)
+    assert peaks == []
+    quad, _ = _call_quad(peaks, gray, integral, Y_CLIP, 10)
     assert quad == []
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 5. Test d'intégration : detect_calibration_markers retourne 4 mires
+# 7. Chemin RÉEL de bout en bout — `detect_facial_quadruplet`
+#    (extrait de `detect_calibration_markers` pour être exerçable sans MediaPipe :
+#     le guidage facial est fourni en arguments). Ces tests remplaçaient un `pass`
+#     qui laissait le chemin le plus critique de l'app non testé.
 # ════════════════════════════════════════════════════════════════════════════
 
-def test_detect_calibration_markers_retourne_4_mires():
-    """L'API publique retourne 4 mires (avec la 4e mire)."""
-    # Ce test nécessite un visage détecté par MediaPipe.
-    # Sur image synthétique sans visage, le fallback Hough est utilisé.
-    # Voir test_scan_trouve_les_4_mires_sans_echelle pour la logique purement image.
-    pass
+Y_BARRE = 700
 
 
-def test_detect_calibration_markers_echelle_coherente():
-    """L'échelle déduite par les 4 mires est cohérente avec les 100 mm connus."""
-    # Nécessite un visage MediaPipe — testé en intégration réelle.
-    pass
+def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE):
+    """Image synthétique du clip : 3 mires alignées + la 4ᵉ surélevée."""
+    if dy_mm is None:
+        dy_mm = clip.FACIAL_RAISED_Z_GAP_MM
+    img = np.full((H, W), 150, np.uint8)
+    demi = int(round(clip.PATTERN_SQUARE_MM / scale))
+    ecart = int(round(clip.FACIAL_SPACING_ADJACENT_MM / scale))
+    xs = [300, 300 + ecart, 300 + 2 * ecart]
+    x4 = xs[1] + int(round(0.6 * ecart))
+    y4 = y_barre - int(round(dy_mm / scale))
+    for px in xs:
+        for (sx, sy) in ((-1, -1), (1, 1)):
+            img[y_barre + (0 if sy > 0 else -demi):y_barre + (demi if sy > 0 else 0),
+                px + (0 if sx > 0 else -demi):px + (demi if sx > 0 else 0)] = 30
+    for (sx, sy) in ((-1, -1), (1, 1)):
+        img[y4 + (0 if sy > 0 else -demi):y4 + (demi if sy > 0 else 0),
+            x4 + (0 if sx > 0 else -demi):x4 + (demi if sx > 0 else 0)] = 30
+    return img, xs, (x4, y4)
+
+
+def _detecte(dy_mm=None, y_barre=Y_BARRE, known_scale=SCALE):
+    return main.detect_facial_quadruplet(_image_clip(dy_mm, y_barre)[0],
+                                         Y_BARRE, 100, 1100, known_scale)
+
+
+def test_bout_en_bout_le_clip_est_trouve_et_l_echelle_est_juste():
+    """Le chemin réel rend les 4 mires, à la bonne place, avec la bonne échelle."""
+    _, xs, (x4, y4) = _image_clip()
+    r = _detecte()
+
+    assert r["face_used"] is True
+    assert r["scale_mm_per_px"] == pytest.approx(SCALE, rel=0.01)
+    assert len(r["markers"]) == 4
+
+    mx = [m["x"] for m in r["markers"]]
+    for i in range(3):
+        assert abs(mx[i] - xs[i]) <= 2, f"mire {i} : {mx[i]} vs {xs[i]}"
+    assert abs(mx[3] - x4) <= 2
+    assert abs(r["markers"][3]["y"] - y4) <= 2, "hauteur de la 4ᵉ mire"
+    for m in r["markers"][:3]:
+        assert abs(m["y"] - Y_BARRE) <= 2, "hauteur réelle de la rangée"
+
+
+def test_bout_en_bout_le_diagnostic_du_quadrilatere_est_expose():
+    """A+B+C sont rendus par l'API et concordent sur un clip net."""
+    q = _detecte()["facial_quad_check"]
+    assert q is not None and q["n_points"] == 4
+    assert q["scale_consistent"] is True, f"étalons dispersés : {q['scale_spread']}"
+    assert q["ratios_consistent"] is True
+    assert q["scale_mm_per_px"] == pytest.approx(SCALE, rel=0.01)
+    # les 5 étalons du quadrilatère servent à l'auto-contrôle
+    assert len(q["scale_by_span"]) == 5
+
+
+def test_bout_en_bout_le_roll_d_un_clip_droit_est_nul():
+    """Un clip bien posé ⇒ roll ≈ 0 et les 2 références concordent.
+
+    Le seuil n'est pas nul : la mesure vaut ±1 px, soit ~0,2°. Un roll de
+    plusieurs degrés trahirait une hauteur mal mesurée.
+    """
+    q = _detecte()["facial_quad_check"]
+    assert abs(q["roll_deg"]) < 1.0, f"roll {q['roll_deg']} sur un clip droit"
+    assert q["roll_consistent"] is True
+
+
+def test_bout_en_bout_le_clip_est_trouve_sans_echelle_connue():
+    """Aucune échelle supposée : le balayage multi-échelle suffit."""
+    r = _detecte(known_scale=None)
+    assert r["face_used"] is True
+    assert r["scale_mm_per_px"] == pytest.approx(SCALE, rel=0.01)
+    assert len(r["markers"]) == 4
+
+
+@pytest.mark.parametrize("decalage", [-10, 10])
+def test_bout_en_bout_le_clip_est_trouve_meme_si_la_barre_est_mal_situee(decalage):
+    """`clip_y` n'est qu'une position de RECHERCHE : ±10 px d'erreur et ça tient.
+
+    La vraie hauteur est retrouvée par affinage, donc l'échelle et le roll restent
+    justes — c'est ce qui autorise à se fier au niveau des sourcils.
+    """
+    y_true = Y_BARRE + decalage
+    r = main.detect_facial_quadruplet(_image_clip(y_barre=y_true)[0],
+                                      Y_BARRE, 100, 1100, SCALE)
+    assert len(r["markers"]) == 4
+    assert r["scale_mm_per_px"] == pytest.approx(SCALE, rel=0.01)
+    for m in r["markers"][:3]:
+        assert abs(m["y"] - y_true) <= 3, "la hauteur réelle doit être mesurée"
+    assert abs(r["markers"][3]["y"] - (y_true - int(round(14.0 / SCALE)))) <= 3
+
+
+def test_bout_en_bout_une_4e_mire_a_17_mm_est_refusee():
+    """Le chemin complet refuse l'ancienne cote erronée : étalons incohérents."""
+    r = _detecte(dy_mm=17.0)
+    q = r["facial_quad_check"]
+    assert q is not None and q["ratios_consistent"] is False
+    assert q["ratio_spread"] > main.FACIAL_QUAD_REJECT_TOL
+    # refus franc : on ne prétend pas avoir trouvé le clip
+    assert r["markers"] == []
+    assert r["scale_mm_per_px"] == 0.0
+
+
+def test_bout_en_bout_un_champ_sans_mire_ne_fabrique_rien():
+    """Pas de mires ⇒ aucun marker inventé, et un diagnostic honnête."""
+    r = main.detect_facial_quadruplet(np.full((H, W), 150, np.uint8),
+                                      Y_BARRE, 100, 1100, SCALE)
+    assert r["markers"] == []
+    assert r["scale_mm_per_px"] == 0.0
+
+
+def test_detect_calibration_markers_sans_visage_ne_plante_pas():
+    """L'API publique reste utilisable sans visage : repli, sans rien fabriquer."""
+    gray, _, _ = _image_clip()
+    r = main.detect_calibration_markers(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR))
+    assert "markers" in r
+    assert r["face_used"] is False, "aucun visage sur une image synthétique"
+    assert "facial_quad_check" in r, "contrat de réponse stable"
+
+# ════════════════════════════════════════════════════════════════════════════
+# 8. Le contrat de `_scan_facial_strip` : hauteur mesurée, pas hauteur cherchée
+# ════════════════════════════════════════════════════════════════════════════
+
+def test_scan_renvoie_le_y_de_recherche_pas_la_hauteur():
+    """Documente le piège : le y rendu est celui du scan, d'où l'affinage."""
+    gray, _, _ = _image_clip()
+    integral = cv2.integral(gray)
+    q = quadrant_px()
+    for y_essai in (690, 700, 710):
+        peaks = main._scan_facial_strip(gray, integral, 100, 1100, y_essai, q, W, H)
+        assert peaks, "les mires de la rangée sont visibles"
+        assert all(p["y"] == y_essai for p in peaks)
+
+
+def test_refine_marker_rend_le_centre_reel_du_damier():
+    """Le barycentre du plateau de corrélation = centre de la mire (symétrie)."""
+    gray, xs, (x4, y4) = _image_clip()
+    integral = cv2.integral(gray)
+    q = quadrant_px()
+
+    for cx, y_vrai in ((xs[1], Y_BARRE), (x4, y4)):
+        r = main._refine_marker(gray, integral, cx, y_vrai + 30, 40, q, W, H)
+        assert r is not None
+        assert abs(r["y"] - y_vrai) <= 1, f"y {r['y']} vs {y_vrai}"
+        assert abs(r["x"] - cx) <= 2
