@@ -308,8 +308,12 @@ def test_bande_vide_aucun_quadruplet():
 Y_BARRE = 700
 
 
-def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE):
-    """Image synthétique du clip : 3 mires alignées + la 4ᵉ surélevée."""
+def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE, avec_4e=True):
+    """Image synthétique du clip : 3 mires alignées + (option) la 4ᵉ surélevée.
+
+    `avec_4e=False` reproduit un clip à **3 mires faciales seulement** — le cas des
+    photos réelles disponibles (3 damiers alignés, aucune mire surélevée).
+    """
     if dy_mm is None:
         dy_mm = clip.FACIAL_RAISED_Z_GAP_MM
     img = np.full((H, W), 150, np.uint8)
@@ -322,14 +326,15 @@ def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE):
         for (sx, sy) in ((-1, -1), (1, 1)):
             img[y_barre + (0 if sy > 0 else -demi):y_barre + (demi if sy > 0 else 0),
                 px + (0 if sx > 0 else -demi):px + (demi if sx > 0 else 0)] = 30
-    for (sx, sy) in ((-1, -1), (1, 1)):
-        img[y4 + (0 if sy > 0 else -demi):y4 + (demi if sy > 0 else 0),
-            x4 + (0 if sx > 0 else -demi):x4 + (demi if sx > 0 else 0)] = 30
+    if avec_4e:
+        for (sx, sy) in ((-1, -1), (1, 1)):
+            img[y4 + (0 if sy > 0 else -demi):y4 + (demi if sy > 0 else 0),
+                x4 + (0 if sx > 0 else -demi):x4 + (demi if sx > 0 else 0)] = 30
     return img, xs, (x4, y4)
 
 
-def _detecte(dy_mm=None, y_barre=Y_BARRE, known_scale=SCALE):
-    return main.detect_facial_quadruplet(_image_clip(dy_mm, y_barre)[0],
+def _detecte(dy_mm=None, y_barre=Y_BARRE, known_scale=SCALE, avec_4e=True):
+    return main.detect_facial_quadruplet(_image_clip(dy_mm, y_barre, avec_4e=avec_4e)[0],
                                          Y_BARRE, 100, 1100, known_scale)
 
 
@@ -399,14 +404,49 @@ def test_bout_en_bout_le_clip_est_trouve_meme_si_la_barre_est_mal_situee(decalag
 
 
 def test_bout_en_bout_une_4e_mire_a_17_mm_est_refusee():
-    """Le chemin complet refuse l'ancienne cote erronée : étalons incohérents."""
+    """4ᵉ mire à 17 mm : NON validée — mais la rangée reste mesurable.
+
+    L'ancienne cote (17 mm) est franchement incohérente avec la géométrie du clip.
+    On ne l'accepte donc pas : `quad_valid` est False, le roll n'est pas exposé.
+    ⚠️ Pour autant l'analyse ne doit PAS échouer : un clip dont la 4ᵉ mire n'est pas
+    exploitable (absent, ou mal vu) reste un clip utilisable — c'est le cas réel des
+    photos du clip à 3 mires faciales. D'où la DÉGRADATION GRACIEUSE : les 3 mires
+    de la rangée sont rendues, avec l'échelle du span des extrêmes.
+    """
     r = _detecte(dy_mm=17.0)
     q = r["facial_quad_check"]
     assert q is not None and q["ratios_consistent"] is False
-    assert q["ratio_spread"] > main.FACIAL_QUAD_REJECT_TOL
-    # refus franc : on ne prétend pas avoir trouvé le clip
-    assert r["markers"] == []
-    assert r["scale_mm_per_px"] == 0.0
+    # Le critère de NON-validation est la cohérence des étalons (2 %), pas le rejet
+    # « franchement faux » (5 %) : à 17 mm l'écart tombe à ~4,7 %, donc un seuil de
+    # rejet dur à 5 % laisserait passer la 4ᵉ mire pour valide.
+    assert q["ratio_spread"] > clip.FACIAL_SCALE_TOL
+    # la 4ᵉ mire n'est pas validée…
+    assert q["quad_valid"] is False
+    # …donc aucune inclinaison n'est publiée (pas de référence fiable)
+    assert q["roll_deg"] is None
+    assert q["roll_consistent"] is None
+    # …mais les 3 mires de la rangée sont bien rendues, échelle honnête
+    assert len(r["markers"]) == 3
+    assert r["scale_mm_per_px"] == pytest.approx(SCALE, rel=0.02)
+    assert r["markers"][:3] == sorted(r["markers"][:3], key=lambda m: m["x"])
+
+
+def test_bout_en_bout_un_clip_a_3_mires_reste_mesurable():
+    """Cas RÉEL (les photos disponibles) : 3 damiers alignés, aucune mire surélevée.
+
+    Le détecteur ne doit ni échouer ni inventer une 4ᵉ mire : il rend les 3 mires de
+    la rangée avec l'échelle du span des extrêmes, et signale la 4ᵉ comme non validée
+    (`quad_valid` False, pas de roll publié). C'est ce qui évite de refuser un clip
+    parfaitement utilisable — et de déclencher le repli Hough, qui gelait le serveur.
+    """
+    _, xs, _ = _image_clip(avec_4e=False)
+    r = _detecte(avec_4e=False)
+    assert len(r["markers"]) == 3, "les 3 mires de la rangée doivent être rendues"
+    assert r["scale_mm_per_px"] == pytest.approx(SCALE, rel=0.02)
+    q = r["facial_quad_check"]
+    assert q is None or q["quad_valid"] is False
+    if q is not None:
+        assert q["roll_deg"] is None, "aucune inclinaison sans 4ᵉ mire validée"
 
 
 def test_bout_en_bout_un_champ_sans_mire_ne_fabrique_rien():
@@ -415,6 +455,24 @@ def test_bout_en_bout_un_champ_sans_mire_ne_fabrique_rien():
                                       Y_BARRE, 100, 1100, SCALE)
     assert r["markers"] == []
     assert r["scale_mm_per_px"] == 0.0
+
+
+def test_le_response_model_transporte_le_diagnostic_du_quadrilatere():
+    """⚠️ Pydantic FILTRE silencieusement tout champ absent du `response_model`.
+
+    `facial_quad_check` ne figurait pas dans `CalibrationResult` : la réponse HTTP
+    le perdait, donc le front ne pouvait afficher ni le roll ni la non-validation de
+    la 4ᵉ mire — tout en recevant 200. Un mock d'API côté front ne peut pas voir ce
+    genre de perte : le contrat se vérifie ici, sur le modèle de réponse lui-même.
+    """
+    from main import CalibrationResult
+
+    diag = {"n_points": 4, "roll_deg": 0.11, "roll_consistent": True, "quad_valid": True}
+    r = CalibrationResult(width=10, height=10, markers=[{"x": 1, "y": 2}],
+                          facial_quad_check=diag)
+    assert r.model_dump()["facial_quad_check"] == diag
+    # et le champ reste optionnel : un repli sans diagnostic ne casse rien
+    assert CalibrationResult(width=1, height=1).model_dump()["facial_quad_check"] is None
 
 
 def test_detect_calibration_markers_sans_visage_ne_plante_pas():

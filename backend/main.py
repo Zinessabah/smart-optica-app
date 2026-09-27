@@ -6,10 +6,12 @@ POST /api/analyze  →  reçoit une image, retourne les coordonnées des repère
 
 import io
 import logging
+import threading
 import numpy as np
 import cv2
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from typing import Optional
 import mediapipe as mp
@@ -35,6 +37,25 @@ import logging as _logging
 from lateral_checker import detect_lateral_markers as _detect_lateral_checker
 from lateral_aruco import detect_lateral_markers as _detect_lateral_aruco
 from lateral import detect_lateral_markers as _detect_lateral_legacy
+
+# ── Exécution des analyses LOURDES ───────────────────────────────────────────────
+# Incident réel : le serveur entier est devenu muet (même `/health`, 27 connexions
+# en attente, 3 threads de calcul à 100 % CPU) parce que ces analyses tournaient
+# DANS la boucle d'événements. Deux corrections, indissociables :
+#   1. `run_in_threadpool` — le calcul Python pur (OpenCV/MediaPipe) sort de l'event
+#      loop : `/health` et les autres requêtes restent servis pendant l'analyse ;
+#   2. un VERROU — une analyse à la fois. MediaPipe n'est pas documenté comme
+#      réentrant, et 4 cœurs ne font pas 40 analyses : sans verrou, plusieurs
+#      requêtes simultanées saturent la machine. Les suivantes attendent dans leur
+#      thread, ce qui ne bloque PAS la boucle d'événements.
+ANALYSIS_LOCK = threading.Lock()
+
+
+def _heavy(fn, *args, **kwargs):
+    """Exécute une analyse lourde en série, hors de la boucle d'événements."""
+    with ANALYSIS_LOCK:
+        return fn(*args, **kwargs)
+
 
 # Version de clip déclarée côté backend (doit matcher le clip et l'app)
 CLIP_VERSION = "clip-v19.5-all-checkerboard"
@@ -156,11 +177,17 @@ class AnalyzeResult(BaseModel):
 class CalibrationResult(BaseModel):
     width: int
     height: int
-    markers: list = []  # 3 points [{x, y}, ...]
+    markers: list = []  # 3 points [{x, y}, ...] — 4 si la 4ᵉ mire est validée
     scale_mm_per_px: float = 0.0
     spacing_px: float = 0.0
     detection_confidence: float = 0.0
     face_used: bool = False
+    # A+B+C : diagnostic du quadrilatère facial — auto-contrôle des étalons, rapports
+    # invariants d'échelle, et ROLL du clip.
+    # ⚠️ Un champ absent d'ici est FILTRÉ SILENCIEUSEMENT par Pydantic : la réponse
+    # HTTP ne le contenait pas, donc le front ne pouvait afficher ni le roll ni la
+    # non-validation de la 4ᵉ mire. Le contrat de réponse se déclare ICI en entier.
+    facial_quad_check: Optional[dict] = None
 
 
 class ProfileResult(BaseModel):
@@ -226,6 +253,21 @@ FACIAL_ROW_PLAGE_FRAC = 0.5
 # un écart franc ne peut pas venir de la photo). Volontairement plus large que la
 # tolérance « consistent » (2 %) : on écarte le manifestement faux, pas le bruit.
 FACIAL_QUAD_REJECT_TOL = 0.05
+# Score minimal d'un pic, en fraction du meilleur pic du scan. Un damier COMPLET
+# (2 carrés noirs) corrèle ~2× mieux qu'un demi-carreau : ce seuil RELATIF écarte
+# les pics fantômes des bords du motif. Nécessaire en plus de la NMS, car celle-ci
+# est proportionnelle à l'offset TESTÉ : avec un offset trop petit (3–6 px au lieu
+# de 10), son rayon (9–18 px) ne couvre plus les fantômes espacés de ~20 px, et il
+# restait 9 pics au lieu de 3 → span 419 px au lieu de 400 (4,5 % d'erreur
+# d'échelle, et un faux quadruplet qui gagnait au score). Les mires du clip sont
+# identiques et de même orientation : leurs scores pleins sont comparables.
+FACIAL_PEAK_MIN_RATIO = 0.7
+# Nombre de triplets candidats dont on va jusqu'à chercher la 4ᵉ mire (scan + quatre
+# affinages de hauteur). Les triplets sont essayés par score décroissant : les vraies
+# mires étant les pics les plus forts, le bon triplet est dans les premiers. Sans ce
+# plafond, 15 pics produisent 455 combinaisons et l'analyse d'une photo iPad montait
+# à 35,6 s — sans jamais changer le résultat.
+FACIAL_MAX_TRIPLET_TRIALS = 12
 
 
 def _facial_quadrant_offsets(known_scale: Optional[float] = None) -> list:
@@ -309,16 +351,34 @@ def _scan_facial_strip(gray: np.ndarray, integral: np.ndarray,
     # carreaux), jusqu'à ~2 carreaux du centre. Sans ce filtre, un triplet
     # s'apparie sur des maxima DÉCALÉS et retient une échelle fausse — constaté :
     # span 339 px au lieu de 400, soit 18 % d'erreur d'échelle, donc 18 % sur
-    # TOUTES les mesures. On ne garde qu'UN pic par mire : le plus fort dans un
-    # rayon égal à celui du motif (2 × quadrant_offset = 5 mm).
+    # TOUTES les mesures. On ne garde qu'UN pic par mire : le plus fort.
+    # ⚠️ Le rayon doit dépasser UN CARREAU (2 × quadrant_offset), pas l'égaler :
+    # le pic fantôme d'un seul carré noir tombe à 2 × quadrant_offset + 1 px
+    # (mesuré : 279 vs 300 à 0,25 mm/px) et survivait à `abs(...) > rayon`.
+    # Il ne gagnait que par accident, quand le vrai pic restait dans la recherche.
     # Marge : la plus petite distance entre deux mires du clip est 24,41 mm
-    # (droite ↔ haute), soit ~4,9 carreaux — aucune fusion possible.
-    rayon = max(2, 2 * quadrant_offset)
+    # (droite ↔ haute) ; avec 3 × quadrant_offset le rapport reste ≥ 3,2 sur
+    # toute la plage d'échelles — aucune fusion de deux vraies mires.
+    rayon = max(4, 3 * quadrant_offset)
     bruts.sort(key=lambda t: -t[1])
     peaks = []
     for x, sc in bruts:
         if all(abs(x - p["x"]) > rayon for p in peaks):
             peaks.append({"x": x, "y": clip_y, "score": sc})
+
+    # ── Filtre RELATIF : un demi-carreau n'est pas une mire ──────────────────
+    # La NMS ci-dessus est proportionnelle à l'offset testé ; quand l'offset est
+    # trop petit (3–6 px au lieu de 10), les pics fantômes sont plus éloignés que
+    # son rayon et survivent. On les écarte par leur SCORE : un damier complet
+    # corrèle ~2× mieux qu'un demi-carreau. On ne l'applique que si 3 pics y
+    # survivent, pour ne jamais perdre une mire légitimement plus faible (mire en
+    # bord de champ, éclairage inégal).
+    if len(peaks) > 3:
+        smax = max(p["score"] for p in peaks)
+        gardes = [p for p in peaks if p["score"] >= FACIAL_PEAK_MIN_RATIO * smax]
+        if len(gardes) >= 3:
+            peaks = gardes
+
     peaks.sort(key=lambda p: p["x"])
     return peaks
 
@@ -397,9 +457,15 @@ def _best_facial_quadruplet(peaks: list, gray: np.ndarray, integral: np.ndarray,
         return [], {"score": -1.0}
     top = sorted(peaks, key=lambda p: -p["score"])[:15]
     sorted_x = sorted(top, key=lambda p: p["x"])
-    meilleur, info = [], {"score": -1.0}
 
-    # La rangée : on cherche d'abord le triplet équidistant
+    # ── Étape 1 : présélection des triplets — critères PAS chers ─────────────
+    # 15 pics donnent 455 combinaisons ; or valider un triplet coûte un scan de la
+    # zone de la 4ᵉ mire PLUS quatre affinages de hauteur. Mesuré sur une photo iPad
+    # (bande de 1114 px) : 35,6 s d'analyse, dont la quasi-totalité ici — alors que
+    # décodage (0,12 s) et MediaPipe (0,04 s) sont négligeables. On ne garde donc
+    # que les meilleurs candidats : les vraies mires sont les pics les plus forts,
+    # donc le bon triplet fait partie des premiers.
+    candidats = []
     for a, b, c in combinations(sorted_x, 3):
         d1, d2 = b["x"] - a["x"], c["x"] - a["x"]  # a<b<c
         # triplet ordonné : gauche=a, centre=b, droite=c
@@ -411,6 +477,16 @@ def _best_facial_quadruplet(peaks: list, gray: np.ndarray, integral: np.ndarray,
         span_px = c["x"] - a["x"]
         if not pair_is_plausible(span_px, clip.FACIAL_SPACING_EXTREME_MM, w, h):
             continue
+        candidats.append((a["score"] + b["score"] + c["score"] - equi * 200.0,
+                          equi, a, b, c))
+    candidats.sort(key=lambda t: -t[0])
+
+    meilleur, info = [], {"score": -1.0}
+
+    # ── Étape 2 : la 4ᵉ mire, pour les meilleurs candidats seulement ─────────
+    for _, equi, a, b, c in candidats[:FACIAL_MAX_TRIPLET_TRIALS]:
+        d1 = b["x"] - a["x"]
+        span_px = c["x"] - a["x"]
 
         # échelle provisoire pour convertir l'ÉCART VERTICAL (14,00 mm) en pixels
         scale_prov = clip.scale_from_span(clip.FACIAL_SPACING_EXTREME_MM, span_px)
@@ -478,6 +554,53 @@ def _best_facial_quadruplet(peaks: list, gray: np.ndarray, integral: np.ndarray,
     return meilleur, info
 
 
+def _best_facial_triplet(peaks: list, w: int, h: int, clip_y: int,
+                         quadrant_offset: int) -> tuple:
+    """Meilleur TRIPLET de mires faciales : 3 damiers alignés et équidistants.
+
+    Repli quand le QUADRUPLET n'est pas identifiable — cas réel des photos
+    disponibles : un clip à **3 mires faciales** (aucune mire surélevée), ou une 4ᵉ
+    mire invisible sous l'angle/la lumière. Sans ce repli, `_best_facial_quadruplet`
+    ne rend rien, le détecteur partait dans `_fallback_hough` (lent, et incapable de
+    trouver des damiers) et **l'app échouait sur un clip parfaitement utilisable**.
+
+    Critère unique, intrinsèque au clip et donc indépendant de l'échelle : les 3 mires
+    de la barre sont ÉQUIDISTANTES à ±15 %, et le span des extrêmes (100 mm) implique
+    un champ plausible. Ce que ce repli NE peut PAS donner : le roll, faute de
+    référence hors rangée — l'appelant le signale (`roll_deg = None`).
+
+    Retourne (triplet, info) ; triplet vide si rien de crédible.
+    """
+    if len(peaks) < 3:
+        return [], {"score": -1.0}
+    top = sorted(peaks, key=lambda p: -p["score"])[:15]
+    sorted_x = sorted(top, key=lambda p: p["x"])
+    meilleur, info = [], {"score": -1.0}
+
+    for a, b, c in combinations(sorted_x, 3):
+        d1, d2 = b["x"] - a["x"], c["x"] - a["x"]      # a < b < c
+        if not (d1 > 0 and d2 > d1):
+            continue
+        equi = abs(d1 - (d2 - d1)) / max(d1, d2 - d1)
+        if equi > FACIAL_EQUIDISTANCE_TOL:
+            continue
+        span_px = c["x"] - a["x"]
+        if not pair_is_plausible(span_px, clip.FACIAL_SPACING_EXTREME_MM, w, h):
+            continue
+        # La hauteur réelle des 3 mires est affinée par l'appelant : on ne note ici
+        # que la qualité de l'appariement horizontal.
+        score = (a["score"] + b["score"] + c["score"]) - equi * 200.0
+        if score > info["score"]:
+            meilleur = [a, b, c]
+            info = {"score": score, "equi": equi, "span_px": span_px,
+                    "scale": clip.scale_from_span(clip.FACIAL_SPACING_EXTREME_MM, span_px),
+                    # pas de 4ᵉ mire : la plage d'affinage se rabat sur le motif
+                    "dy_raised_px": 2 * quadrant_offset,
+                    "quadrant_offset": quadrant_offset, "clip_y": clip_y,
+                    "n_points": 3}
+    return meilleur, info
+
+
 def detect_calibration_markers(image: np.ndarray,
                              known_scale: Optional[float] = None) -> dict:
     """
@@ -492,7 +615,7 @@ def detect_calibration_markers(image: np.ndarray,
     # ── 0. MediaPipe → détection du visage ──
     rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-    face_result = landmarker.detect(mp_img)
+    face_result = landmarker.detect(mp_img)   # fonction sync : déjà dans le threadpool
     face_detected = bool(face_result.face_landmarks)
 
     if not face_detected:
@@ -529,7 +652,7 @@ def detect_calibration_markers(image: np.ndarray,
         # Re-détecter les landmarks sur l'image redressée
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        face_result = landmarker.detect(mp_img)
+        face_result = landmarker.detect(mp_img)   # fonction sync : déjà dans le threadpool
         if face_result.face_landmarks:
             landmarks = face_result.face_landmarks[0]
             left_eye = landmarks[468] if count > 468 else landmarks[33]
@@ -584,6 +707,7 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
 
     integral = cv2.integral(gray)
     meilleur = None
+    meilleur_triplet = None     # repli quand la 4ᵉ mire faciale n'est pas identifiable
     for quadrant_offset in _facial_quadrant_offsets(known_scale):
         if 2 * quadrant_offset >= max(6, min(w, h) // 4):
             continue
@@ -619,9 +743,26 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
             if diag["n_points"] == 4 and diag["scale_consistent"] \
                     and diag["ratios_consistent"]:
                 break
+        elif meilleur is None:
+            # ── Repli TRIPLET (dégradation gracieuse) ─────────────────────────
+            # Un clip dont la 4ᵉ mire est absente ou invisible garde 3 mires
+            # parfaitement mesurables. Sans ce repli, on tombait dans
+            # `_fallback_hough` : lent, incapable de trouver des damiers, et l'app
+            # échouait sur un clip utilisable. On continue à balayer les échelles
+            # (le score choisit) tant qu'aucun quadruplet n'a été trouvé.
+            triplet, info_t = _best_facial_triplet(peaks, w, h, clip_y, quadrant_offset)
+            if triplet and (meilleur_triplet is None
+                            or info_t["score"] > meilleur_triplet[2]["score"]):
+                meilleur_triplet = (triplet, quadrant_offset, info_t)
 
     if meilleur is None:
-        log.info("Calibration: aucun quadruplet valide crédible → repli Hough")
+        meilleur = meilleur_triplet
+        if meilleur is not None:
+            log.info("Calibration : 4e mire faciale absente ou invisible → "
+                     "3 mires de la rangée (pas de roll, échelle sur les extrêmes)")
+
+    if meilleur is None:
+        log.info("Calibration: aucun damier du clip crédible → repli Hough")
         fallback = _fallback_hough(gray, h, w)
         if inverse_rot_mat is not None and fallback.get("markers"):
             restored = reproject_points(fallback["markers"], inverse_rot_mat)
@@ -662,18 +803,36 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
     #    indépendantes), donc sans dépendre d'un visage détecté.
     quad_diag = clip.facial_quad_check(clip.facial_points_from_markers(detected_markers))
 
-    if quad_diag["n_points"] == 4 and not quad_diag["ratios_consistent"] \
-            and quad_diag["ratio_spread"] > FACIAL_QUAD_REJECT_TOL:
-        log.warning(f"Calibration REJETÉE : étalons incompatibles "
-                    f"({quad_diag['ratio_spread'] * 100:.1f} % d'écart sur des "
-                    f"rapports invariants d'échelle) → repli Hough")
-        fallback = _fallback_hough(gray, h, w)
-        if inverse_rot_mat is not None and fallback.get("markers"):
-            restored = reproject_points(fallback["markers"], inverse_rot_mat)
-            fallback["markers"] = [{"x": round(p["x"]), "y": round(p["y"])}
-                                   for p in restored]
-        fallback["facial_quad_check"] = quad_diag
-        return fallback
+    quad_ok = (quad_diag["n_points"] == 4 and quad_diag["ratios_consistent"]
+               and quad_diag["ratio_spread"] <= FACIAL_QUAD_REJECT_TOL)
+    if not quad_ok:
+        # DÉGRADATION GRACIEUSE, jamais l'échec — et surtout PAS `_fallback_hough`.
+        # Des damiers du clip SONT visibles mais leur géométrie n'est pas celle du
+        # quadruplet v19.5 : c'est le cas normal d'un clip à 3 mires faciales
+        # (vérifié sur photo réelle : 3 damiers alignés, aucune mire surélevée), ou
+        # d'une 4ᵉ mire mal vue. Les 3 mires de la rangée restent parfaitement
+        # mesurables — l'échelle se prend alors sur le span des extrêmes (100 mm) et
+        # le roll n'est pas exposé, faute de référence. Faire échouer tout le
+        # calibrage reviendrait à refuser un clip parfaitement utilisable.
+        # ⚠️ `_fallback_hough` est ICI le mauvais repli : il ne peut rien trouver de
+        # juste sur des damiers, et il balaie l'image entière (HoughCircles sur
+        # 12 Mpx : > 60 s mesurées) — cause du serveur entièrement gelé.
+        ecart = quad_diag.get("ratio_spread")
+        log.warning("Calibration : 4e mire NON VALIDÉE (%s) → étalons de la rangée "
+                    "seuls (span des extrêmes), roll non exposé",
+                    f"{ecart * 100:.1f} % d'écart sur des rapports invariants d'échelle"
+                    if ecart is not None else "aucune référence hors rangée")
+        quad_diag = dict(quad_diag)
+        quad_diag["quad_valid"] = False
+        quad_diag["roll_deg"] = None          # pas de référence fiable
+        quad_diag["roll_consistent"] = None
+        # Une mire non validée ne se publie pas : la laisser dans la sortie ferait
+        # entrer un point FAUX dans la géométrie de l'app (vérifié : à 17 mm, la
+        # 4ᵉ mire sortait à y=632 alors que la rangée est à 699).
+        detected_markers = detected_markers[:3]
+    else:
+        quad_diag = dict(quad_diag)
+        quad_diag["quad_valid"] = True
 
     # Échelle : médiane des étalons quand ils concordent, sinon span des extrêmes
     # (la mesure d'alors reste honnête, mais elle est signalée dans le diagnostic).
@@ -688,10 +847,16 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
              f"span={total_px}px (carreau {2 * quadrant_offset}px, équidistance "
              f"{info['equi'] * 100:.1f}%, 4e mire Δy={info.get('dy_raised_px', '?')}px) "
              f"spacing={avg_spacing:.0f}px scale={scale:.4f}mm/px conf={confidence:.2f}")
-    log.info(f"Quadrilatère facial : étalons concordants={quad_diag['scale_consistent']} "
-             f"(dispersion {100 * (quad_diag['scale_spread'] or 0):.2f} %), rapports "
-             f"cohérents={quad_diag['ratios_consistent']}, roll={quad_diag['roll_deg']:.2f}° "
-             f"(désaccord {quad_diag['roll_disagreement_deg']:.2f}°)")
+    if quad_diag['roll_deg'] is not None:
+        log.info(f"Quadrilatère facial : étalons concordants={quad_diag['scale_consistent']} "
+                 f"(dispersion {100 * (quad_diag['scale_spread'] or 0):.2f} %), rapports "
+                 f"cohérents={quad_diag['ratios_consistent']}, "
+                 f"roll={quad_diag['roll_deg']:.2f}° (désaccord "
+                 f"{quad_diag['roll_disagreement_deg']:.2f}°)")
+    else:
+        log.info(f"Quadrilatère facial : 4e mire NON validée → étalons de la rangée "
+                 f"seuls ; roll indisponible (dispersion des rapports "
+                 f"{100 * (quad_diag['ratio_spread'] or 0):.1f} %)")
 
     restored_markers = reproject_points(detected_markers, inverse_rot_mat)
 
@@ -709,8 +874,32 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
     }
 
 
+FALLBACK_HOUGH_MAX_SIDE = 1200  # HoughCircles coûte ~quadratique en surface : au-delà
+                                # de ce côté, le repli dépasse la MINUTE et gèle la
+                                # boucle d'événements (donc /health aussi).
+
+
 def _fallback_hough(gray: np.ndarray, h: int, w: int) -> dict:
-    """Fallback : HoughCircles sur toute l'image sans guidance faciale."""
+    """Fallback : HoughCircles sur toute l'image sans guidance faciale.
+
+    ⚠️ Traite une image RÉDUITE dès que la photo est grande. Mesuré : 3 s sur
+    0,76 Mpx mais **> 60 s sur 4032×3024** (photo iPad) — et comme ce calcul est
+    synchrone dans l'event loop, il bloque TOUT le serveur (`/health` compris).
+    À 1200 px de côté le même travail prend une fraction de seconde, et les
+    cercles cherchés (r = 1,2 % à 6 % du petit côté) restent très au-dessus du
+    bruit de sous-échantillonnage. Les coordonnées sont remises à l'échelle de
+    l'image d'origine avant de sortir : les appelants ne voient aucune différence.
+    """
+    cote = max(w, h)
+    echelle = 1.0
+    if cote > FALLBACK_HOUGH_MAX_SIDE:
+        echelle = FALLBACK_HOUGH_MAX_SIDE / float(cote)
+        gray = cv2.resize(gray,
+                          (max(1, int(round(w * echelle))), max(1, int(round(h * echelle)))),
+                          interpolation=cv2.INTER_AREA)
+        h, w = gray.shape[:2]
+    px = lambda v: max(1, int(round(v * echelle)))  # seuil d'origine → taille réduite
+
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(16, 16))
     enhanced = clahe.apply(gray)
 
@@ -745,7 +934,7 @@ def _fallback_hough(gray: np.ndarray, h: int, w: int) -> dict:
     for c in candidates:
         found = False
         for m in merged:
-            if abs(c["x"] - m["x"]) < 20 and abs(c["y"] - m["y"]) < 20:
+            if abs(c["x"] - m["x"]) < px(20) and abs(c["y"] - m["y"]) < px(20):
                 m["x"] = (m["x"] + c["x"]) // 2
                 m["y"] = (m["y"] + c["y"]) // 2
                 m["score"] = max(m["score"], c["score"])
@@ -770,13 +959,13 @@ def _fallback_hough(gray: np.ndarray, h: int, w: int) -> dict:
                 a, b, c = sorted_x[i], sorted_x[j], sorted_x[k]
                 y_mean = (a["y"] + b["y"] + c["y"]) / 3
                 y_dev = abs(a["y"] - y_mean) + abs(b["y"] - y_mean) + abs(c["y"] - y_mean)
-                if y_dev > 40: continue
+                if y_dev > px(40): continue
                 if not (a["x"] < b["x"] < c["x"]): continue
                 d1, d2 = b["x"] - a["x"], c["x"] - b["x"]
-                if d1 < 15 or d2 < 15: continue
+                if d1 < px(15) or d2 < px(15): continue
                 if max(d1, d2) / max(1, min(d1, d2)) > 1.8: continue
                 spacing_score = 100 * min(d1, d2) / max(1, max(d1, d2))
-                y_score = max(0, 40 - y_dev) * 2
+                y_score = max(0, px(40) - y_dev) * 2
                 composite = a["score"] + b["score"] + c["score"] + spacing_score * 3 + y_score
                 if composite > best_score:
                     best_score = composite
@@ -793,10 +982,16 @@ def _fallback_hough(gray: np.ndarray, h: int, w: int) -> dict:
     scale = (CALIB_MARKER_SPAN_MM) / total_px if total_px > 0 else 0
     confidence = min(1.0, best_score / 500)
 
+    # Remise à l'échelle de l'IMAGE D'ORIGINE (le calcul a été fait sur la réduite) :
+    # positions et distances en px sont DIVISÉES par `echelle`, tandis que l'échelle
+    # mm/px (un rapport mm par pixel) est MULTIPLIÉE. Sans ce retour, une photo
+    # réduite de moitié donnerait des mires à demi-coordonnées — donc deux fois trop
+    # petites, et un mm/px deux fois trop grand.
     return {
-        "markers": [{"x": int(p["x"]), "y": int(p["y"])} for p in best_triple],
-        "scale_mm_per_px": round(scale, 6),
-        "spacing_px": round(avg_spacing, 1),
+        "markers": [{"x": int(round(p["x"] / echelle)), "y": int(round(p["y"] / echelle))}
+                    for p in best_triple],
+        "scale_mm_per_px": round(scale * echelle, 6),
+        "spacing_px": round(avg_spacing / echelle, 1),
         "detection_confidence": round(confidence, 3),
         "face_used": False,
     }
@@ -953,7 +1148,9 @@ async def analyze_calibration(file: UploadFile = File(...)):
     h, w, _ = img.shape
     check_resolution(w, h, KIND_FACE)
 
-    result = detect_calibration_markers(img)
+    # Hors de la boucle d'événements : cette analyse peut durer plusieurs secondes
+    # et, exécutée ici, gelait TOUT le serveur (cf. ANALYSIS_LOCK).
+    result = await run_in_threadpool(_heavy, detect_calibration_markers, img)
 
     return CalibrationResult(
         width=w, height=h,
@@ -962,6 +1159,7 @@ async def analyze_calibration(file: UploadFile = File(...)):
         spacing_px=result["spacing_px"],
         detection_confidence=result["detection_confidence"],
         face_used=result["face_used"],
+        facial_quad_check=result.get("facial_quad_check"),
     )
 
 
@@ -976,7 +1174,7 @@ async def analyze(file: UploadFile = File(...)):
     # Conversion RGB pour MediaPipe Tasks
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-    result = landmarker.detect(mp_img)
+    result = await run_in_threadpool(_heavy, landmarker.detect, mp_img)
 
     if not result.face_landmarks:
         return AnalyzeResult(width=w, height=h, face_detected=False, landmarks_count=0)
@@ -1224,7 +1422,8 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
 
     # 1. Détection des mires latérales — cercles noirs (principal) puis damier (secours)
     effective_spacing = spacing_mm if spacing_mm and spacing_mm > 0 else LATERAL_MARKER_SPACING_MM
-    markers_px, lateral_diag = _detect_lateral(
+    markers_px, lateral_diag = await run_in_threadpool(
+        _heavy, _detect_lateral,
         img, landmarker, known_scale=scale_mm_per_px, marker_spacing_mm=effective_spacing)
     log.info(f"  [analyze-profile] diag latéral: chemin={lateral_diag.path} "
              f"spacing_détecté={lateral_diag.spacing_mm_detected}mm "
@@ -1275,12 +1474,12 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
     pantoscopic = compute_pantoscopic_angle(markers_px, scale, temple_angle)
 
     # 4. Distance vertex (D'L) — via MediaPipe
-    vertex = estimate_vertex_distance(img, markers_px, scale)
+    vertex = await run_in_threadpool(_heavy, estimate_vertex_distance, img, markers_px, scale)
 
     # 5. Détection faciale
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-    face_result = landmarker.detect(mp_img)
+    face_result = await run_in_threadpool(_heavy, landmarker.detect, mp_img)
     face_detected = bool(face_result.face_landmarks)
 
     log.info(f"Profil: scale={scale:.4f} mm/px, angle_pantoscopique={pantoscopic}°, vertex={vertex}mm, face={face_detected}")

@@ -122,6 +122,11 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
             // sans dépendre d'un visage. Affiché en degrés, pas en %.
             clipRollDeg: apiResult.facial_quad_check?.roll_deg ?? null,
             clipRollOk: apiResult.facial_quad_check?.roll_consistent ?? null,
+            // La 4ᵉ mire a-t-elle été VUE puis écartée (géométrie incohérente), ou
+            // simplement absente (clip à 3 mires) ? Deux causes différentes, et sans
+            // cette nuance l'app afficherait la même chose dans les deux cas.
+            quadValid: apiResult.facial_quad_check?.quad_valid ?? null,
+            quadNPoints: apiResult.facial_quad_check?.n_points ?? null,
           })
           backendScaleRef.current = scaleInfo  // stocker pour confirmCalibration
           return
@@ -163,7 +168,9 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
                 + (debugInfo.nClipMarkers === 4 ? ' · 4 mires' : '')
                 + (debugInfo.clipRollDeg != null
                   ? ` · clip ${debugInfo.clipRollDeg >= 0 ? '+' : ''}${Number(debugInfo.clipRollDeg).toFixed(1)}°`
-                  : ''),
+                  : debugInfo.quadValid === false && debugInfo.quadNPoints === 4
+                    ? ' · 4e mire écartée (géométrie incohérente)'
+                    : ''),
               // Le roll vient des mires du CLIP (référence mécanique) : un désaccord
               // entre les deux directions du quadrilatère signale une détection douteuse.
               color: debugInfo.clipRollOk === false ? 'var(--color-red)' : '#22c55e',

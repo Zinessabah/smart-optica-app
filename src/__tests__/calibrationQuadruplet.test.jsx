@@ -150,6 +150,26 @@ describe('CalibrationOverlay — clip v19.5 à 4 mires', () => {
     expect(el.textContent).not.toMatch(/clip/)
   })
 
+  it('4e mire vue mais REJETÉE : l’app le dit, et n’invente pas de roll', async () => {
+    // Cas de la photo réelle : le détecteur voit une 4ᵉ mire dont la géométrie ne
+    // colle pas (dispersion 50 %) → le backend ne publie que la rangée, sans roll.
+    reponse.value = {
+      ...detection(3),
+      facial_quad_check: {
+        n_points: 4, quad_valid: false, roll_deg: null,
+        roll_consistent: null, ratio_spread: 0.5,
+      },
+    }
+    const { container } = monter()
+    const el = await waitFor(() => {
+      const e = container.querySelector('[data-detect="method"]')
+      expect(e.textContent).toMatch(/4e mire écartée/)
+      return e
+    })
+    expect(el.textContent).not.toMatch(/clip \+|clip -/)
+    expect(container.querySelectorAll('[data-markerid]').length).toBe(3)
+  })
+
   it('2 mires seulement ne suffisent pas : pointage manuel', async () => {
     reponse.value = { ...detection(3), markers: [{ x: 1, y: 2 }, { x: 3, y: 4 }] }
     const { container } = monter()
