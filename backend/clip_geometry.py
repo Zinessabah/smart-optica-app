@@ -9,20 +9,20 @@ isole les sommets de leurs lèvres et on **ajuste un cercle** (les aléages sont
 les encoches d'ergot, un simple barycentre serait biaisé). Les valeurs sont ensuite
 confrontées au source paramétrique `clip_reference_v19_5.scad`.
 
-    | cote                          | mesuré STL | design .scad | écart |
-    |-------------------------------|-----------:|-------------:|------:|
-    | faciales extrêmes             |     100,00 |       100,00 |  0,00 |
-    | faciales adjacentes           |      50,00 |        50,00 |  0,00 |
-    | latérales basses (paire métro) |      25,00 |        25,00 |  0,00 |
-    | latérale surélevée ↔ basse     |      20,30 |        20,30 |  0,00 |
-    | positions faciales (x, z)     | -50/0/50/30, 3/3/3/17 | idem | 0,00 |
-    | positions latérales (y, z)    | -39,00/-26,50/-14,00 · 12,05/28,05 | -39/-26,5/-14 · 12/28 | 0,05 |
-    | carreau du damier             |       5,00 |         5,00 |  0,00 |
-    | offset de quadrant            |       2,50 |         2,50 |  0,00 |
-    | Ø du motif                    |      10,00 |        10,00 |  0,00 |
-    | Ø du disque de mire           |      12,00 |        12,00 |  0,00 |
-    | plan des faces faciales (y)   |       0,00 |         0,00 |  0,00 |
-    | plan des faces latérales (x)  |      76,75 |        76,75 |  0,00 |
+    | cote                          | mesuré STL | **référence officielle** | écart  |
+    |-------------------------------|-----------:|------------------------:|------:|
+    | faciales extrêmes             |     100,00 |                 100,00 |  0,00 |
+    | faciales adjacentes           |      50,00 |                  50,00 |  0,00 |
+    | latérales basses (paire métro) |      25,00 |                  25,00 |  0,00 |
+    | latérale surélevée ↔ basse     |      20,30 |                  20,30 |  0,00 |
+    | positions faciales (x, y, z)  | -50/0/50/30, -0.75/3/17 | idem | 0,00 |
+    | positions latérales (x, y, z) | ±76, -39/-26,5/-14, 12/28 | idem | 0,00 |
+    | carreau du damier             |       5,00 |                  5,00 |  0,00 |
+    | offset de quadrant            |       2,50 |                  2,50 |  0,00 |
+    | Ø du motif                    |      10,00 |                 10,00 |  0,00 |
+    | Ø du disque de mire           |      12,00 |                 12,00 |  0,00 |
+    | plan des faces faciales (y)   |      -0,75 |                 -0,75 |  0,00 |
+    | plan des faces latérales (x)  |      76,00 |                 76,00 |  0,00 |
 
 L'écart surélevée ↔ basse vaut exactement **20,3039 mm** (√(12,5² + 16²)) ; le clip le
 documente sous la valeur ronde « 20,30 ». Seul le rapport des deux écartements compte
@@ -68,23 +68,23 @@ MARKER_DEPTH_MM = 0.6             # profondeur du motif (4 couches à 0,15)
 
 # ── Plans de référence (le clip se porte comme des lunettes) ─────────────────
 # Repère : X = largeur, Y = profondeur (+Y vers la caméra d'une photo de face), Z = hauteur.
-FACIAL_FACE_PLANE_Y_MM = 0.00     # les 4 faces faciales sont coplanaires (y = 0)
-LATERAL_FACE_PLANE_X_MM = 76.75   # les faces latérales sont dans les plans |x| = 76,75
+FACIAL_FACE_PLANE_Y_MM = -0.75     # les 4 faces faciales sont coplanaires (y = -0.75)
+LATERAL_FACE_PLANE_X_MM = 76.00    # les faces latérales sont dans les plans |x| = 76,00
 
 # ── Mires faciales (4) ───────────────────────────────────────────────────────
-# positions dans le plan y = 0
+# positions dans le plan y = -0.75 (Ø 12,00 mm chacune)
 FACIAL_SPACING_EXTREME_MM = 100.00    # gauche ↔ droite
 FACIAL_SPACING_ADJACENT_MM = 50.00    # centre ↔ extrême
 
 FACIAL_MARKERS: Tuple[Dict, ...] = (
-    {"role": "facial_gauche", "x": -50.00, "z": 3.00},
-    {"role": "facial_centre", "x": 0.00, "z": 3.00},
-    {"role": "facial_droite", "x": 50.00, "z": 3.00},
-    {"role": "facial_haute", "x": 30.00, "z": 17.00},   # 4e mire, hors de la barre
+    {"role": "facial_gauche", "x": -50.00, "y": -0.75, "z": 3.00},
+    {"role": "facial_centre", "x": 0.00, "y": -0.75, "z": 3.00},
+    {"role": "facial_droite", "x": 50.00, "y": -0.75, "z": 3.00},
+    {"role": "facial_haute", "x": 30.00, "y": -0.75, "z": 17.00},   # 4e mire, hors de la barre
 )
 
 # ── Mires latérales (6 : 3 par côté, symétriques) ────────────────────────────
-# positions dans le plan |x| = 76,75
+# positions dans le plan |x| = 76,00 (Ø 12,00 mm chacune)
 LATERAL_SPACING_MM = 25.00            # paire MÉTROLOGIQUE = les deux mires basses
 LATERAL_MARKER_Z_LOW_MM = 12.00       # hauteur commune des deux mires basses
 LATERAL_MARKER_Z_RAISED_MM = 28.00    # hauteur de la mire surélevée (= 12 + 16)
@@ -98,12 +98,12 @@ LATERAL_RAISED_GAP_MM = math.hypot(LATERAL_RAISED_Y_GAP_MM, LATERAL_RAISED_Z_GAP
 LATERAL_RAISED_GAP_NOMINAL_MM = 20.30   # valeur ronde employée dans les documents du clip
 
 LATERAL_MARKERS: Tuple[Dict, ...] = (
-    {"role": "laterale_eloignee", "side": "+x", "y": -39.00, "z": 12.00},
-    {"role": "laterale_surelevee", "side": "+x", "y": -26.50, "z": 28.00},
-    {"role": "laterale_proche", "side": "+x", "y": -14.00, "z": 12.00},
-    {"role": "laterale_eloignee", "side": "-x", "y": -39.00, "z": 12.00},
-    {"role": "laterale_surelevee", "side": "-x", "y": -26.50, "z": 28.00},
-    {"role": "laterale_proche", "side": "-x", "y": -14.00, "z": 12.00},
+    {"role": "laterale_eloignee", "side": "+x", "x": 76.00, "y": -39.00, "z": 12.00},
+    {"role": "laterale_surelevee", "side": "+x", "x": 76.00, "y": -26.50, "z": 28.00},
+    {"role": "laterale_proche", "side": "+x", "x": 76.00, "y": -14.00, "z": 12.00},
+    {"role": "laterale_eloignee", "side": "-x", "x": -76.00, "y": -39.00, "z": 12.00},
+    {"role": "laterale_surelevee", "side": "-x", "x": -76.00, "y": -26.50, "z": 28.00},
+    {"role": "laterale_proche", "side": "-x", "x": -76.00, "y": -14.00, "z": 12.00},
 )
 
 # Rôles des deux mires qui portent la métrologie (une par côté)
