@@ -236,7 +236,12 @@ CALIB_MARKER_SPAN_MM = clip.FACIAL_SPACING_EXTREME_MM
 # Sans échelle connue, on balaie les tailles de carreau plausibles : AUCUNE hypothèse
 # d'IPD (le « 63 mm pour tout le monde » que le clip existe pour supprimer).
 FACIAL_QUADRANT_MM = clip.PATTERN_QUADRANT_MM
-FACIAL_QUADRANT_SWEEP = (3, 4, 5, 6, 8, 10, 12, 16, 20)
+# Demi-largeurs de motif essayées (en px), du plus fin au plus large. ⚠️ La borne
+# haute compte : sur une photo où le visage est proche, un quadrant fait 31 px
+# (0,0816 mm/px) — la sweep s'arrêtait à 20, le détecteur travaillait alors sur un
+# motif DEUX FOIS TROP PETIT et l'incohérence des étalons montait à 23 %, donc un
+# rejet à tort. Couvre 0,83 → 0,046 mm/px, soit du visage lointain au très proche.
+FACIAL_QUADRANT_SWEEP = (3, 4, 5, 6, 8, 10, 12, 16, 20, 25, 31, 39, 49)
 FACIAL_EQUIDISTANCE_TOL = 0.15
 # Tolérance sur l'ÉCART VERTICAL de la 4ᵉ mire (14,00 mm). Il faut la serrer :
 # l'ancienne cote erronée (17 mm) n'est qu'à 21 % de la bonne, et c'est le seul
@@ -383,56 +388,57 @@ def _scan_facial_strip(gray: np.ndarray, integral: np.ndarray,
     return peaks
 
 
-def _refine_marker(gray: np.ndarray, integral: np.ndarray, cx: int,
-                   y_centre: int, plage_px: int, quadrant_offset: int,
-                   w: int, h: int) -> Optional[dict]:
-    """Position RÉELLE (x, y) du damier de score maximal, autour de (cx, y_centre).
+def _refine_marker_2d(gray: np.ndarray, cx: int, y_centre: int, plage_px: int,
+                      quadrant_offset: int, w: int, h: int) -> Optional[dict]:
+    """Hauteur (y) de la mire : maximum du contraste damier 2D le long de la colonne.
 
-    Indispensable pour la HAUTEUR : `_scan_facial_strip` renvoie toujours
-    `y = clip_y` du scan — comparer `clip_y − y` à l'écart attendu reviendrait donc
-    à comparer `clip_y` à lui-même, et le contrôle vertical ne contrôlerait RIEN
-    (défaut constaté : une 4ᵉ mire à 17 mm passait pour 14). Le score de
-    corrélation est maximal quand le centre du motif tombe sur le vrai centre de
-    la mire : c'est cette position qui porte l'information de hauteur. Elle ne
-    dépend pas de `clip_y`, qui n'est qu'une position de recherche.
+    ⚠️ Pourquoi pas `_refine_marker` (corrélation de motif le long d'une ligne) : son
+    score mesure surtout le contraste EN X et reste élevé sur toute la hauteur de la
+    zone contrastée. Profil mesuré sur une vraie photo du clip v19.5 : score plat
+    (250–340) sur 144 px pour un damier de 61 px de haut — aucune information de
+    hauteur exploitable. Conséquence : la rangée ressortait avec deux pentes
+    différentes (705 / 636 / 591), impossible pour un clip rigide, et l'écart vertical
+    de la 4ᵉ mire variait de 92 à 193 px selon la taille de motif essayée.
 
-    Retourne le meilleur pic `{'x', 'y', 'score'}`, ou None si rien n'est trouvé.
+    Ici on cherche le maximum du contraste entre les 4 QUADRANTS autour de (x, y) :
+    sélectif dans les deux directions, donc la hauteur est réellement mesurée. Le x
+    reste celui du balayage 1D (voir la note plus bas).
     """
-    plage_px = max(1, int(plage_px))
-    y0, y1 = max(0, y_centre - plage_px), min(h - 1, y_centre + plage_px)
-    x_min, x_max = max(0, cx - quadrant_offset), min(w, cx + quadrant_offset)
-    if x_max <= x_min or y1 < y0:
+    inner_r = max(4, int(quadrant_offset * 1.11))
+    y0, y1 = max(0, y_centre - max(1, int(plage_px))), min(h - 1, y_centre + max(1, int(plage_px)))
+    if y1 <= y0:
         return None
 
-    ys, xs, sc = [], [], []
-    for y in range(y0, y1 + 1):
-        # half_h=1 : bande quasi ponctuelle. La bande large du balayage principal
-        # moyenne le score sur ±quadrant/2 et écrase justement l'information de
-        # hauteur recherchée ici.
-        pics = _scan_facial_strip(gray, integral, x_min, x_max, y,
-                                  quadrant_offset, w, h, half_h_override=1)
-        if not pics:
-            continue
-        p = max(pics, key=lambda q: q["score"])
-        ys.append(y)
-        xs.append(p["x"])
-        sc.append(p["score"])
-    if not ys:
+    def score(x: int, y: int) -> float:
+        if x < inner_r or y < inner_r or x >= w - inner_r or y >= h - inner_r:
+            return -1.0
+        return _check_checkerboard(gray, x, y, inner_r)
+
+    pts = [(cx, y, score(cx, y)) for y in range(y0, y1 + 1)]
+    pts = [p for p in pts if p[2] > 0]
+    if not pts:
         return None
 
-    # ── Centre du plateau, pas premier maximum ───────────────────────────────
-    # Le damier est SYMÉTRIQUE : la corrélation reste maximale sur tout un
-    # intervalle (les moyennes de carreaux tolèrent ±sample_size px). Garder le
-    # premier y du plateau plaçait la mire jusqu'à 6 px trop haut — soit 1,5 mm
-    # d'erreur sur l'écart vertical, et un roll faux. Le CENTRE du damier est le
-    # barycentre de ce plateau : on le prend, pondéré par les scores.
-    smax = max(sc)
-    seuil = 0.95 * smax
-    sel = [(y, x, s) for y, x, s in zip(ys, xs, sc) if s >= seuil]
-    wsum = sum(s for _, _, s in sel)
-    y_c = sum(y * s for y, _, s in sel) / wsum
-    x_c = sum(x * s for _, x, s in sel) / wsum
-    return {"x": int(round(x_c)), "y": int(round(y_c)), "score": smax}
+    # ⚠️ Prendre le PREMIER maximum ne marche pas : le score de damier est PLAT sur
+    # toute une zone (les quatre échantillons restent dans les mêmes carrés) et le
+    # balayage commençant en haut, la mire ressortait décalée d'un demi-carreau
+    # (mesuré : −12 px, soit 3 mm à cette échelle).
+    # ⚠️ Le barycentre pondéré biaise aussi (mesuré : +3 px sur un damier synthétique
+    # dont le centre est connu) : dès que le profil du plateau n'est pas parfaitement
+    # plat, il tire du côté des scores les plus forts. On prend donc le MILIEU de
+    # l'intervalle du plateau — exact par symétrie pour un damier, et insensible aux
+    # petites variations de score à l'intérieur du plateau.
+    #
+    # ⚠️ On n'affine PAS le x ici : le déplacer dégradait les ÉCARTEMENTS, qui sont la
+    # grandeur métrologique (mesuré sur la vraie photo : 52,4 / 47,7 mm au lieu de
+    # 50 / 50 en affinant aussi le x, contre 50,2 / 50,2 en gardant le x du balayage).
+    smax = max(p[2] for p in pts)
+    plateau = [p[1] for p in pts if p[2] >= 0.98 * smax]
+    y_b = (min(plateau) + max(plateau)) / 2
+    # Hauteur ENTIÈRE : le barycentre est sub-pixel, mais ces coordonnées servent
+    # ensuite à découper l'image (index de tranches) — un flottant lève un TypeError.
+    # L'arrondi à 1 px vaut 0,09 mm à cette échelle, négligeable devant les seuils.
+    return {"x": cx, "y": int(round(y_b)), "score": float(smax)}
 
 
 def _best_facial_quadruplet(peaks: list, gray: np.ndarray, integral: np.ndarray,
@@ -494,11 +500,18 @@ def _best_facial_quadruplet(peaks: list, gray: np.ndarray, integral: np.ndarray,
         if dy_raised == 0:
             continue
 
-        # La 4ᵉ mire est à 30 mm à droite du centre, soit la fraction
-        # 30/50 = 0,6 de l'écartement adjacent (grandeur dérivée, pas recopiée).
+        # La 4ᵉ mire est à 30 mm du centre, soit la fraction 30/50 = 0,6 de
+        # l'écartement adjacent (grandeur dérivée, pas recopiée).
+        # ⚠️ DE QUEL CÔTÉ : une photo prise en selfie est en MIROIR — constaté sur les
+        # photos du clip v19.5, où les quadrants sombres du damier passent de NO+SE à
+        # NE+SO. La 4ᵉ mire apparaît alors du côté OPPOSÉ à celui du clip. On teste donc
+        # LES DEUX côtés et on garde le mieux corrélé : la position en x n'a aucune
+        # importance métrologique (seuls comptent les écartements et la hauteur), donc
+        # les accepter tous les deux ne coûte rien en précision et rend le détecteur
+        # insensible au miroir. Sans cela, il cherchait la mire du mauvais côté et
+        # retenait un pic SANS AUCUN MOTIF DAMIER (contraste mesuré : nul).
         x_centre = a["x"] + d1
         frac = clip.FACIAL_RAISED_X_FROM_CENTRE_MM / clip.FACIAL_SPACING_ADJACENT_MM
-        x_4e_attendu = x_centre + int(round(frac * d1))
         tol_x = max(8, int(0.15 * d1))  # ±15 % de l'écart adjacent
 
         # ── La 4ᵉ mire : position attendue, puis position MESURÉE ────────────
@@ -508,32 +521,32 @@ def _best_facial_quadruplet(peaks: list, gray: np.ndarray, integral: np.ndarray,
         y_4e = clip_y - dy_raised
         if y_4e < 0 or y_4e >= h:
             continue
-        x_search_min = max(x0, x_4e_attendu - tol_x)
-        x_search_max = min(x1, x_4e_attendu + tol_x)
-        if x_search_max <= x_search_min:
-            continue
 
-        candidats = [p for p in
-                     sorted(_scan_facial_strip(gray, integral, x_search_min,
-                                               x_search_max, y_4e,
-                                               quadrant_offset, w, h),
-                            key=lambda p: -p["score"])
-                     if abs(p["x"] - x_4e_attendu) <= tol_x]
-        if not candidats:
-            continue
-
-        # Hauteur RÉELLE de la 4ᵉ mire (le meilleur des 3 premiers candidats en x)
-        p4 = None
-        for cand in candidats[:3]:
-            r = _refine_marker(gray, integral, cand["x"], y_4e,
-                               0.6 * dy_raised, quadrant_offset, w, h)
-            if r and (p4 is None or r["score"] > p4["score"]):
-                p4 = r
-        if p4 is None or abs(p4["x"] - x_4e_attendu) > tol_x:
+        p4, x_4e_attendu, cote_4e = None, None, None
+        for cote in (1, -1):        # +1 : entre centre et droite · −1 : miroir
+            x_att = x_centre + cote * int(round(frac * d1))
+            x_search_min = max(x0, x_att - tol_x)
+            x_search_max = min(x1, x_att + tol_x)
+            if x_search_max <= x_search_min:
+                continue
+            candidats = [p for p in
+                         sorted(_scan_facial_strip(gray, integral, x_search_min,
+                                                   x_search_max, y_4e,
+                                                   quadrant_offset, w, h),
+                                key=lambda p: -p["score"])
+                         if abs(p["x"] - x_att) <= tol_x]
+            # Hauteur RÉELLE (le meilleur des 3 premiers candidats en x)
+            for cand in candidats[:3]:
+                r = _refine_marker_2d(gray, cand["x"], y_4e,
+                                   0.6 * dy_raised, quadrant_offset, w, h)
+                if r and abs(r["x"] - x_att) <= tol_x \
+                        and (p4 is None or r["score"] > p4["score"]):
+                    p4, x_4e_attendu, cote_4e = r, x_att, cote
+        if p4 is None:
             continue
 
         # Hauteur RÉELLE du niveau de la barre, mesurée sur la mire du CENTRE.
-        ref_rangee = _refine_marker(gray, integral, x_centre, clip_y,
+        ref_rangee = _refine_marker_2d(gray, x_centre, clip_y,
                                     max(quadrant_offset,
                                         int(FACIAL_ROW_PLAGE_FRAC * dy_raised)),
                                     quadrant_offset, w, h)
@@ -550,7 +563,8 @@ def _best_facial_quadruplet(peaks: list, gray: np.ndarray, integral: np.ndarray,
             meilleur = [a, b, c, p4]
             info = {"score": score, "equi": equi, "span_px": span_px,
                     "scale": scale_prov, "dy_raised_px": dy_mesure,
-                    "quadrant_offset": quadrant_offset, "clip_y": clip_y}
+                    "quadrant_offset": quadrant_offset, "clip_y": clip_y,
+                    "cote_4e": cote_4e}
     return meilleur, info
 
 
@@ -731,13 +745,13 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
             # vient après la boucle) : on les affine ici, sinon le contrôle
             # porterait sur le y de RECHERCHE et conclurait à tort.
             for m in quadruplet[:3]:
-                ref = _refine_marker(gray, integral, m["x"], info["clip_y"],
+                ref = _refine_marker_2d(gray, m["x"], info["clip_y"],
                                      max(quadrant_offset,
                                          int(FACIAL_ROW_PLAGE_FRAC
                                              * info["dy_raised_px"])),
                                      quadrant_offset, w, h)
                 if ref:
-                    m["y"] = ref["y"]
+                    m["x"], m["y"] = ref["x"], ref["y"]
             diag = clip.facial_quad_check(clip.facial_points_from_markers(
                 [{"x": float(m["x"]), "y": float(m["y"])} for m in quadruplet]))
             if diag["n_points"] == 4 and diag["scale_consistent"] \
@@ -754,6 +768,48 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
             if triplet and (meilleur_triplet is None
                             or info_t["score"] > meilleur_triplet[2]["score"]):
                 meilleur_triplet = (triplet, quadrant_offset, info_t)
+
+    # ── Seconde passe : l'offset déduit de l'échelle MESURÉE ────────────────────
+    # Le choix de l'échelle par le seul score est INSTABLE : mesuré sur la vraie photo
+    # du clip v19.5, le détecteur retenait un damier de 40 px alors que le span des
+    # extrêmes indiquait 61 px — dispersion des étalons 22 % au lieu de 5,9 %. Or
+    # l'échelle se déduit du SPAN, qui est un ÉTALON du clip (100 mm entre les mires
+    # extrêmes) : dès qu'un quadruplet existe, la taille réelle du damier est connue.
+    # On refait donc une passe à cette taille exacte, et on retient le résultat s'il
+    # est plus cohérent. C'est une seule passe supplémentaire, pas un balayage.
+    if meilleur is not None and len(meilleur[0]) == 4 and meilleur[2].get("scale"):
+        off_ideal = int(round(FACIAL_QUADRANT_MM / meilleur[2]["scale"]))
+        if abs(off_ideal - meilleur[1]) >= 2 and 2 * off_ideal < max(6, min(w, h) // 4):
+            clip_y_2 = clip_y_base - off_ideal
+            if 0 < clip_y_2 < h:
+                peaks_2 = _scan_facial_strip(gray, integral, x0, x1, clip_y_2,
+                                             off_ideal, w, h)
+                q2, info_2 = _best_facial_quadruplet(peaks_2, gray, integral, w, h,
+                                                     clip_y_2, off_ideal, x0, x1,
+                                                     known_scale)
+                if q2 and len(q2) == 4:
+                    for m in q2[:3]:
+                        ref = _refine_marker_2d(
+                            gray, m["x"], info_2["clip_y"],
+                            max(off_ideal,
+                                int(FACIAL_ROW_PLAGE_FRAC * info_2["dy_raised_px"])),
+                            off_ideal, w, h)
+                        if ref:
+                            m["x"], m["y"] = ref["x"], ref["y"]
+                    pts2 = [{"x": float(m["x"]), "y": float(m["y"])} for m in q2]
+                    pts1 = [{"x": float(m["x"]), "y": float(m["y"])}
+                            for m in meilleur[0]]
+                    r1 = clip.facial_quad_check(
+                        clip.facial_points_from_markers(pts1)).get("ratio_spread")
+                    r2 = clip.facial_quad_check(
+                        clip.facial_points_from_markers(pts2)).get("ratio_spread")
+                    if r1 is None or (r2 is not None and r2 < r1):
+                        log.info("Calibration : échelle recalée sur le span mesuré "
+                                 "(damier %d px au lieu de %d) — dispersion %s → %s",
+                                 2 * off_ideal, 2 * meilleur[1],
+                                 "n/a" if r1 is None else f"{100 * r1:.1f} %",
+                                 "n/a" if r2 is None else f"{100 * r2:.1f} %")
+                        meilleur = (q2, off_ideal, info_2)
 
     if meilleur is None:
         meilleur = meilleur_triplet
@@ -781,17 +837,47 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
     # tout ce qui dépend de la verticale — le roll sortait à −6° sur un clip droit.
     # On mesure donc leur hauteur comme celle de la 4ᵉ mire.
     for m in best_quad[:3]:
-        ref = _refine_marker(gray, integral, m["x"], info["clip_y"],
+        ref = _refine_marker_2d(gray, m["x"], info["clip_y"],
                              max(quadrant_offset,
                                  int(FACIAL_ROW_PLAGE_FRAC * info["dy_raised_px"])),
                              quadrant_offset, w, h)
-        m["y"] = ref["y"] if ref else info["clip_y"]
+        if ref:
+            m["x"], m["y"] = ref["x"], ref["y"]
+        else:
+            m["y"] = info["clip_y"]
 
     total_px = best_quad[2]["x"] - best_quad[0]["x"]  # span de la rangée (gauche→droite)
     avg_spacing = ((best_quad[1]["x"] - best_quad[0]["x"]) +
                    (best_quad[2]["x"] - best_quad[1]["x"])) / 2
 
     detected_markers = [{"x": float(m["x"]), "y": float(m["y"])} for m in best_quad]
+
+    # ── MIROIR : refléter AVANT de vérifier la géométrie ─────────────────────
+    # Si la 4ᵉ mire est du côté GAUCHE du centre sur l'image, la prise de vue est en
+    # miroir (selfie iOS) — ou le clip est monté à l'envers. La géométrie du clip est
+    # symétrique : refléter les abscisses autour du centre ramène le cas à celui du
+    # clip « normal », et les écartements comme l'écart vertical sont conservés.
+    # ⚠️ Les marqueurs PUBLIÉS restent aux positions réelles : on ne reflète que pour
+    # la vérification. Sans ce traitement, un clip vu en miroir était rejeté alors que
+    # sa géométrie est parfaitement valide.
+    miroir = info.get("cote_4e") == -1 and len(detected_markers) == 4
+    if miroir:
+        x_centre_img = detected_markers[1]["x"]
+        # ⚠️ Refléter ne suffit pas : la réflexion ÉCHANGE gauche et droite, alors que
+        # `facial_points_from_markers` assigne les rôles PAR POSITION dans la liste.
+        # Sans réordonner, « facial_gauche » recevait le point de droite (et
+        # réciproquement) et les rapports invariants sortaient à 91 % d'incohérence sur
+        # une géométrie pourtant parfaite (mesuré sur image synthétique). On remet donc
+        # la rangée dans l'ordre [gauche, centre, droite] après réflexion.
+        rangee = [{"x": 2 * x_centre_img - p["x"], "y": p["y"]}
+                  for p in detected_markers[:3]]
+        rangee.sort(key=lambda p: p["x"])
+        h4 = detected_markers[3]
+        markers_geo = rangee + [{"x": 2 * x_centre_img - h4["x"], "y": h4["y"]}]
+        log.info("Calibration : prise de vue EN MIROIR (4e mire à gauche du centre) → "
+                 "géométrie vérifiée après réflexion")
+    else:
+        markers_geo = detected_markers
 
     # ── A+B+C : contrôle croisé du quadrilatère ──────────────────────────────
     # A. l'échelle est prise en MÉDIANE des étalons du clip (extrême, adjacente,
@@ -801,7 +887,14 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
     #    sans rien supposer — incohérence franche ⇒ on ne prétend pas avoir le clip ;
     # C. le roll est mesuré sur une référence MÉCANIQUE (deux directions
     #    indépendantes), donc sans dépendre d'un visage détecté.
-    quad_diag = clip.facial_quad_check(clip.facial_points_from_markers(detected_markers))
+    quad_diag = clip.facial_quad_check(clip.facial_points_from_markers(markers_geo))
+    if miroir:
+        # Le roll est l'inclinaison du clip telle qu'elle apparaît sur l'IMAGE : la
+        # réflexion inverse son signe, on le rétablit. (|roll| inchangé, et le
+        # désaccord entre les deux références est un écart absolu : inchangé aussi.)
+        quad_diag = dict(quad_diag)
+        if quad_diag.get("roll_deg") is not None:
+            quad_diag["roll_deg"] = -quad_diag["roll_deg"]
 
     quad_ok = (quad_diag["n_points"] == 4 and quad_diag["ratios_consistent"]
                and quad_diag["ratio_spread"] <= FACIAL_QUAD_REJECT_TOL)

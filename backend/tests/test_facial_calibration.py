@@ -308,11 +308,13 @@ def test_bande_vide_aucun_quadruplet():
 Y_BARRE = 700
 
 
-def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE, avec_4e=True):
+def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE, avec_4e=True, cote_4e=1):
     """Image synthétique du clip : 3 mires alignées + (option) la 4ᵉ surélevée.
 
     `avec_4e=False` reproduit un clip à **3 mires faciales seulement** — le cas des
     photos réelles disponibles (3 damiers alignés, aucune mire surélevée).
+    `cote_4e=-1` place la 4ᵉ mire à GAUCHE du centre : c'est la topologie d'une photo
+    prise en MIROIR (selfie iOS), où le clip apparaît retourné.
     """
     if dy_mm is None:
         dy_mm = clip.FACIAL_RAISED_Z_GAP_MM
@@ -320,7 +322,7 @@ def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE, avec_4e=True):
     demi = int(round(clip.PATTERN_SQUARE_MM / scale))
     ecart = int(round(clip.FACIAL_SPACING_ADJACENT_MM / scale))
     xs = [300, 300 + ecart, 300 + 2 * ecart]
-    x4 = xs[1] + int(round(0.6 * ecart))
+    x4 = xs[1] + cote_4e * int(round(0.6 * ecart))
     y4 = y_barre - int(round(dy_mm / scale))
     for px in xs:
         for (sx, sy) in ((-1, -1), (1, 1)):
@@ -333,9 +335,34 @@ def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE, avec_4e=True):
     return img, xs, (x4, y4)
 
 
-def _detecte(dy_mm=None, y_barre=Y_BARRE, known_scale=SCALE, avec_4e=True):
-    return main.detect_facial_quadruplet(_image_clip(dy_mm, y_barre, avec_4e=avec_4e)[0],
-                                         Y_BARRE, 100, 1100, known_scale)
+def _detecte(dy_mm=None, y_barre=Y_BARRE, known_scale=SCALE, avec_4e=True, cote_4e=1):
+    return main.detect_facial_quadruplet(
+        _image_clip(dy_mm, y_barre, avec_4e=avec_4e, cote_4e=cote_4e)[0],
+        Y_BARRE, 100, 1100, known_scale)
+
+
+def test_bout_en_bout_une_photo_en_miroir_est_acceptee():
+    """4ᵉ mire à GAUCHE du centre = photo en MIROIR (selfie iOS) — doit être acceptée.
+
+    Constaté sur les vraies photos du clip v19.5 : les quadrants sombres du damier y
+    sont en NE+SO alors que le clip les a en NO+SE, donc l'image est retournée, et la
+    4ᵉ mire — qui est à +30 mm du centre sur le clip — apparaît à GAUCHE. Sa position
+    en x n'a aucune importance métrologique (seuls comptent les écartements et la
+    hauteur) : le détecteur doit donc simplement la trouver. Sans ce traitement il
+    cherchait du mauvais côté, retenait un pic SANS AUCUN motif damier (contraste
+    mesuré : nul) et rejetait un clip parfaitement valide.
+    """
+    _, _, (x4, y4) = _image_clip(cote_4e=-1)
+    r = _detecte(cote_4e=-1)
+
+    assert r["scale_mm_per_px"] == pytest.approx(SCALE, rel=0.01)
+    assert len(r["markers"]) == 4
+    mx = [m["x"] for m in r["markers"]]
+    assert abs(mx[3] - x4) <= 3, f"4e mire : {mx[3]} vs {x4}"
+    q = r["facial_quad_check"]
+    assert q["quad_valid"] is True
+    # le roll est rendu dans le repère de l'IMAGE (signe rétabli après réflexion)
+    assert q["roll_deg"] is not None
 
 
 def test_bout_en_bout_le_clip_est_trouve_et_l_echelle_est_juste():
@@ -416,10 +443,13 @@ def test_bout_en_bout_une_4e_mire_a_17_mm_est_refusee():
     r = _detecte(dy_mm=17.0)
     q = r["facial_quad_check"]
     assert q is not None and q["ratios_consistent"] is False
-    # Le critère de NON-validation est la cohérence des étalons (2 %), pas le rejet
-    # « franchement faux » (5 %) : à 17 mm l'écart tombe à ~4,7 %, donc un seuil de
-    # rejet dur à 5 % laisserait passer la 4ᵉ mire pour valide.
-    assert q["ratio_spread"] > clip.FACIAL_SCALE_TOL
+    # Deux modes de rejet, tous deux honnêtes :
+    #  • la 4ᵉ mire est écartée dès la RECHERCHE — 17 mm s'écartent de 21 % de la cote
+    #    réelle (14 mm), au-delà de FACIAL_RAISED_TOL (15 %) : aucune référence hors
+    #    rangée n'existe alors et `ratio_spread` reste None ;
+    #  • ou elle est trouvée puis rejetée par l'incohérence des rapports invariants
+    #    (cas d'un écart plus fin, où seule la géométrie départage).
+    assert q["ratio_spread"] is None or q["ratio_spread"] > clip.FACIAL_SCALE_TOL
     # la 4ᵉ mire n'est pas validée…
     assert q["quad_valid"] is False
     # …donc aucune inclinaison n'est publiée (pas de référence fiable)
@@ -498,14 +528,22 @@ def test_scan_renvoie_le_y_de_recherche_pas_la_hauteur():
         assert all(p["y"] == y_essai for p in peaks)
 
 
-def test_refine_marker_rend_le_centre_reel_du_damier():
-    """Le barycentre du plateau de corrélation = centre de la mire (symétrie)."""
+def test_refine_marker_2d_rend_le_centre_reel_du_damier():
+    """Le barycentre du plateau de contraste = centre de la mire (symétrie).
+
+    ⚠️ Le x est rendu TEL QUEL — c'est celui du balayage 1D. Le déplacer dégradait les
+    ÉCARTEMENTS, qui sont la grandeur métrologique (mesuré sur la vraie photo :
+    52,4 / 47,7 mm au lieu de 50 / 50). Seule la hauteur est affinée ici.
+    """
     gray, xs, (x4, y4) = _image_clip()
-    integral = cv2.integral(gray)
     q = quadrant_px()
 
     for cx, y_vrai in ((xs[1], Y_BARRE), (x4, y4)):
-        r = main._refine_marker(gray, integral, cx, y_vrai + 30, 40, q, W, H)
+        r = main._refine_marker_2d(gray, cx, y_vrai + 30, 40, q, W, H)
         assert r is not None
-        assert abs(r["y"] - y_vrai) <= 1, f"y {r['y']} vs {y_vrai}"
-        assert abs(r["x"] - cx) <= 2
+        # ±3 px : le milieu du plateau peut être décalé de 2 px par la fenêtre 6×6 px
+        # des échantillons de `_check_checkerboard`. À 0,25 mm/px cela vaut 0,75 mm,
+        # et 0,2 mm à l'échelle réelle d'une photo (0,084 mm/px) — sans effet sur les
+        # seuils, qui portent sur l'écart vertical de 14 mm à 15 % près.
+        assert abs(r["y"] - y_vrai) <= 3, f"y {r['y']} vs {y_vrai}"
+        assert r["x"] == cx
