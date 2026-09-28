@@ -447,3 +447,182 @@ def scale_from_span(known_spacing_mm: float, span_px: float) -> float:
     if not span_px or span_px <= 0:
         raise ValueError("distance en pixels invalide")
     return known_spacing_mm / span_px
+
+
+# ── Homographie du plan facial : valider la géométrie EN PERSPECTIVE ─────────
+# Les 4 mires faciales sont COPLANAIRES (y = −0,75) et leurs positions dans ce plan
+# sont connues. Quatre correspondances plan ↔ image déterminent donc une homographie
+# H (8 paramètres, exacte par construction).
+#
+# ⚠️ Une homographie à 4 points ne VALIDE rien : elle reproduit ces 4 points
+# exactement, résidu nul par construction. Ce qui valide, c'est la contrainte de
+# RIGIDITÉ du plan — critère de Zhang : si H est bien la projection d'un plan rigide,
+# alors K⁻¹H = [m1 m2 m3] doit vérifier   m1·m2 = 0   et   |m1| = |m2|.
+#
+# Ces deux contraintes sont LINÉAIRES en g = 1/f² (f = focale en pixels), donc elles
+# fournissent à la fois une ESTIMATION de la focale et un RÉSIDU sans dimension qui
+# mesure l'écart à la rigidité. C'est ce résidu qui remplace les rapports de distances
+# — dont l'invariance suppose, elle, une vue frontale orthographique : c'est pourquoi
+# elle échoue sur une vraie photo prise de biais.
+FACIAL_PLAN_ROLES = ("facial_gauche", FACIAL_CENTRE_ROLE, "facial_droite", FACIAL_RAISED_ROLE)
+
+
+def _resoudre_systeme(matrice: List[List[float]],
+                      second_membre: List[float]) -> List[float]:
+    """Élimination de Gauss avec pivot partiel. None si le système est singulier."""
+    n = len(matrice)
+    a = [list(matrice[i]) + [second_membre[i]] for i in range(n)]
+    for col in range(n):
+        pivot = max(range(col, n), key=lambda r: abs(a[r][col]))
+        if abs(a[pivot][col]) < 1e-12:
+            return None
+        a[col], a[pivot] = a[pivot], a[col]
+        inv = 1.0 / a[col][col]
+        for r in range(n):
+            if r == col:
+                continue
+            facteur = a[r][col] * inv
+            if facteur:
+                for c in range(col, n + 1):
+                    a[r][c] -= facteur * a[col][c]
+    return [a[i][n] / a[i][i] for i in range(n)]
+
+
+def _normalisation(points: List[Tuple[float, float]]) -> Tuple[List[Tuple[float, float]], List[List[float]]]:
+    """Normalisation isotrope (Hartley) : centroïde à l'origine, distance moyenne √2.
+
+    Sans elle, les coordonnées du plan (≈100 mm) et celles de l'image (≈1000 px)
+    diffèrent de quatre ordres de grandeur et le système 8×8 devient mal conditionné.
+    """
+    n = float(len(points))
+    cx = sum(p[0] for p in points) / n
+    cy = sum(p[1] for p in points) / n
+    d = [math.hypot(p[0] - cx, p[1] - cy) for p in points]
+    moyenne = sum(d) / n
+    s = (math.sqrt(2.0) / moyenne) if moyenne > 1e-12 else 1.0
+    T = [[s, 0.0, -s * cx], [0.0, s, -s * cy], [0.0, 0.0, 1.0]]
+    return [(s * (p[0] - cx), s * (p[1] - cy)) for p in points], T
+
+
+def _matmul(a: List[List[float]], b: List[List[float]]) -> List[List[float]]:
+    return [[sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+
+
+def _inverse_3x3(m: List[List[float]]) -> List[List[float]]:
+    det = (m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+           - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+           + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]))
+    if abs(det) < 1e-15:
+        raise ValueError("matrice non inversible")
+    c = [[(m[1][1] * m[2][2] - m[1][2] * m[2][1]),
+          -(m[0][1] * m[2][2] - m[0][2] * m[2][1]),
+          (m[0][1] * m[1][2] - m[0][2] * m[1][1])],
+         [-(m[1][0] * m[2][2] - m[1][2] * m[2][0]),
+          (m[0][0] * m[2][2] - m[0][2] * m[2][0]),
+          -(m[0][0] * m[1][2] - m[0][2] * m[1][0])],
+         [(m[1][0] * m[2][1] - m[1][1] * m[2][0]),
+          -(m[0][0] * m[2][1] - m[0][1] * m[2][0]),
+          (m[0][0] * m[1][1] - m[0][1] * m[1][0])]]
+    return [[c[i][j] / det for j in range(3)] for i in range(3)]
+
+
+def homographie_4_points(plan_pts: List[Tuple[float, float]],
+                         image_pts: List[Tuple[float, float]]) -> List[List[float]]:
+    """Homographie plan → image à partir de 4 correspondances (h22 posé à 1).
+
+    ⚠️ Exacte par CONSTRUCTION sur ces 4 points : elle ne prouve pas que la
+    détection est bonne. La validation se fait par `focale_et_residu_rigidite`.
+    """
+    if len(plan_pts) != 4 or len(image_pts) != 4:
+        raise ValueError("il faut exactement 4 correspondances")
+    pn, Tp = _normalisation(plan_pts)
+    in_, Ti = _normalisation(image_pts)
+
+    matrice, second = [], []
+    for (X, Z), (u, v) in zip(pn, in_):
+        matrice.append([X, Z, 1.0, 0.0, 0.0, 0.0, -X * u, -Z * u])
+        second.append(u)
+        matrice.append([0.0, 0.0, 0.0, X, Z, 1.0, -X * v, -Z * v])
+        second.append(v)
+    h = _resoudre_systeme(matrice, second)
+    if h is None:
+        raise ValueError("correspondances dégénérées")
+    Hn = [[h[0], h[1], h[2]], [h[3], h[4], h[5]], [h[6], h[7], 1.0]]
+    return _matmul(_inverse_3x3(Ti), _matmul(Hn, Tp))
+
+
+def focale_et_residu_rigidite(H: List[List[float]], cx: float, cy: float
+                              ) -> Tuple[float, float]:
+    """Focale estimée (px) et résidu de rigidité du plan, d'après H.
+
+    Contraintes de Zhang pour un plan rigide, avec K = diag(f, f, 1) et le point
+    principal en (cx, cy) :
+
+        m1·m2 = 0            et       |m1|² − |m2|² = 0,   avec [m1 m2 m3] = K⁻¹H
+
+    En posant e(h) = (h_x − cx·h_w, h_y − cy·h_w) et g = 1/f², elles deviennent
+    LINÉAIRES en g :
+
+        g·(e1·e2)        + h1w·h2w        = 0
+        g·(|e1|² − |e2|²) + (h1w² − h2w²) = 0
+
+    On estime g au sens des moindres carrés, puis on retourne le résidu RELATIF
+    (sans dimension) : |m1·m2| et ||m1|² − |m2|²| rapportés à |m1|² + |m2|².
+    Un plan rigide vu par une vraie caméra donne un résidu voisin de zéro ; des mires
+    mal appariées donnent une homographie « tordue » qu'aucune focale ne rend rigide.
+    """
+    h1 = (H[0][0], H[1][0], H[2][0])
+    h2 = (H[0][1], H[1][1], H[2][1])
+    e1 = (h1[0] - cx * h1[2], h1[1] - cy * h1[2])
+    e2 = (h2[0] - cx * h2[2], h2[1] - cy * h2[2])
+
+    a1 = e1[0] * e2[0] + e1[1] * e2[1]
+    a2 = (e1[0] ** 2 + e1[1] ** 2) - (e2[0] ** 2 + e2[1] ** 2)
+    b1 = h1[2] * h2[2]
+    b2 = h1[2] ** 2 - h2[2] ** 2
+
+    den = a1 * a1 + a2 * a2
+    if den <= 1e-15:
+        return 0.0, 1.0
+    g = -(a1 * b1 + a2 * b2) / den
+    if g <= 1e-15:
+        # Aucune focale réelle ne rend le plan rigide.
+        return 0.0, 1.0
+    f = 1.0 / math.sqrt(g)
+
+    m1 = (e1[0] / f, e1[1] / f, h1[2])
+    m2 = (e2[0] / f, e2[1] / f, h2[2])
+    n1 = m1[0] ** 2 + m1[1] ** 2 + m1[2] ** 2
+    n2 = m2[0] ** 2 + m2[1] ** 2 + m2[2] ** 2
+    echelle = n1 + n2
+    if echelle <= 1e-15:
+        return f, 1.0
+    t1 = m1[0] * m2[0] + m1[1] * m2[1] + m1[2] * m2[2]
+    t2 = n1 - n2
+    residu = max(abs(t1), abs(t2)) / echelle
+    return f, residu
+
+
+def point_image_vers_plan(H: List[List[float]], u: float, v: float
+                          ) -> Tuple[float, float]:
+    """Coordonnées dans le PLAN du clip (mm) d'un point de l'image.
+
+    ⚠️ Valable pour les points situés DANS ce plan. Les pupilles sont ~13 mm en avant
+    (plan des verres) : la même homographie donne alors une erreur systématique de
+    l'ordre du rapport (distance mires–pupilles / distance caméra), d'où l'étape
+    ultérieure de pose 3D. Pour les mesures de l'app, c'est cette transformation qui
+    remplace l'échelle GLOBALE (mm/px) supposée constante : elle donne le facteur
+    d'échelle LOCAL, donc une mesure juste même sur une photo prise de biais.
+    """
+    Hi = _inverse_3x3(H)
+    w = Hi[2][0] * u + Hi[2][1] * v + Hi[2][2]
+    if abs(w) < 1e-12:
+        raise ValueError("point à l'infini du plan")
+    return ((Hi[0][0] * u + Hi[0][1] * v + Hi[0][2]) / w,
+            (Hi[1][0] * u + Hi[1][1] * v + Hi[1][2]) / w)
+
+
+def points_plan_facial() -> List[Tuple[float, float]]:
+    """Les 4 mires faciales dans leur plan, en mm : (x, z)."""
+    return [(facial_marker(role)["x"], facial_marker(role)["z"])
+            for role in FACIAL_PLAN_ROLES]
