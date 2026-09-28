@@ -308,13 +308,16 @@ def test_bande_vide_aucun_quadruplet():
 Y_BARRE = 700
 
 
-def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE, avec_4e=True, cote_4e=1):
+def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE, avec_4e=True, cote_4e=1,
+                miroir=False):
     """Image synthétique du clip : 3 mires alignées + (option) la 4ᵉ surélevée.
 
     `avec_4e=False` reproduit un clip à **3 mires faciales seulement** — le cas des
     photos réelles disponibles (3 damiers alignés, aucune mire surélevée).
     `cote_4e=-1` place la 4ᵉ mire à GAUCHE du centre : c'est la topologie d'une photo
     prise en MIROIR (selfie iOS), où le clip apparaît retourné.
+    `miroir=True` retourne VRAIMENT l'image (`np.fliplr`) : la signature des quadrants
+    s'inverse alors (NE+SO sombres au lieu de NO+SE), exactement comme sur un selfie.
     """
     if dy_mm is None:
         dy_mm = clip.FACIAL_RAISED_Z_GAP_MM
@@ -332,13 +335,42 @@ def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE, avec_4e=True, cote_4e=
         for (sx, sy) in ((-1, -1), (1, 1)):
             img[y4 + (0 if sy > 0 else -demi):y4 + (demi if sy > 0 else 0),
                 x4 + (0 if sx > 0 else -demi):x4 + (demi if sx > 0 else 0)] = 30
+    if miroir:
+        img = np.fliplr(img)
+        xs = [W - 1 - x for x in xs]
+        x4 = W - 1 - x4
     return img, xs, (x4, y4)
 
 
-def _detecte(dy_mm=None, y_barre=Y_BARRE, known_scale=SCALE, avec_4e=True, cote_4e=1):
+def _detecte(dy_mm=None, y_barre=Y_BARRE, known_scale=SCALE, avec_4e=True, cote_4e=1,
+             miroir=False):
     return main.detect_facial_quadruplet(
-        _image_clip(dy_mm, y_barre, avec_4e=avec_4e, cote_4e=cote_4e)[0],
+        _image_clip(dy_mm, y_barre, avec_4e=avec_4e, cote_4e=cote_4e,
+                    miroir=miroir)[0],
         Y_BARRE, 100, 1100, known_scale)
+
+
+def test_l_orientation_de_prise_de_vue_est_lue_sur_le_damier():
+    """Selfie (image retournée) ou caméra arrière : c'est le CLIP qui le dit.
+
+    Le damier porte la même signature partout (quadrants NO+SE sombres). Une image
+    RETOURNÉE l'inverse (NE+SO) — on le lit donc sur les mires au lieu de croire le
+    client sur parole : un navigateur ne retourne pas toujours sa capture, un appareil
+    photo natif produit un selfie miroir, et un fichier peut venir d'ailleurs. Se
+    tromper inverse l'œil droit et l'œil gauche sur une mesure monoculaire.
+    """
+    r_normale = _detecte()
+    assert r_normale["orientation_prise_de_vue"] == clip.ORIENTATION_NORMALE
+    assert r_normale["image_mirrored"] is False
+    assert r_normale["scale_mm_per_px"] == pytest.approx(SCALE, rel=0.01)
+
+    r_miroir = _detecte(miroir=True)
+    assert r_miroir["orientation_prise_de_vue"] == clip.ORIENTATION_MIROIR
+    assert r_miroir["image_mirrored"] is True
+    # le retournement ne doit PAS empêcher la mesure : même échelle, même géométrie
+    assert r_miroir["scale_mm_per_px"] == pytest.approx(SCALE, rel=0.01)
+    assert len(r_miroir["markers"]) == 4
+    assert r_miroir["facial_quad_check"]["quad_valid"] is True
 
 
 def test_bout_en_bout_une_photo_en_miroir_est_acceptee():

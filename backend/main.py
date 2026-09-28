@@ -13,7 +13,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
-from typing import Optional
+from typing import Dict, Optional
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
@@ -188,6 +188,12 @@ class CalibrationResult(BaseModel):
     # HTTP ne le contenait pas, donc le front ne pouvait afficher ni le roll ni la
     # non-validation de la 4ᵉ mire. Le contrat de réponse se déclare ICI en entier.
     facial_quad_check: Optional[dict] = None
+    # ORIENTATION de la prise de vue, lue sur la signature des damiers du clip :
+    # `selfie` = image RETOURNÉE (l'œil « gauche » de l'image est l'œil droit du
+    # porteur), `normale` = caméra arrière. `None` = signature illisible, on ne
+    # conclut pas. Sans cela, une mesure monoculaire inverse gauche et droite.
+    image_mirrored: bool = False
+    orientation_prise_de_vue: Optional[str] = None
 
 
 class ProfileResult(BaseModel):
@@ -441,6 +447,45 @@ def _refine_marker_2d(gray: np.ndarray, cx: int, y_centre: int, plage_px: int,
     return {"x": cx, "y": int(round(y_b)), "score": float(smax)}
 
 
+def _lire_quadrants(gray: np.ndarray, cx: int, cy: int, quadrant_px: int,
+                    w: int, h: int) -> Optional[Dict[str, float]]:
+    """Moyennes de gris des 4 quadrants d'un damier, autour de son centre.
+
+    Sert à deux choses : dire l'ORIENTATION de la prise de vue (selfie miroir ou
+    caméra arrière) et vérifier que le motif est bien un damier. On échantillonne au
+    MILIEU de chaque quadrant — à ±quadrant/2 du centre — avec une fenêtre plus
+    petite que le quadrant, pour ne pas mordre sur le carreau voisin.
+    """
+    d = max(2, int(round(quadrant_px / 2)))
+    t = max(2, d // 2)
+    quads: Dict[str, float] = {}
+    for nom, sx, sy in (("NO", -1, -1), ("NE", 1, -1), ("SO", -1, 1), ("SE", 1, 1)):
+        x0, x1 = max(0, cx + sx * d - t), min(w, cx + sx * d + t)
+        y0, y1 = max(0, cy + sy * d - t), min(h, cy + sy * d + t)
+        if x1 <= x0 or y1 <= y0:
+            return None
+        quads[nom] = float(gray[y0:y1, x0:x1].mean())
+    return quads
+
+
+def _orientation_prise_de_vue(gray: np.ndarray, markers: list, quadrant_px: int,
+                              w: int, h: int) -> str:
+    """Orientation de la prise de vue, lue sur les damiers de la rangée.
+
+    On moyenne les quadrants des 3 mires de la rangée : elles sont vues de face, alors
+    que la 4ᵉ peut être plus oblique. Le damier portant la même signature partout,
+    moyenner réduit le bruit d'une mire isolée (reflet, ombre).
+    """
+    lectures = [_lire_quadrants(gray, int(m["x"]), int(m["y"]), quadrant_px, w, h)
+                for m in markers[:3]]
+    lectures = [q for q in lectures if q]
+    if not lectures:
+        return clip.ORIENTATION_INDETERMINEE
+    moyennes = {k: sum(q[k] for q in lectures) / len(lectures)
+                for k in ("NO", "NE", "SO", "SE")}
+    return clip.orientation_depuis_quadrants(moyennes)
+
+
 def _best_facial_quadruplet(peaks: list, gray: np.ndarray, integral: np.ndarray,
                             w: int, h: int,
                             clip_y: int, quadrant_offset: int,
@@ -636,6 +681,8 @@ def detect_calibration_markers(image: np.ndarray,
         log.info("Calibration: no face detected, falling back")
         fallback = _fallback_hough(gray, h, w)
         fallback.setdefault("facial_quad_check", None)   # contrat de réponse stable
+        fallback.setdefault("image_mirrored", False)
+        fallback.setdefault("orientation_prise_de_vue", None)
         return fallback
 
     landmarks = face_result.face_landmarks[0]
@@ -769,48 +816,15 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
                             or info_t["score"] > meilleur_triplet[2]["score"]):
                 meilleur_triplet = (triplet, quadrant_offset, info_t)
 
-    # ── Seconde passe : l'offset déduit de l'échelle MESURÉE ────────────────────
-    # Le choix de l'échelle par le seul score est INSTABLE : mesuré sur la vraie photo
-    # du clip v19.5, le détecteur retenait un damier de 40 px alors que le span des
-    # extrêmes indiquait 61 px — dispersion des étalons 22 % au lieu de 5,9 %. Or
-    # l'échelle se déduit du SPAN, qui est un ÉTALON du clip (100 mm entre les mires
-    # extrêmes) : dès qu'un quadruplet existe, la taille réelle du damier est connue.
-    # On refait donc une passe à cette taille exacte, et on retient le résultat s'il
-    # est plus cohérent. C'est une seule passe supplémentaire, pas un balayage.
-    if meilleur is not None and len(meilleur[0]) == 4 and meilleur[2].get("scale"):
-        off_ideal = int(round(FACIAL_QUADRANT_MM / meilleur[2]["scale"]))
-        if abs(off_ideal - meilleur[1]) >= 2 and 2 * off_ideal < max(6, min(w, h) // 4):
-            clip_y_2 = clip_y_base - off_ideal
-            if 0 < clip_y_2 < h:
-                peaks_2 = _scan_facial_strip(gray, integral, x0, x1, clip_y_2,
-                                             off_ideal, w, h)
-                q2, info_2 = _best_facial_quadruplet(peaks_2, gray, integral, w, h,
-                                                     clip_y_2, off_ideal, x0, x1,
-                                                     known_scale)
-                if q2 and len(q2) == 4:
-                    for m in q2[:3]:
-                        ref = _refine_marker_2d(
-                            gray, m["x"], info_2["clip_y"],
-                            max(off_ideal,
-                                int(FACIAL_ROW_PLAGE_FRAC * info_2["dy_raised_px"])),
-                            off_ideal, w, h)
-                        if ref:
-                            m["x"], m["y"] = ref["x"], ref["y"]
-                    pts2 = [{"x": float(m["x"]), "y": float(m["y"])} for m in q2]
-                    pts1 = [{"x": float(m["x"]), "y": float(m["y"])}
-                            for m in meilleur[0]]
-                    r1 = clip.facial_quad_check(
-                        clip.facial_points_from_markers(pts1)).get("ratio_spread")
-                    r2 = clip.facial_quad_check(
-                        clip.facial_points_from_markers(pts2)).get("ratio_spread")
-                    if r1 is None or (r2 is not None and r2 < r1):
-                        log.info("Calibration : échelle recalée sur le span mesuré "
-                                 "(damier %d px au lieu de %d) — dispersion %s → %s",
-                                 2 * off_ideal, 2 * meilleur[1],
-                                 "n/a" if r1 is None else f"{100 * r1:.1f} %",
-                                 "n/a" if r2 is None else f"{100 * r2:.1f} %")
-                        meilleur = (q2, off_ideal, info_2)
-
+    # ── PAS de « seconde passe » de recalage d'échelle ─────────────────────────
+    # Une tentative a été faite : déduire la taille du damier du span mesuré (100 mm,
+    # étalon du clip) puis refaire une passe à cette taille. Le raisonnement est juste,
+    # mais le balayage 1D à la taille « idéale » (62 px) plaçait les mires SUR LA BARRE
+    # BLANCHE et sur la peau, à côté des damiers — vérifié en dessinant les positions
+    # sur l'image. Le défaut restait INVISIBLE aux seuils internes : un décalage
+    # presque uniforme préserve l'équidistance, alors qu'il fausse l'échelle de 2,4 %,
+    # donc TOUTES les mesures. Le correctif doit porter sur la LOCALISATION elle-même,
+    # pas sur un recalage qui déplace les pics après coup.
     if meilleur is None:
         meilleur = meilleur_triplet
         if meilleur is not None:
@@ -825,6 +839,8 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
             fallback["markers"] = [{"x": round(p["x"]), "y": round(p["y"])}
                                    for p in restored]
         fallback.setdefault("facial_quad_check", None)   # contrat de réponse stable
+        fallback.setdefault("image_mirrored", False)
+        fallback.setdefault("orientation_prise_de_vue", None)
         return fallback
 
     best_quad, quadrant_offset, info = meilleur
@@ -845,6 +861,27 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
             m["x"], m["y"] = ref["x"], ref["y"]
         else:
             m["y"] = info["clip_y"]
+
+    # ── Orientation de la prise de vue, LUE SUR le damier ──────────────────────
+    # Selfie (image retournée) ou caméra arrière : c'est le clip qui le dit, par la
+    # signature de ses quadrants (voir `clip_geometry.orientation_depuis_quadrants`).
+    # Indispensable : sur une mesure monoculaire, se tromper de miroir inverse l'œil
+    # droit et l'œil gauche. On ne se fie donc PAS au `facingMode` déclaré par le
+    # client (le navigateur ne retourne pas toujours la capture, et un fichier peut
+    # venir d'ailleurs) — on le MESURE. Le client sert au plus à confirmer.
+    orientation_prise = _orientation_prise_de_vue(gray, best_quad, quadrant_offset, w, h)
+    image_mirrored = (orientation_prise == clip.ORIENTATION_MIROIR)
+    if orientation_prise != clip.ORIENTATION_INDETERMINEE and len(best_quad) == 4:
+        # Cohérence avec le côté où la 4ᵉ mire a été trouvée : elle est à +30 mm du
+        # centre SUR LE CLIP, donc à gauche de l'image si celle-ci est retournée.
+        attendu = -1 if image_mirrored else 1
+        if info.get("cote_4e") not in (None, attendu):
+            log.warning("Calibration : signature du damier = %s mais 4e mire trouvée du "
+                        "côté %s (attendu %s) — clip monté à l'envers, ou mire douteuse",
+                        orientation_prise, info.get("cote_4e"), attendu)
+    elif orientation_prise != clip.ORIENTATION_INDETERMINEE and len(best_quad) == 3:
+        log.info("Calibration : prise de vue %s (lue sur la signature des damiers)",
+                 "EN MIROIR" if image_mirrored else "normale")
 
     total_px = best_quad[2]["x"] - best_quad[0]["x"]  # span de la rangée (gauche→droite)
     avg_spacing = ((best_quad[1]["x"] - best_quad[0]["x"]) +
@@ -964,6 +1001,9 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
         # A+B+C : de quoi auditer l'échelle, valider les rapports sans échelle,
         # et connaître l'inclinaison du clip sur une référence mécanique.
         "facial_quad_check": quad_diag,
+        # Orientation de la prise de vue : selfie (image retournée) ou caméra arrière.
+        "image_mirrored": image_mirrored,
+        "orientation_prise_de_vue": orientation_prise,
     }
 
 
@@ -1253,6 +1293,8 @@ async def analyze_calibration(file: UploadFile = File(...)):
         detection_confidence=result["detection_confidence"],
         face_used=result["face_used"],
         facial_quad_check=result.get("facial_quad_check"),
+        image_mirrored=result.get("image_mirrored", False),
+        orientation_prise_de_vue=result.get("orientation_prise_de_vue"),
     )
 
 

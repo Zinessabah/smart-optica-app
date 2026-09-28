@@ -62,6 +62,55 @@ CLIP_VERSION = "clip-v19.5-all-checkerboard"
 # donc il est coupé par le cercle — c'est voulu et c'est ce qui rend le damier net.)
 PATTERN_SQUARE_MM = 5.00          # côté d'un carreau
 PATTERN_QUADRANT_MM = 2.50        # = PATTERN_SQUARE_MM / 2 : les 4 quadrants sont échantillonnés à ±2,50 mm
+
+# ── Signature des quadrants : elle DONNE l'orientation de la prise de vue ─────
+# Les 10 damiers du clip portent la MÊME signature : quadrants NO et SE sombres,
+# NE et SO clairs (relevé sur les STL : NO 0,70 / NE 0,05 / SO 0,08 / SE 0,70).
+# C'est le clip lui-même qui dit comment il est vu :
+#   • signature intacte (NO+SE sombres) → image NON retournée (caméra arrière) ;
+#   • signature INVERSÉE (NE+SO sombres) → image en MIROIR (selfie).
+# ⚠️ Une rotation de 180° ne change PAS la signature (elle échange NO↔SE et NE↔SO) :
+#    le test est donc spécifique au MIROIR, pas à l'orientation de l'image.
+# ⚠️ C'est la SEULE source fiable. Un client peut déclarer son `facingMode`, mais le
+#    navigateur ne retourne pas toujours la capture, l'appareil photo natif produit un
+#    selfie miroir, et un fichier peut venir d'ailleurs (photo déposée, admin). Le
+#    clip, lui, porte l'information — et pour une mesure de DP monoculaire, se tromper
+#    inverse l'œil droit et l'œil gauche.
+SIGNATURE_QUADRANTS_SOMBRES = ("NO", "SE")
+SIGNATURE_CONTRASTE_MIN = 8.0     # en niveaux de gris : en dessous, damier illisible
+
+ORIENTATION_NORMALE = "normale"           # caméra arrière (ou selfie déjà retourné)
+ORIENTATION_MIROIR = "miroir"             # image RETOURNÉE
+ORIENTATION_INDETERMINEE = "indeterminee"  # signature illisible : on ne conclut pas
+
+
+def orientation_depuis_quadrants(quadrants: Dict[str, float],
+                                 contraste_min: float = SIGNATURE_CONTRASTE_MIN) -> str:
+    """Orientation de la prise de vue, lue sur les 4 quadrants d'un damier.
+
+    `quadrants` : moyennes de gris `{'NO', 'NE', 'SO', 'SE'}` autour du centre d'une
+    mire. Retourne `ORIENTATION_NORMALE`, `ORIENTATION_MIROIR` ou
+    `ORIENTATION_INDETERMINEE`.
+
+    ⚠️ En dessous du contraste minimal (ou si un quadrant manque), on retourne
+    `indeterminee` : mieux vaut ne rien affirmer que d'inverser gauche et droite.
+    """
+    try:
+        no = float(quadrants["NO"])
+        ne = float(quadrants["NE"])
+        so = float(quadrants["SO"])
+        se = float(quadrants["SE"])
+    except (KeyError, TypeError, ValueError):
+        return ORIENTATION_INDETERMINEE
+
+    if max(no, ne, so, se) - min(no, ne, so, se) < contraste_min:
+        return ORIENTATION_INDETERMINEE
+
+    # Signature normale = NO+SE sont les plus SOMBRES → (NE+SO) − (NO+SE) > 0.
+    ecart = (ne + so) / 2 - (no + se) / 2
+    return ORIENTATION_NORMALE if ecart > 0 else ORIENTATION_MIROIR
+
+
 PATTERN_DIAMETER_MM = 10.00       # Ø du motif rogné
 MARKER_DISC_MM = 12.00            # Ø du disque de mire (insert)
 MARKER_DEPTH_MM = 0.6             # profondeur du motif (4 couches à 0,15)

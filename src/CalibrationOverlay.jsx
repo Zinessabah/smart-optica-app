@@ -127,6 +127,12 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
             // cette nuance l'app afficherait la même chose dans les deux cas.
             quadValid: apiResult.facial_quad_check?.quad_valid ?? null,
             quadNPoints: apiResult.facial_quad_check?.n_points ?? null,
+            // ORIENTATION de la prise de vue, LUE SUR les damiers du clip : selfie
+            // (image retournée) ou caméra arrière. ⚠️ En selfie, le côté « gauche » de
+            // l'image est le côté DROIT du porteur : à ne pas confondre pour l'œil
+            // droit et l'œil gauche. `null` = signature illisible, on n'affirme rien.
+            imageMirrored: apiResult.image_mirrored ?? null,
+            orientationPrise: apiResult.orientation_prise_de_vue ?? null,
           })
           backendScaleRef.current = scaleInfo  // stocker pour confirmCalibration
           return
@@ -166,6 +172,15 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
           ? {
               text: `Détection serveur · confiance ${Number(debugInfo.backendConfidence).toFixed(2)}`
                 + (debugInfo.nClipMarkers === 4 ? ' · 4 mires' : '')
+                // ORIENTATION lue sur les damiers du clip : c'est une MESURE, pas ce
+                // que le navigateur déclare. En selfie l'image est retournée, donc le
+                // côté gauche de l'image est le côté DROIT du porteur — l'afficher
+                // évite de se tromper d'œil sur une mesure monoculaire.
+                + (debugInfo.imageMirrored === true
+                  ? ' · selfie (image retournée)'
+                  : debugInfo.orientationPrise === 'normale'
+                    ? ' · caméra arrière'
+                    : '')
                 + (debugInfo.clipRollDeg != null
                   ? ` · clip ${debugInfo.clipRollDeg >= 0 ? '+' : ''}${Number(debugInfo.clipRollDeg).toFixed(1)}°`
                   : debugInfo.quadValid === false && debugInfo.quadNPoints === 4

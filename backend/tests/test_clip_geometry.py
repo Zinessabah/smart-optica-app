@@ -429,3 +429,40 @@ def test_le_diagnostic_est_serialisable_meme_incomplet():
     # sérialisable : aucun objet exotique
     import json
     json.dumps(partiel)
+
+
+# ── Orientation de la prise de vue (selfie miroir / caméra arrière) ──────────
+
+def test_l_orientation_se_lit_sur_la_signature_des_quadrants():
+    """Le damier dit lui-même si l'image est retournée, ou non.
+
+    Les 10 damiers du clip portent la MÊME signature : quadrants NO et SE sombres
+    (relevé sur les STL). Une image retournée par un selfie l'INVERSE.
+    ⚠️ Une rotation de 180° ne la change PAS (elle échange NO↔SE et NE↔SO) : le test
+    est donc spécifique au MIROIR, pas à l'orientation de l'image — indispensable,
+    puisque se tromper inverse l'œil droit et l'œil gauche sur une mesure monoculaire.
+    """
+    normale = {"NO": 40.0, "NE": 160.0, "SO": 165.0, "SE": 45.0}
+    assert cg.orientation_depuis_quadrants(normale) == cg.ORIENTATION_NORMALE
+
+    miroir = {"NO": normale["NE"], "NE": normale["NO"],
+              "SO": normale["SE"], "SE": normale["SO"]}
+    assert cg.orientation_depuis_quadrants(miroir) == cg.ORIENTATION_MIROIR
+
+    demi_tour = {"NO": normale["SE"], "NE": normale["SO"],
+                 "SO": normale["NE"], "SE": normale["NO"]}
+    assert cg.orientation_depuis_quadrants(demi_tour) == cg.ORIENTATION_NORMALE
+
+
+def test_aucune_conclusion_quand_le_damier_est_illisible():
+    """Mieux vaut ne RIEN affirmer que d'inverser gauche et droite.
+
+    Un damier illisible (flou, ombre, reflet) ne doit produire aucune orientation :
+    une conclusion fausse est pire qu'une absence de conclusion, puisque le front
+    s'en servirait pour nommer l'œil droit et l'œil gauche.
+    """
+    plat = {"NO": 120.0, "NE": 124.0, "SO": 118.0, "SE": 122.0}   # contraste 6 < 8
+    assert cg.orientation_depuis_quadrants(plat) == cg.ORIENTATION_INDETERMINEE
+    assert cg.orientation_depuis_quadrants({}) == cg.ORIENTATION_INDETERMINEE
+    incomplet = {"NO": 40.0, "NE": 160.0}
+    assert cg.orientation_depuis_quadrants(incomplet) == cg.ORIENTATION_INDETERMINEE
