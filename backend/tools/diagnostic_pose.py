@@ -1,5 +1,9 @@
 """La POSE (R, t) + focale est-elle déterminable là où l'homographie échoue ?
 
+GEOMETRIE : le clip est un plan FRONTAL (perpendiculaire a l'axe optique). Sa cote z
+est VERTICALE — l'ecrire en 3e composante reviendrait a dire que la mire haute est
+14 mm plus LOIN au lieu de 14 mm plus HAUT, ce qui n'est pas la geometrie du clip.
+
 Constat : les 3 mires de la rangée sont COLINEAIRES (Z = 3 dans le plan), or une
 homographie exige 4 points dont aucun 3 alignés → matrice 8x8 de rang 7, solution non
 unique. La pose n'a que 6 degrés de liberté pour 8 contraintes : elle reste
@@ -30,10 +34,10 @@ def projection(points, f, d, rot):
     Ry = np.array([[math.cos(ay), 0, math.sin(ay)], [0, 1, 0], [-math.sin(ay), 0, math.cos(ay)]])
     Rz = np.array([[math.cos(az), -math.sin(az), 0], [math.sin(az), math.cos(az), 0], [0, 0, 1]])
     R = Rz @ Ry @ Rx
-    return [(float(f * (R @ np.array([X, 0.0, Z]) + np.array([0.0, 0.0, d]))[0]
-                   / (R @ np.array([X, 0.0, Z]) + np.array([0.0, 0.0, d]))[2] + CX),
-             float(f * (R @ np.array([X, 0.0, Z]) + np.array([0.0, 0.0, d]))[1]
-                   / (R @ np.array([X, 0.0, Z]) + np.array([0.0, 0.0, d]))[2] + CY))
+    return [(float(f * (R @ np.array([X, -Z, 0.0]) + np.array([0.0, 0.0, d]))[0]
+                   / (R @ np.array([X, -Z, 0.0]) + np.array([0.0, 0.0, d]))[2] + CX),
+             float(f * (R @ np.array([X, -Z, 0.0]) + np.array([0.0, 0.0, d]))[1]
+                   / (R @ np.array([X, -Z, 0.0]) + np.array([0.0, 0.0, d]))[2] + CY))
             for (X, Z) in points]
 
 
