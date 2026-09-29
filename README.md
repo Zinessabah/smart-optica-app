@@ -68,7 +68,37 @@ Le script est **idempotent** : le relancer ne casse rien et ne réécrit aucun s
 ./uninstall.sh --purge      # supprime en plus base, photos, secrets, venv et node_modules
 ```
 
-## Démarrage rapide (développement manuel)
+## Démarrage normal — services systemd
+
+L'application tourne en trois **services utilisateur**, activés au démarrage de la machine :
+
+| Service | Rôle | Port |
+|---|---|---|
+| `smart-optica-backend` | API FastAPI (uvicorn) | 8000 |
+| `smart-optica-frontend` | Application de centrage — sert le **build figé** de `dist/` | 5173 |
+| `smart-optica-admin` | Interface d'administration (serveur de dev Vite) | 5174 |
+
+```bash
+systemctl --user status smart-optica-backend smart-optica-frontend smart-optica-admin
+systemctl --user restart smart-optica-frontend       # après un build
+journalctl --user -u smart-optica-backend -n 50      # journal du service
+```
+
+> ⚠️ **Le front sert `dist/`, pas `src/`.** Après une modification du code, il faut
+> **reconstruire puis redémarrer** :
+> ```bash
+> npm run build && systemctl --user restart smart-optica-frontend
+> ```
+> Les fichiers du build portent une empreinte dans leur nom, ce qui évite le cache d'iPad
+> qui servait une version périmée.
+>
+> Journaux : `~/smart-optica-backend.log`, `~/smart-optica-admin.log`,
+> `~/smart-optica-frontend.log`.
+
+## Développement manuel (sans les services)
+
+> Ces commandes ne peuvent pas tourner **en même temps** que les services : arrêtez d'abord
+> celui qui occupe le port (`systemctl --user stop smart-optica-frontend`).
 
 ### 1. Frontend
 
@@ -94,16 +124,18 @@ démarrage (ou placé dans `backend/models/`).
 ### 3. Tests & lint
 
 ```bash
-npm test           # vitest — suite src/core/optics.test.js
+npm test           # vitest — 151 tests unitaires (17 fichiers)
+npm run test:integration   # 120 tests d'intégration (12 fichiers)
 npm run lint       # oxlint
 npm run build      # bundle de production
 ```
 
 ## Workflow de mesure
 
-1. **Photo de face** — patient de face avec le clip frontal (3 mires damier 2×2, 50 mm).
+1. **Photo de face** — patient de face avec le clip frontal — 4 mires damier 2×2 : trois équidistantes à 50 mm,
+   une quatrième surélevée (détection par quadruplet).
 2. **Photo de profil droit** — pour l'angle pantoscopique et le vertex.
-3. **Calibration** — détection auto des 3 mires (backend) ou placement manuel ; repli sur
+3. **Calibration** — détection auto des 4 mires faciales (backend) ou placement manuel ; repli sur
    les repères estimés par `/api/analyze` si la détection échoue.
 4. **Centrage & monture** — pupilles, centre du nez, rectangles boxing (avec verrouillage
    et miroir), panneau de mesures en temps réel.
@@ -111,7 +143,7 @@ npm run build      # bundle de production
    sont **pré-placés automatiquement** par `/api/analyze-profile` (mires latérales → plan
    du verre, Hough → branche, MediaPipe → cornée), puis ajustables à la main (« ↻ Relancer »).
    Un bouton **« 🔍 Vérifier le calibrage 25 mm »** permet de poser une droite sur les
-   2 cercles noirs latéraux pour contrôler que la distance mesurée vaut bien 25 mm
+   6 mires latérales pour contrôler que la distance mesurée vaut bien 25 mm
    (écart affiché + échelle impliquée par le placement).
 6. **Résultat** — validation clinique (seuils dans `src/core/validation.js`), export PDF.
 
@@ -126,4 +158,6 @@ npm run build      # bundle de production
 ## Références
 
 - `VERSIONS.md` — état v1 (clip, figée) vs v2 (3D) et profils Hermes associés.
-- `design/clip_reference_v3.scad` — clip imprimable (OpenSCAD → STL).
+- `design/` — **archive** des anciens clips imprimables (v3, v4, v8 — OpenSCAD → STL).
+  Le clip de référence courant est la **v19.5**, livrée hors du dépôt
+  (`~/Documents/clip_reference_v19_5.scad`), avec sa note d'impression.
