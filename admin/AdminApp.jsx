@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Ruler, Users, Search, UserPlus, KeyRound, Trash2, Edit3, X, Check, Shield } from 'lucide-react'
+import { Ruler, Users, Search, UserPlus, KeyRound, Trash2, Edit3, X, Shield } from 'lucide-react'
 import AuthScreen from '../src/components/AuthScreen.jsx'
 import { getToken, fetchMe, clearSession } from '../src/services/auth.js'
 import { listUsers, createUser, updateUser, resetPassword, deleteUser } from '../src/services/admin.js'

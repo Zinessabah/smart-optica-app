@@ -8,7 +8,7 @@ const headers = () => ({
   'Content-Type': 'application/json',
 })
 
-import { fetchWithTimeout, LONG_TIMEOUT_MS } from '../core/http'
+import { fetchWithTimeout } from '../core/http'
 export async function listUsers({ page = 1, per_page = 20, search = '' } = {}) {
   const params = new URLSearchParams({ page, per_page })
   if (search) params.set('search', search)

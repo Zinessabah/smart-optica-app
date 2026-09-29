@@ -5,7 +5,7 @@
 const TOKEN_KEY = 'so_token'
 const USER_KEY = 'so_user'
 
-import { fetchWithTimeout, LONG_TIMEOUT_MS } from '../core/http'
+import { fetchWithTimeout } from '../core/http'
 export function getToken() { return localStorage.getItem(TOKEN_KEY) }
 export function getStoredUser() {
   try { return JSON.parse(localStorage.getItem(USER_KEY)) } catch { return null }

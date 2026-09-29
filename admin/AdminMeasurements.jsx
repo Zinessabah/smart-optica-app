@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { BarChart3, UserRound, Eye, ArrowLeft, Calendar, Ruler, FileText } from 'lucide-react'
+import { UserRound, Eye, ArrowLeft, Calendar, Ruler } from 'lucide-react'
 import { listAllMeasurements } from '../src/services/measurements'
 
 const cardStyle = { background: 'var(--color-card)', border: '1px solid var(--color-border)' }

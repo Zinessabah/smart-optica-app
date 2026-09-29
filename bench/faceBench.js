@@ -192,8 +192,6 @@ async function measure(name, opts, label) {
 
   const dpTrue = mm(dist(gt.pupilL, gt.pupilR))
   const dpDet = mm(dist(det.leftEye, det.rightEye))
-  const dpP5 = pupils[0].p5 && pupils[1].p5 ? mm(dist(pupils[0].p5, pupils[1].p5)) : null
-
   return {
     name, label, method: det.method, ms: Math.round(ms), scores,
     detected: { od: det.leftEye, og: det.rightEye, nez: det.nose },

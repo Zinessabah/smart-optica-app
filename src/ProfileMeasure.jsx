@@ -1,4 +1,4 @@
-import { fetchWithTimeout, LONG_TIMEOUT_MS } from './core/http'
+import { fetchWithTimeout } from './core/http'
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { ArrowLeft, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react'
 import { computeContainedImageRect, screenPointToImage } from './core/imageGeometry'
