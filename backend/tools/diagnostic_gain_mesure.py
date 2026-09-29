@@ -93,53 +93,54 @@ def reconstruit(px, f, R, t, profondeur):
     return s * X
 
 
-rng = np.random.default_rng(20260928)
-N = 200
-print(f"{N} tirages · bruit 1 px sur chaque détection · vertex {VERTEX:.0f} mm · "
-      f"focale {F:.0f} px")
-print(f"{'configuration':28s} {'méthode':>10s} {'erreur DP bino':>15s} "
-      f"{'erreur DP mono':>15s}")
-print("-" * 74)
+if __name__ == "__main__":
+    rng = np.random.default_rng(20260928)
+    N = 200
+    print(f"{N} tirages · bruit 1 px sur chaque détection · vertex {VERTEX:.0f} mm · "
+          f"focale {F:.0f} px")
+    print(f"{'configuration':28s} {'méthode':>10s} {'erreur DP bino':>15s} "
+          f"{'erreur DP mono':>15s}")
+    print("-" * 74)
 
-for nom, pts in CONFIGS.items():
-    obj = np.array([[x, -z, 0.0] for x, z in pts], np.float64)
-    pup = [(-32.0, 32.0), (0.0, 32.0), (32.0, 32.0)]   # OD, milieu, OG (au niveau des yeux)
+    for nom, pts in CONFIGS.items():
+        obj = np.array([[x, -z, 0.0] for x, z in pts], np.float64)
+        pup = [(-32.0, 32.0), (0.0, 32.0), (32.0, 32.0)]   # OD, milieu, OG (au niveau des yeux)
 
-    err_a_bino, err_a_mono, err_b_bino, err_b_mono = [], [], [], []
-    for _ in range(N):
-        rot = pose_aleatoire(rng)
-        R = matrice(rot)
-        img_mires = projete(pts, R) + rng.normal(0, 1.0, (len(pts), 2))
-        img_pup = projete([(x, z) for x, z in pup], R, profondeur=VERTEX) \
-            + rng.normal(0, 1.0, (3, 2))
+        err_a_bino, err_a_mono, err_b_bino, err_b_mono = [], [], [], []
+        for _ in range(N):
+            rot = pose_aleatoire(rng)
+            R = matrice(rot)
+            img_mires = projete(pts, R) + rng.normal(0, 1.0, (len(pts), 2))
+            img_pup = projete([(x, z) for x, z in pup], R, profondeur=VERTEX) \
+                + rng.normal(0, 1.0, (3, 2))
 
-        # (a) échelle globale, méthode actuelle
-        span_px = img_mires[2][0] - img_mires[0][0]
-        ech = 100.0 / span_px if span_px > 0 else float("nan")
-        dp_bino_a = abs(img_pup[2][0] - img_pup[0][0]) * ech
-        dp_mono_a = abs(img_pup[2][0] - img_pup[1][0]) * ech
-        err_a_bino.append(abs(dp_bino_a - DP_BINO))
-        err_a_mono.append(abs(dp_mono_a - DP_MONO))
+            # (a) échelle globale, méthode actuelle
+            span_px = img_mires[2][0] - img_mires[0][0]
+            ech = 100.0 / span_px if span_px > 0 else float("nan")
+            dp_bino_a = abs(img_pup[2][0] - img_pup[0][0]) * ech
+            dp_mono_a = abs(img_pup[2][0] - img_pup[1][0]) * ech
+            err_a_bino.append(abs(dp_bino_a - DP_BINO))
+            err_a_mono.append(abs(dp_mono_a - DP_MONO))
 
-        # (b) méthode posée
-        pose = estime_pose(obj, img_mires)
-        if pose is None:
-            continue
-        f_est, R_est, t_est = pose
-        P = [reconstruit(p, f_est, R_est, t_est, VERTEX) for p in img_pup]
-        if any(p is None for p in P):
-            continue
-        dp_bino_b = float(np.linalg.norm(P[2] - P[0]))
-        dp_mono_b = float(np.linalg.norm(P[2] - P[1]))
-        err_b_bino.append(abs(dp_bino_b - DP_BINO))
-        err_b_mono.append(abs(dp_mono_b - DP_MONO))
+            # (b) méthode posée
+            pose = estime_pose(obj, img_mires)
+            if pose is None:
+                continue
+            f_est, R_est, t_est = pose
+            P = [reconstruit(p, f_est, R_est, t_est, VERTEX) for p in img_pup]
+            if any(p is None for p in P):
+                continue
+            dp_bino_b = float(np.linalg.norm(P[2] - P[0]))
+            dp_mono_b = float(np.linalg.norm(P[2] - P[1]))
+            err_b_bino.append(abs(dp_bino_b - DP_BINO))
+            err_b_mono.append(abs(dp_mono_b - DP_MONO))
 
-    for label, a, b in (("(a) actuelle", err_a_bino, err_a_mono),
-                        ("(b) posée", err_b_bino, err_b_mono)):
-        if not a:
-            print(f"{nom:28s} {label:>10s} {'AUCUNE pose exploitable':>31s}")
-            continue
-        ea = sum(a) / len(a)
-        eb = sum(b) / len(b)
-        print(f"{nom:28s} {label:>10s} {ea:13.2f} mm {eb:13.2f} mm")
-    print()
+        for label, a, b in (("(a) actuelle", err_a_bino, err_a_mono),
+                            ("(b) posée", err_b_bino, err_b_mono)):
+            if not a:
+                print(f"{nom:28s} {label:>10s} {'AUCUNE pose exploitable':>31s}")
+                continue
+            ea = sum(a) / len(a)
+            eb = sum(b) / len(b)
+            print(f"{nom:28s} {label:>10s} {ea:13.2f} mm {eb:13.2f} mm")
+        print()
