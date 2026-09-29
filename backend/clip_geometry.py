@@ -44,8 +44,8 @@ Un détecteur qui apparierait la surélevée avec une basse mesurerait **20,30 a
 
 Le triangle latéral (20,30 / 20,30 / 25,00) est donc **isocèle** : le côté métrologique
 est toujours **le plus long**, dans un rapport de 1,232 — critère **indépendant de
-l'échelle**, utilisable sans connaître les mm/px. C'est la règle appliquée par le
-détecteur (`lateral.isoceles_metrological_pair`).
+l'échelle**, utilisable sans connaître les mm/px. C'est la règle de `isoceles_ratio()`
+ci-dessous, appliquée par le détecteur latéral (`lateral_checker.py`).
 """
 
 from dataclasses import dataclass
