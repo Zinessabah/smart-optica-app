@@ -117,11 +117,20 @@ MARKER_DEPTH_MM = 0.6             # profondeur du motif (4 couches à 0,15)
 
 # ── Plans de référence (le clip se porte comme des lunettes) ─────────────────
 # Repère : X = largeur, Y = profondeur (+Y vers la caméra d'une photo de face), Z = hauteur.
-FACIAL_FACE_PLANE_Y_MM = -0.75     # les 4 faces faciales sont coplanaires (y = -0.75)
-LATERAL_FACE_PLANE_X_MM = 76.00    # les faces latérales sont dans les plans |x| = 76,00
+#
+# ⚠️ Les deux cotes ci-dessous désignent le CENTRE des disques, pas leur face : un insert
+# fait 1,5 mm d'épaisseur, donc son centre est à 0,75 mm en retrait de sa face.
+#   • faciales  : faces à y = 0,00 (face avant de la barre), centres à y = −0,75
+#   • latérales : faces à |x| = 76,75, centres à |x| = 76,00
+# C'est 76,75 qui porte le vertex.
+# Elles s'appelaient « FACE_PLANE » jusqu'au 29/09, ce qui laissait croire à 0,75 mm près
+# que le plan de face était le centre du disque. Aucun calcul ne les utilisait : le
+# renommage ferme le piège sans rien changer aux mesures.
+FACIAL_DISC_CENTER_Y_MM = -0.75
+LATERAL_DISC_CENTER_X_MM = 76.00
 
 # ── Mires faciales (4) ───────────────────────────────────────────────────────
-# positions dans le plan y = -0.75 (Ø 12,00 mm chacune)
+# centres des disques à y = −0,75 (faces à y = 0,00), Ø 12,00 mm chacune
 FACIAL_SPACING_EXTREME_MM = 100.00    # gauche ↔ droite
 FACIAL_SPACING_ADJACENT_MM = 50.00    # centre ↔ extrême
 
@@ -360,7 +369,7 @@ def facial_points_from_markers(markers: List[Dict]) -> Dict[str, Tuple[float, fl
     return {role: (float(m["x"]), float(m["y"])) for role, m in zip(roles, markers)}
 
 # ── Mires latérales (6 : 3 par côté, symétriques) ────────────────────────────
-# positions dans le plan |x| = 76,00 (Ø 12,00 mm chacune)
+# centres des disques dans les plans |x| = 76,00 (faces à |x| = 76,75), Ø 12,00 mm chacune
 LATERAL_SPACING_MM = 25.00            # paire MÉTROLOGIQUE = les deux mires basses
 LATERAL_MARKER_Z_LOW_MM = 12.00       # hauteur commune des deux mires basses
 LATERAL_MARKER_Z_RAISED_MM = 28.00    # hauteur de la mire surélevée (= 12 + 16)
