@@ -1551,7 +1551,7 @@ async def analyze_profile(request: Request, file: UploadFile = File(...), scale_
     # D'où vient la requête : le port et le Referer disent QUELLE version de l'app l'envoie
     # (dev server 5173, prévisualisation d'un dist, autre page…). Indispensable pour distinguer
     # « le service se trompe » de « l'app en face n'est pas celle qu'on croit ».
-    logger.info(
+    log.info(
         "[analyze-profile] 🌐 origine=%s referer=%s agent=%s",
         request.headers.get("origin"), request.headers.get("referer"),
         (request.headers.get("user-agent") or "")[:60],

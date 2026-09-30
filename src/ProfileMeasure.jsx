@@ -432,8 +432,13 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
           autoVerifyRef.current = cibles
           return cibles
         })
-      } catch {
-        if (alive) { setDiag(d => ({ ...d, etape: 'échec réseau' })); setSeedStatus('failed') }
+      } catch (err) {
+        // Le motif exact compte : « échec réseau » ne dit pas si le service a répondu 500, renvoyé
+        // du HTML (mauvais proxy) ou si rien n'est parti. L'API lève « API profile error: <statut> ».
+        if (alive) {
+          setDiag(d => ({ ...d, etape: `échec — ${(err && err.message) || err}` }))
+          setSeedStatus('failed')
+        }
       } finally {
         clearTimeout(timer)
       }
