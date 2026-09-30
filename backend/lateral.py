@@ -107,6 +107,12 @@ class LateralDiagnostics:
     # parasite quand on ne saurait pas distinguer 20,30 mm de 25,00 mm.
     qo_px: Optional[float] = None
     qo_coherent: Optional[bool] = None
+    # ── Les 3 mires du clip (modèle à 3 marqueurs) ───────────────────────────
+    # La paire métrologique est déjà dans `spacing_mm_detected`/`pair_roles` ; ici on ajoute la
+    # SURÉLEVÉE et l'écart du rapport base/patte au rapport MESURÉ du clip. Sans ces deux champs,
+    # l'app ne peut pas vérifier un placement à 3 marqueurs : elle ne saurait que faire confiance.
+    raised_mire: Optional[tuple] = None        # (x, y) de la mire surélevée
+    ratio_err_pct: Optional[float] = None      # écart du rapport base/patte au rapport du clip
 
 
 def _progressive_rois(w: int, h: int) -> List[Tuple[int, int, int, int]]:

@@ -158,16 +158,37 @@ class TestPairageMetrologique:
         assert info["spacing_mm"] == clip.LATERAL_SPACING_MM
         assert surelevee not in paire
         assert {id(p) for p in paire} == {id(proche), id(eloignee)}
+        # Les 3 mires sont rendues pour que l'app PUISSE vérifier son placement : la surélevée
+        # et l'écart du rapport base/patte au rapport du clip (0 pour un triangle exact).
+        assert info["raised"] == (814, 386)
+        assert abs(info["ratio_err_pct"]) < 0.5, "triangle exact → écart quasi nul"
 
     def test_triangle_reel_sans_echelle(self):
         """Le critère isocèle doit marcher AVANT de connaître les mm/px."""
         proche = _cand(864, 450)
         eloignee = _cand(764, 450)
         surelevee = _cand(814, 386)          # 50 px en x, 64 px en haut
-        paire, info = select_metrological_pair([proche, eloignee, surelevee], None)
-        assert paire is not None
+        p, info = select_metrological_pair([proche, eloignee, surelevee], None)
+        assert p is not None
         assert info["isoceles"] is True
-        assert surelevee not in paire
+        assert surelevee not in p
+
+    def test_le_detecteur_expose_la_surelevee_et_l_ecart_du_rapport(self):
+        """Bout en bout sur la scène du vrai triangle v19.5 : la 3e mire est rendue, avec son écart.
+
+        C'est ce qui rend un placement à 3 marqueurs VÉRIFIABLE : avec 2 points, n'importe quel
+        écartement « est » 25 mm par définition, rien ne peut le contredire.
+        """
+        bgr, _proche, _eloignee, surelevee = _scene_laterale_v195()
+        _markers, diag = detect_lateral_markers(bgr)
+
+        assert diag.triangle_isoceles is True
+        assert diag.raised_mire is not None, "la 3e mire du clip doit être rendue"
+        err_px = math.hypot(diag.raised_mire[0] - surelevee[0],
+                            diag.raised_mire[1] - surelevee[1])
+        assert err_px * SCALE < 0.5, f"surélevée à {err_px * SCALE:.2f} mm de la vérité"
+        assert diag.ratio_err_pct is not None
+        assert abs(diag.ratio_err_pct) < 3.0, f"rapport à {diag.ratio_err_pct} % du clip"
 
     def test_surelevee_seule_est_REFUSEE(self):
         """Seulement (basse, surélevée) : 20,30 mm → refus, aucune mesure inventée."""

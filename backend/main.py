@@ -199,7 +199,8 @@ class CalibrationResult(BaseModel):
 class ProfileResult(BaseModel):
     width: int
     height: int
-    lateral_markers: list  # 2 points [(x1,y1), (x2,y2)]
+    lateral_markers: list  # 2 points [(x1,y1), (x2,y2)] = la paire MÉTROLOGIQUE (base 25,00 mm)
+    lateral_raised: Optional[list] = None  # 3e mire du clip (surélevée), si le triangle est établi
     scale_mm_per_px: float
     scale_plausible: bool = True  # le couple de mires implique un champ crédible (150-1 000 mm)
     pantoscopic_angle: Optional[float] = None  # degrés
@@ -1568,6 +1569,11 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
     
     log.info(f"[analyze-profile] 🎯 lateral_markers détectés: {markers_px}")
 
+    # 3e mire du clip (la surélevée) : elle n'existe que si le détecteur a établi le triangle
+    # isocèle. L'app s'en sert pour placer son 3e marqueur ET pour vérifier le placement.
+    _raised = getattr(lateral_diag, "raised_mire", None)
+    raised_mire = [int(_raised[0]), int(_raised[1])] if _raised else None
+
     if len(markers_px) < 2:
         raise HTTPException(422, detail="Impossible de détecter les 2 marqueurs latéraux. "
                                          "Vérifiez que le clip est bien visible sur la photo de profil.")
@@ -1634,12 +1640,17 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
         # la photo faciale. `qo_coherent` dit si les mires appariées répondent à la même taille.
         "qo_px": getattr(ld, "qo_px", None),
         "qo_coherent": getattr(ld, "qo_coherent", None),
+        # 3e mire du clip + écart du rapport base/patte : l'app vérifie son placement à 3
+        # marqueurs avec ces deux valeurs (et n'affiche aucune échelle si elles ne collent pas).
+        "raised_mire": getattr(ld, "raised_mire", None),
+        "ratio_err_pct": getattr(ld, "ratio_err_pct", None),
     }
 
     return ProfileResult(
         width=w,
         height=h,
         lateral_markers=markers_px,
+        lateral_raised=raised_mire,
         scale_mm_per_px=round(scale, 6),
         scale_plausible=scale_plausible,
         pantoscopic_angle=pantoscopic,

@@ -332,6 +332,11 @@ def select_metrological_pair(cands: List[Dict], scale: Optional[float],
         "spacing_mm": None,
         "pair_roles": None,
         "qo_coherent": None,
+        # Les 3 mires du clip v19.5 : la paire métrologique (base 25,00 mm) + la SURÉLEVÉE.
+        # L'app s'en sert pour VÉRIFIER le placement de ses 3 marqueurs (rapport base/patte
+        # = 1,2313 ± tolérance) : c'est ce qui rend l'échelle vérifiable au lieu d'être crue.
+        "raised": None,          # (x, y) de la surélevée — None si non établie
+        "ratio_err_pct": None,   # écart MESURÉ du rapport base/patte au rapport du clip
     }
     if len(cands) < 2:
         return None, info
@@ -369,7 +374,12 @@ def select_metrological_pair(cands: List[Dict], scale: Optional[float],
             info.update(isoceles=True, spacing_mm=clip.LATERAL_SPACING_MM,
                         pair_is_metrological=True, raised_rejected=True,
                         qo_coherent=_qo_coherent((cands[i], cands[j], cands[surleve])),
-                        pair_roles=("laterale_basse", "laterale_basse"))
+                        pair_roles=("laterale_basse", "laterale_basse"),
+                        # On rend les 3 mires : la paire (base) ET la surélevée, avec l'écart du
+                        # rapport base/patte au rapport du clip. C'est ce triplet qui permet à
+                        # l'app de vérifier le placement de ses 3 marqueurs.
+                        raised=(int(cands[surleve]["x"]), int(cands[surleve]["y"])),
+                        ratio_err_pct=round((r / ratio - 1) * 100, 3))
             log.info(f"  [lateral·B] pairage par triangle isocèle : mires "
                      f"{i}/{j} appariées (25,00 mm), mire {surleve} surélevée écartée")
             return (cands[i], cands[j]), info
@@ -483,6 +493,8 @@ def detect_lateral_markers(image: np.ndarray, landmarker=None,
     diag.triangle_isoceles = info.get("isoceles")
     diag.pair_roles = info.get("pair_roles")
     diag.qo_coherent = info.get("qo_coherent")
+    diag.raised_mire = info.get("raised")
+    diag.ratio_err_pct = info.get("ratio_err_pct")
     if info.get("trap_rejected"):
         diag.trap_spacing_rejected = True
     if paire is None:
