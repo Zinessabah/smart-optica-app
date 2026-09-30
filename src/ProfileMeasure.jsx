@@ -290,12 +290,15 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
   const [seed, setSeed] = useState(null)   // { markers, eyeLine, centerX } — état : les défauts en dépendent
   const seedTriedRef = useRef(false)       // un seul essai par photo
   const poseManuelleRef = useRef(false)   // l'utilisateur a posé ses marqueurs lui-même → aucun automatisme
-  // ── DIAGNOSTIC TEMPORAIRE (à retirer une fois le défaut localisé) ──
-  // Il existe parce que quatre correctifs successifs n'ont rien changé à l'écran : devant « la
-  // mesure est bonne mais l'écran dit autre chose », il faut VOIR la chaîne complète telle que la
-  // voit l'appareil — version servie, espace de coordonnées de la photo, réponse du service,
-  // verdict d'amorçage, positions réelles des marqueurs, valeur affichée.
-  const [diag, setDiag] = useState({ tag: 'd4', etape: 'départ' })
+  // ── DIAGNOSTIC, sur demande seulement (`?diag=1`) ──
+  // Il existe parce que quatre correctifs successifs n'ont rien changé à l'écran de Driss : devant
+  // « la mesure est bonne mais l'écran dit autre chose », il faut VOIR la chaîne complète telle que
+  // la voit l'appareil — version servie, espace de coordonnées de la photo, réponse du service,
+  // verdict d'amorçage, positions réelles des marqueurs, valeur affichée. Sur un iPad il n'y a pas
+  // de console : sans cette ligne, tout diagnostic se fait à l'aveugle. Invisible par défaut.
+  const SHOW_DIAG = typeof window !== 'undefined'
+    && new URLSearchParams(window.location.search).has('diag')
+  const [diag, setDiag] = useState({ tag: 'd5', etape: 'départ' })
 
   // ── Écartement de DÉPART des 2 poignées du vertex ──
   // Ce n'est PAS une mesure : l'utilisateur pose ensuite les 2 points sur la cornée puis
@@ -1032,18 +1035,20 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
       <button onClick={onSkip} className="w-full py-2 rounded-full text-xs"
         style={{ background: 'transparent', color: 'var(--color-text-dim)' }}>Passer cette étape</button>
 
-      {/* ── DIAGNOSTIC TEMPORAIRE — recopie-moi cette ligne telle quelle ── */}
-      <div data-diag className="w-full mt-1 px-2 py-1 rounded text-[9px] font-mono"
-        style={{ background: 'rgba(0,0,0,0.78)', color: '#a3e635', lineHeight: 1.35, wordBreak: 'break-all' }}>
-        {diag.tag} · étape {diag.etape}
-        {' · photo '}{imageSize ? `${imageSize.width}x${imageSize.height}` : '—'}
-        {' · rép '}{diag.rep || '—'} · mires {diag.mires ?? '—'} · surél {diag.sur || '—'}
-        {' · verdict '}{diag.verdict || '…'}{diag.deplacement ? ` (${diag.deplacement})` : ''}
-        {' · μ '}{diag.echelle ? diag.echelle.toFixed(5) : '—'}
-        {' · pts '}{verifyLine.map(p => `${p.x},${p.y}`).join(' ')}
-        {' · aff '}{effectiveScale ? (1 / effectiveScale).toFixed(2) : '—'}
-        {' · mesuré '}{String(handlesMeasured)}
-      </div>
+      {/* ── DIAGNOSTIC, sur demande : `?diag=1` dans l'adresse ── */}
+      {SHOW_DIAG && (
+        <div data-diag className="w-full mt-1 px-2 py-1 rounded text-[9px] font-mono"
+          style={{ background: 'rgba(0,0,0,0.78)', color: '#a3e635', lineHeight: 1.35, wordBreak: 'break-all' }}>
+          {diag.tag} · étape {diag.etape}
+          {' · photo '}{imageSize ? `${imageSize.width}x${imageSize.height}` : '—'}
+          {' · rép '}{diag.rep || '—'} · mires {diag.mires ?? '—'} · surél {diag.sur || '—'}
+          {' · verdict '}{diag.verdict || '…'}{diag.deplacement ? ` (${diag.deplacement})` : ''}
+          {' · μ '}{diag.echelle ? diag.echelle.toFixed(5) : '—'}
+          {' · pts '}{verifyLine.map(p => `${p.x},${p.y}`).join(' ')}
+          {' · aff '}{effectiveScale ? (1 / effectiveScale).toFixed(2) : '—'}
+          {' · mesuré '}{String(handlesMeasured)}
+        </div>
+      )}
     </div>
   )
 }
