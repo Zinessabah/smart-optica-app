@@ -618,15 +618,30 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
   // La pantoscopie est la DÉVIATION par rapport à cette perpendiculaire.
   const pantoscopic = calculatePantoscopicAngle(anglePts)
 
-  // ── Reset ──
-  const resetMeasure = useCallback(() => {
+  // ── Remise à zéro d'une mesure (poignées, gestes, vertex) ──
+  // `detectionRetenue` = la détection qui reste valable : ses marqueurs vont être REPOSÉS sur les
+  // mires détectées, donc l'échelle reste légitime ; sans elle, elle retombe au tiret.
+  const resetMesure = useCallback((detectionRetenue) => {
     vertexRequestRef.current += 1
     setVertexLoading(false)
-    setVerifyLine([]); setAnglePts([]); setVertexLine([]); setHandleAngles({}); setVertexMm(null); setVertexError(null); setVertexAdjusted(false)
-    // Un « Refaire » remet le placement à zéro : ni les marqueurs mesurés, ni les gestes déjà faits.
-    setVerifyMeasured(false); setPlaced([])
+    setVerifyLine([]); setAnglePts([]); setVertexLine([]); setHandleAngles({})
+    setVertexMm(null); setVertexError(null); setVertexAdjusted(false)
+    setVerifyMeasured(!!detectionRetenue); setPlaced([])
     setToolOn({ scale: true, ruler: false, angle: false, vertex: false })
   }, [])
+  const resetMeasure = useCallback(() => resetMesure(seed), [resetMesure, seed])
+
+  // ── NOUVELLE photo : tout repart de ZÉRO, détection comprise ──
+  // Sans ça, l'état de la photo précédente survivait au changement de cliché ET `seedTriedRef`
+  // restait vrai : la nouvelle photo n'était JAMAIS analysée. On voyait donc les marqueurs de
+  // l'ancienne (à côté des mires) et une échelle qui ne mesurait plus rien — les 22,56 px/mm
+  // constatés par Driss. Reproduit par un test : la 2e photo ne déclenchait aucun appel.
+  useEffect(() => {
+    seedTriedRef.current = false
+    setSeed(null)
+    setSeedStatus('idle')
+    resetMesure(null)
+  }, [imageUrl, resetMesure])
 
   // ── Validation ──
   const confirm = useCallback(() => {

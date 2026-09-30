@@ -78,6 +78,51 @@ describe('ProfileMeasure — amorçage depuis les mires détectées', () => {
     })
   })
 
+  it('pose les 3 marqueurs sur les mires détectées (base ET surélevée)', async () => {
+    // La surélevée est construite avec les COTES du clip : 20,3039 mm de chaque mire basse.
+    const [m0, m1] = REPONSE.lateral_markers
+    const basePx = Math.hypot(m1[0] - m0[0], m1[1] - m0[1])
+    const mid = [(m0[0] + m1[0]) / 2, (m0[1] + m1[1]) / 2]
+    const h = Math.sqrt((basePx * (20.3039 / 25)) ** 2 - (basePx / 2) ** 2)
+    const perp = [(m1[1] - m0[1]) / basePx, -(m1[0] - m0[0]) / basePx]
+    const raised = [Math.round(mid[0] + perp[0] * h), Math.round(mid[1] + perp[1] * h)]
+    analyzeProfileMock.mockResolvedValue({ ...REPONSE, lateral_raised: raised })
+    const { container } = renderPM()
+
+    await waitFor(() => {
+      const pts = byType(container, 'verify').map((p) => [
+        Math.round(pctLeft(p) * W), Math.round(pctTop(p) * H)])
+      expect(pts).toHaveLength(3)
+      expect(pts).toEqual(expect.arrayContaining([m0, m1, raised]))
+    })
+  })
+
+  it('une NOUVELLE photo repart de ZÉRO (détection relancée, rien de la précédente)', async () => {
+    // Photo A : détectée, 2 mires verticales → ~9,6 px/mm
+    analyzeProfileMock.mockResolvedValue(REPONSE)
+    const vue = (url) => <ProfileMeasure imageUrl={url}
+      onCapture={() => {}} onSkip={() => {}} onBack={() => {}} />
+    const { container, rerender } = render(vue('blob:A'))
+    await waitFor(() => expect(analyzeProfileMock).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(container.textContent).toMatch(/9\.\d+ px\/mm/))
+
+    // L'utilisateur REPREND la photo : nouvelle imageUrl, MÊME instance de composant
+    analyzeProfileMock.mockResolvedValue({
+      ...REPONSE, lateral_markers: [[1000, 900], [1400, 900]], scale_mm_per_px: 0.0625,
+    })
+    rerender(vue('blob:B'))
+
+    // 1. La détection doit être RELANCÉE pour la nouvelle photo
+    await waitFor(() => expect(analyzeProfileMock).toHaveBeenCalledTimes(2))
+    // 2. Les marqueurs doivent être ceux de B, jamais ceux de A
+    await waitFor(() => {
+      const pts = byType(container, 'verify').map((p) => [
+        Math.round(pctLeft(p) * W), Math.round(pctTop(p) * H)])
+      expect(pts).toContainEqual([1000, 900])
+      expect(pts).not.toContainEqual([2484, 989])
+    })
+  })
+
   it('l’échelle déduite des mires est correcte (25 mm entre les 2 points)', async () => {
     analyzeProfileMock.mockResolvedValue(REPONSE)
     const { container } = renderPM()
