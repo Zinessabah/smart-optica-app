@@ -37,7 +37,7 @@ function stubImageLoad() {
 }
 
 const renderPM = (props = {}) =>
-  render(<ProfileMeasure imageUrl="blob:fake" calibrationScale={0.0976}
+  render(<ProfileMeasure imageUrl="blob:fake"
     onCapture={() => {}} onSkip={() => {}} onBack={() => {}} {...props} />)
 
 const byType = (container, type) => [...container.querySelectorAll(`[data-pt-type="${type}"]`)]
@@ -66,8 +66,10 @@ describe('ProfileMeasure — amorçage depuis les mires détectées', () => {
     const { container } = renderPM()
 
     await waitFor(() => expect(analyzeProfileMock).toHaveBeenCalledTimes(1))
-    // L'appel porte bien l'échelle : sans elle, l'endpoint ne répond pas et bloque le serveur
-    expect(analyzeProfileMock.mock.calls[0][1]).toBe(0.0976)
+    // L'appel ne porte AUCUNE échelle : la détection latérale est indépendante de la photo de
+    // face (les 2 clichés sont pris à des distances différentes). Avant, l'app transmettait
+    // l'échelle frontale et refusait même d'appeler sans elle.
+    expect(analyzeProfileMock.mock.calls[0]).toHaveLength(1)
 
     await waitFor(() => {
       const [m0, m1] = byType(container, 'verify')
@@ -88,13 +90,18 @@ describe('ProfileMeasure — amorçage depuis les mires détectées', () => {
     })
   })
 
-  it('N’APPELLE PAS le backend si l’échelle frontale est inconnue (l’endpoint bloquerait)', async () => {
-    const { container } = renderPM({ calibrationScale: undefined })
-    await waitFor(() => expect(container.querySelector('img')).toBeTruthy())
-    await waitFor(() => expect(byType(container, 'verify').length).toBe(2))
-    expect(analyzeProfileMock).not.toHaveBeenCalled()
-    // …et aucune annonce de détection : on reste sur la consigne manuelle
-    expect(container.textContent).not.toMatch(/mires détectées/)
+  it('DÉTECTE et amorce SANS aucune calibration frontale (l’endpoint n’en a pas besoin)', async () => {
+    analyzeProfileMock.mockResolvedValue(REPONSE)
+    const { container } = renderPM()          // aucune échelle frontale nulle part
+    await waitFor(() => expect(analyzeProfileMock).toHaveBeenCalledTimes(1))
+    // …et sans jamais lui transmettre d'échelle : la détection est indépendante
+    expect(analyzeProfileMock.mock.calls[0]).toHaveLength(1)
+    await waitFor(() => {
+      const [m0, m1] = byType(container, 'verify')
+      expect(pctLeft(m0)).toBeCloseTo(2484 / W, 4)
+      expect(pctLeft(m1)).toBeCloseTo(2455 / W, 4)
+    })
+    expect(container.textContent).toMatch(/mires détectées/)
   })
 
   it('en cas d’échec de l’API, les poignées gardent leurs positions proportionnelles', async () => {

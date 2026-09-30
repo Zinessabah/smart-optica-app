@@ -184,8 +184,15 @@ function contactLensAtPoint(color, thetaDeg = 0) {
  * Angle pantoscopique : 2 segments reliés par un sommet dragable
  *   (🟠 extrémité branche — 🟡 SOMMET — 🔵 extrémité plan verre).
  * Vertex : segment vert cornée ↔ face arrière du verre.
+ *
+ * ⚠️ INDÉPENDANCE DE LA PHOTO FACIALE (décision Driss, 29/09/2026) : ce composant ne reçoit
+ * AUCUNE échelle de la photo de face. L'échelle des mesures latérales est celle des mires du
+ * clip (25,00 mm entre les 2 poignées cyan), et rien d'autre : les deux clichés sont pris à des
+ * distances différentes, donc une échelle faciale ne peut pas valoir ici. La détection des mires
+ * (`/api/analyze-profile`) est elle aussi indépendante : elle n'a pas besoin qu'on lui donne une
+ * échelle pour fonctionner.
  */
-export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, onSkip, onBack }) {
+export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) {
   const [imageSize, setImageSize] = useState(null)
   const [error, setError] = useState(null)
   // Interrupteurs d'outils (Driss) : « les boutons doivent activer ET désactiver
@@ -201,7 +208,10 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     if (d === 0) return null
     return { px: Math.round(d), impliedScale: 25 / d }
   })()
-  const effectiveScale = verifyResult?.impliedScale || calibrationScale
+  // L'échelle latérale vient des mires latérales, UNIQUEMENT. Aucun repli sur une échelle de la
+  // photo de face : ce serait une échelle fausse de 20 à 50 % qui contaminerait vertex et
+  // pantoscopique sans rien signaler.
+  const effectiveScale = verifyResult ? verifyResult.impliedScale : null
 
   // ── Angle pantoscopique : 3 points (extrémité A, SOMMET, extrémité B) ──
   const [anglePts, setAnglePts] = useState([])   // [{x,y} ×3]
@@ -329,10 +339,12 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
   }, [toolOn.scale, verifyLine.length, imageSize, defaultVerifyPts, seed])
 
   // ── Détection des mires du clip (une seule fois par photo) ──
-  // ⚠ On n'appelle QUE si l'échelle frontale est connue : cet endpoint, sans
-  //    `scale_mm_per_px`, ne répond pas et bloque le serveur (voir SEED_TIMEOUT_MS).
+  // L'endpoint est INDÉPENDANT de la photo faciale : il mesure l'échelle sur les mires
+  // latérales, et tient en ~1 s sans qu'on lui donne quoi que ce soit (le garde-fou
+  // SEED_TIMEOUT_MS reste là par prudence, il ne devait protéger que de l'ancien endpoint qui
+  // pouvait bloquer > 60 s).
   useEffect(() => {
-    if (!imageUrl || !imageSize || !calibrationScale || seedTriedRef.current) return
+    if (!imageUrl || !imageSize || seedTriedRef.current) return
     seedTriedRef.current = true
     setSeedStatus('loading')
     let alive = true
@@ -341,7 +353,7 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     ;(async () => {
       try {
         const blob = await (await fetchWithTimeout(imageUrl)).blob()
-        const result = await analyzeProfile(blob, calibrationScale)
+        const result = await analyzeProfile(blob)
         if (!alive) return
         const found = seedFromProfile(result, imageSize)
         if (!found.ok) { setSeedStatus('failed'); return }
@@ -363,7 +375,7 @@ export default function ProfileMeasure({ imageUrl, calibrationScale, onCapture, 
     })()
 
     return () => { alive = false; clearTimeout(timer) }
-  }, [imageUrl, imageSize, calibrationScale])
+  }, [imageUrl, imageSize])
 
   // ── Vertex auto-placé quand l'angle est fait ──
   useEffect(() => {

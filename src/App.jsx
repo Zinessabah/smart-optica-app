@@ -275,7 +275,6 @@ export default function App() {
         {step === 'profile-measure' && profileImageUrl && (
           <ProfileMeasure
             imageUrl={profileImageUrl}
-            calibrationScale={calibration?.scalePxToMm}
             onCapture={handleProfileMeasured}
             onSkip={handleProfileSkip}
             onBack={() => setStep('pupils')}

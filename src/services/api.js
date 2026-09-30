@@ -40,13 +40,16 @@ export async function analyzeImage(imageBlob) {
  * Analyse la photo de PROFIL — détecte les 2 mires latérales du clip,
  * l'angle de la branche et la cornée, puis retourne les segments prêts
  * pour le placement auto dans ProfileMeasure.
+ *
+ * ⚠️ Aucune échelle n'est transmise : la détection est INDÉPENDANTE de la photo faciale (les
+ * deux clichés sont pris à des distances différentes). Le backend mesure l'échelle sur les mires
+ * latérales elles-mêmes (25,00 mm). L'endpoint accepte encore `scale_mm_per_px` comme simple
+ * ordre d'essai, mais l'app n'a rien à lui donner.
  * @param {Blob} imageBlob
- * @param {number|null} scaleMmPerPx - échelle mm/px de la calibration frontale (facultatif)
  */
-export async function analyzeProfile(imageBlob, scaleMmPerPx) {
+export async function analyzeProfile(imageBlob) {
   const formData = new FormData()
   formData.append('file', imageBlob, 'profile.jpg')
-  if (scaleMmPerPx) formData.append('scale_mm_per_px', String(scaleMmPerPx))
 
   const res = await fetchWithTimeout('/api/analyze-profile', {
     method: 'POST',

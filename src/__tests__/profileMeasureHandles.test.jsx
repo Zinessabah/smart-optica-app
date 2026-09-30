@@ -234,7 +234,7 @@ describe('ProfileMeasure — poignées du profil', () => {
   it('vertex : avec une échelle connue, l’écartement de départ vaut la distance vertex standard (12 mm)', async () => {
     stubImageLoad(4032, 3024)
     const { container } = render(
-      <ProfileMeasure imageUrl="blob:fake" calibrationScale={0.0976}
+      <ProfileMeasure imageUrl="blob:fake"
         onCapture={() => {}} onSkip={() => {}} onBack={() => {}} />)
     await waitFor(() => expect(container.querySelector('img')).toBeTruthy())
     await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2))

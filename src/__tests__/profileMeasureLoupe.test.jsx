@@ -23,7 +23,7 @@ function mount() {
   Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, value: CW })
   Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, value: CH })
   return render(
-    <ProfileMeasure imageUrl="blob:profil" calibrationScale={0.3}
+    <ProfileMeasure imageUrl="blob:profil"
       onCapture={() => {}} onSkip={() => {}} onBack={() => {}} />
   )
 }
