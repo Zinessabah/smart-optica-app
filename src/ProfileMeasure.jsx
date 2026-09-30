@@ -202,16 +202,24 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
 
   // ── Calibrage 25mm (2 points sur les mires latérales) ──
   const [verifyLine, setVerifyLine] = useState([])
+  // Les 2 poignées sont posées d'emblée à des positions PROVISOIRES (proportionnelles), le temps
+  // que la détection réponde ou que l'utilisateur les ajuste. Tant que ni l'une ni l'autre n'a eu
+  // lieu, leur écartement ne mesure RIEN : afficher une échelle serait un nombre inventé.
+  // Mesuré sur une photo de 4032 px de large : poignées de départ à 0,43 et 0,57 de la largeur
+  // → 564 px → « 22,56 px/mm » annoncés, contre 16,11 px/mm pour les vraies mires (403 px) :
+  // un facteur 1,40 d'écart, et aucune indication que le nombre ne valait rien.
+  const [verifyMeasured, setVerifyMeasured] = useState(false)
   const verifyResult = (() => {
     if (verifyLine.length < 2) return null
     const d = Math.hypot(verifyLine[1].x - verifyLine[0].x, verifyLine[1].y - verifyLine[0].y)
     if (d === 0) return null
     return { px: Math.round(d), impliedScale: 25 / d }
   })()
-  // L'échelle latérale vient des mires latérales, UNIQUEMENT. Aucun repli sur une échelle de la
-  // photo de face : ce serait une échelle fausse de 20 à 50 % qui contaminerait vertex et
-  // pantoscopique sans rien signaler.
-  const effectiveScale = verifyResult ? verifyResult.impliedScale : null
+  // L'échelle latérale vient des mires latérales, UNIQUEMENT, et seulement quand elles ont été
+  // MESURÉES (détectées par le backend, ou placées par l'utilisateur). Aucun repli sur une échelle
+  // de la photo de face, ni sur l'écartement provisoire de départ : ce serait une échelle fausse de
+  // 20 à 50 % qui contaminerait vertex et pantoscopique sans rien signaler.
+  const effectiveScale = verifyMeasured && verifyResult ? verifyResult.impliedScale : null
 
   // ── Angle pantoscopique : 3 points (extrémité A, SOMMET, extrémité B) ──
   const [anglePts, setAnglePts] = useState([])   // [{x,y} ×3]
@@ -358,6 +366,8 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
         const found = seedFromProfile(result, imageSize)
         if (!found.ok) { setSeedStatus('failed'); return }
         setSeed(found)
+        // Les poignées vont être posées sur les mires DÉTECTÉES : l'écartement devient une mesure.
+        setVerifyMeasured(true)
         setSeedStatus('done')
         // Les poignées de l'échelle : on les déplace sur les mires DÉTECTÉES, mais
         // uniquement si l'utilisateur ne les a pas déjà prises en main.
@@ -485,6 +495,10 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
       const dy = currentImg.y - d.startImg.y
       // Seuil de 3 px (image) : au-delà on considère que c'est un vrai drag
       if (Math.hypot(dx, dy) > 3) { d.moved = true; moved = true }
+      // Une poignée de l'échelle réellement DÉPLACÉE devient une mesure de l'utilisateur : c'est
+      // à partir de là que l'échelle affichée vaut quelque chose (un simple appui ne suffit pas,
+      // les poignées resteraient aux positions provisoires de départ).
+      if (d.moved && d.setter === setVerifyLine) setVerifyMeasured(true)
       const nx = Math.round(Math.max(0, Math.min(imageSize.width, d.oX + dx)))
       const ny = Math.round(Math.max(0, Math.min(imageSize.height, d.oY + dy)))
       d.setter(prev => { const n = [...prev]; n[d.index] = { x: nx, y: ny }; return n })
@@ -786,7 +800,7 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
     }
     if (toolOn.ruler) {
       return {
-        text: <>📐 Réglette affichée — elle n'est juste qu'une fois le calibrage fait.</>,
+        text: <>📐 Réglette affichée — elle se dessine dès que l'échelle est mesurée (2 poignées sur les mires).</>,
         color: '#22d3ee', bg: 'rgba(34,211,238,0.08)', border: 'rgba(34,211,238,0.3)',
       }
     }

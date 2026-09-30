@@ -83,6 +83,12 @@ describe('ProfileMeasure — loupe sur l’angle pantoscopique', () => {
 
   it('elle affiche un champ en millimètres (échelle connue à cette étape)', async () => {
     const { container } = await monterAvecAngle()
+    // Une échelle n'existe qu'une fois les poignées de l'échelle MESURÉES : on en déplace une
+    // pour de vrai (les positions de départ sont provisoires et ne mesurent rien).
+    const hv = container.querySelector('[data-pt-type="verify"]')
+    fireEvent.pointerDown(hv, { clientX: 100, clientY: 150 })
+    fireEvent.pointerMove(window, { clientX: 130, clientY: 150 })
+    fireEvent.pointerUp(window, { clientX: 130, clientY: 150 })
     fireEvent.pointerDown(sommetDe(container), { clientX: 300, clientY: 420 })
     await waitFor(() => expect(container.querySelector('[data-loupe]')).toBeTruthy())
     const loupe = container.querySelector('[data-loupe]')

@@ -79,22 +79,43 @@ describe('ProfileMeasure — barre d’outils', () => {
 
   it('la Réglette s’active à la demande', async () => {
     const { container } = await renderPM()
-    await waitFor(() => expect(container.querySelector('img')).toBeTruthy())
+    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2))
+    // La réglette ne se dessine qu'avec une échelle MESURÉE : une longueur en mm calculée sur
+    // les positions de départ provisoires serait fausse.
+    const hv = container.querySelector('[data-pt-type="verify"]')
+    fireEvent.pointerDown(hv, { clientX: 100, clientY: 150 })
+    fireEvent.pointerMove(window, { clientX: 145, clientY: 150 })
+    fireEvent.pointerUp(window, { clientX: 145, clientY: 150 })
 
     clickTool(container, 'Réglette')
     await waitFor(() => expect(isOn(btn(container, 'Réglette'))).toBe(true))
-    expect(container.querySelector('.mr-ruler')).toBeTruthy()
+    await waitFor(() => expect(container.querySelector('.mr-ruler')).toBeTruthy())
 
     clickTool(container, 'Réglette')
     await waitFor(() => expect(container.querySelector('.mr-ruler')).toBeFalsy())
   })
 
-  it("le bouton Échelle affiche les px/mm mesurés entre les 2 marqueurs", async () => {
+  it("n'affiche AUCUNE échelle tant que les poignées n'ont pas été mesurées", async () => {
     const { container } = await renderPM()
     await waitFor(() => expect(container.querySelector('img')).toBeTruthy())
-    // Les 2 poignées sont créées dès l'arrivée → px/mm affiché immédiatement
+    // Les 2 poignées existent bien dès l'arrivée (l'écran n'est pas vide), mais leurs positions
+    // de départ sont PROVISOIRES : leur écartement ne mesure rien, donc aucun nombre à l'écran.
+    // Mesuré sur une photo de 4032 px de large : ces positions donnaient « 22,56 px/mm » alors
+    // que les vraies mires valaient 16,11 px/mm (facteur 1,40) — sans que rien ne le signale.
+    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2))
+    expect(btn(container, 'Échelle').textContent).not.toMatch(/\d+\.\d+ px\/mm/)
+    expect(btn(container, 'Échelle').textContent).toContain('—')
+  })
+
+  it("affiche les px/mm dès que l'utilisateur déplace une poignée de l'échelle", async () => {
+    const { container } = await renderPM()
+    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2))
+    const h = container.querySelector('[data-pt-type="verify"]')
+    fireEvent.pointerDown(h, { clientX: 100, clientY: 150 })
+    fireEvent.pointerMove(window, { clientX: 145, clientY: 150 })   // > 3 px image : vrai drag
+    fireEvent.pointerUp(window, { clientX: 145, clientY: 150 })
+    // Déplacée = mesurée par l'utilisateur : l'échelle devient légitime
     await waitFor(() => expect(btn(container, 'Échelle').textContent).toMatch(/\d+\.\d+ px\/mm/))
-    expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2)
   })
 
   it("désactiver puis réactiver l'Échelle garde ses 2 poignées", async () => {
