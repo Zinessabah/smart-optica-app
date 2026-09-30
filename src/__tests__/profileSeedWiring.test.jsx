@@ -17,9 +17,8 @@ const REPONSE = {
   width: 3024,
   height: 4032,
   lateral_markers: [[2484, 989], [2455, 1227]],
-  scale_mm_per_px: 0.0976,
-  scale_from_markers_mm_per_px: 0.104271,
-  scale_consistent: true,
+  scale_mm_per_px: 0.104271,      // échelle de la PHOTO LATÉRALE (25 mm / 239,8 px)
+  scale_plausible: true,
 }
 // Ce que voit le navigateur : orientation EXIF appliquée → même espace que le backend.
 const W = 3024, H = 4032

@@ -57,11 +57,14 @@ export function seedFromProfile(result, imageSize) {
   const px = Math.hypot(markers[1].x - markers[0].x, markers[1].y - markers[0].y)
   if (!(px >= MIN_GAP_PX)) return { ok: false, reason: 'degenerate' }
 
-  // 5. Le backend juge l'échelle invraisemblable (champ hors bornes) : on n'amorce PAS.
-  //    Une échelle fausse contaminerait TOUTES les mesures — mieux vaut des poignées à
-  //    poser à la main qu'un point de départ qui a l'air juste.
-  //    ⚠ `scale_consistent` peut être absent (ancien backend) : seul `false` bloque.
-  if (result.scale_consistent === false) return { ok: false, reason: 'inconsistent_scale' }
+  // 5. Le backend juge le couple de mires invraisemblable (champ hors bornes) : on n'amorce PAS.
+  //    Une échelle fausse contaminerait TOUTES les mesures — mieux vaut des poignées à poser
+  //    à la main qu'un point de départ qui a l'air juste.
+  //    ⚠️ Ce champ ne compare PLUS l'échelle latérale à l'échelle FRONTALE : les deux photos
+  //    sont prises à des distances différentes (c'est la règle), et l'échelle latérale vient
+  //    désormais de la photo latérale seule. Comparer les deux refusait un amorçage juste.
+  //    ⚠️ `scale_plausible` peut être absent (ancien backend) : seul `false` bloque.
+  if (result.scale_plausible === false) return { ok: false, reason: 'implausible_scale' }
 
   return {
     ok: true,

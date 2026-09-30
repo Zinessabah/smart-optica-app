@@ -5,14 +5,17 @@ import { seedFromProfile, LATERAL_SPACING_MM } from './profileSeed'
  * Réponse RÉELLE de /api/analyze-profile, relevée sur une photo de profil du projet
  * (backend/uploads/<user>/06f17b35-…_profile.png — cliché 4032×3024, EXIF orientation 6).
  * Le backend travaille après rotation : 3024×4032.
+ *
+ * `scale_mm_per_px` est l'échelle de la PHOTO LATÉRALE, mesurée sur l'écartement des 2 mires
+ * (25,00 mm / 239,8 px). Elle n'a RIEN à voir avec l'échelle de la photo faciale : les deux
+ * clichés sont pris à des distances différentes.
  */
 const REPONSE_REELLE = {
   width: 3024,
   height: 4032,
   lateral_markers: [[2484, 989], [2455, 1227]],
-  scale_mm_per_px: 0.0976,
-  scale_from_markers_mm_per_px: 0.104271,
-  scale_consistent: true,
+  scale_mm_per_px: 0.104271,
+  scale_plausible: true,
   pantoscopic_angle: 0.1,
   vertex_distance: 28.1,
   face_detected: true,
@@ -29,9 +32,9 @@ describe('seedFromProfile — amorçage depuis les mires détectées', () => {
     const s = KO(REPONSE_REELLE)
     expect(s.ok).toBe(true)
     expect(s.markers).toEqual([{ x: 2484, y: 989 }, { x: 2455, y: 1227 }])
-    // L'écart détecté, lu à l'échelle des mires annoncée par le backend, vaut bien 25 mm
+    // L'écart détecté, lu à l'échelle de la photo latérale annoncée par le backend, vaut bien 25 mm
     expect(s.px).toBe(240)
-    expect(s.px * REPONSE_REELLE.scale_from_markers_mm_per_px).toBeCloseTo(LATERAL_SPACING_MM, 0)
+    expect(s.px * REPONSE_REELLE.scale_mm_per_px).toBeCloseTo(LATERAL_SPACING_MM, 0)
     // Les mires sont à hauteur d'œil → moyenne des hauteurs
     expect(s.eyeLine).toBe(1108)
     expect(s.centerX).toBe(2470)
@@ -44,15 +47,24 @@ describe('seedFromProfile — amorçage depuis les mires détectées', () => {
       .toEqual({ ok: false, reason: 'space_mismatch' })
   })
 
-  it('REFUSE une échelle jugée invraisemblable par le backend', () => {
-    expect(KO({ ...REPONSE_REELLE, scale_consistent: false }))
-      .toEqual({ ok: false, reason: 'inconsistent_scale' })
+  it('REFUSE un couple de mires invraisemblable (champ hors bornes, jugé par le backend)', () => {
+    expect(KO({ ...REPONSE_REELLE, scale_plausible: false }))
+      .toEqual({ ok: false, reason: 'implausible_scale' })
   })
 
-  it('n’exige PAS `scale_consistent` (champ absent d’un ancien backend)', () => {
-    const { scale_consistent, ...sansChamp } = REPONSE_REELLE
-    expect(scale_consistent).toBe(true)          // le champ existait bien dans la réponse
+  it('n’exige PAS `scale_plausible` (champ absent d’un ancien backend)', () => {
+    const { scale_plausible, ...sansChamp } = REPONSE_REELLE
+    expect(scale_plausible).toBe(true)          // le champ existait bien dans la réponse
     expect(KO(sansChamp).ok).toBe(true)
+  })
+
+  it('amorce MALGRÉ une échelle frontale très différente (les 2 photos n’ont pas la même échelle)', () => {
+    // Le verrou retiré : l'ancien champ `scale_consistent` comparait l'échelle latérale à
+    // l'échelle FACIALE et refusait l'amorçage au-delà de 10 % d'écart — donc quasiment toujours,
+    // alors que la détection était juste. Rien dans la réponse ne doit plus porter ce verdict.
+    const s = KO(REPONSE_REELLE)
+    expect(s.ok).toBe(true)
+    expect('scale_consistent' in REPONSE_REELLE).toBe(false)
   })
 
   it('REFUSE moins de 2 mires', () => {

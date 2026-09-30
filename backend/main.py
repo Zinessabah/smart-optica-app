@@ -201,8 +201,7 @@ class ProfileResult(BaseModel):
     height: int
     lateral_markers: list  # 2 points [(x1,y1), (x2,y2)]
     scale_mm_per_px: float
-    scale_from_markers_mm_per_px: Optional[float] = None  # échelle déduite des mires seules
-    scale_consistent: bool = True  # cohérence échelle mires vs échelle frontale (±10%)
+    scale_plausible: bool = True  # le couple de mires implique un champ crédible (150-1 000 mm)
     pantoscopic_angle: Optional[float] = None  # degrés
     vertex_distance: Optional[float] = None  # mm
     face_detected: bool = False
@@ -1541,8 +1540,11 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
     Détecte les 2 marqueurs latéraux (damier 2×2, 5 mm, 25 mm — clip v19.5) sur la face latérale du clip.
     Retourne l'angle pantoscopique et la distance vertex estimée.
 
-    Si scale_mm_per_px est fourni (depuis la calibration frontale), il est utilisé
-    pour guider la détection des marqueurs latéraux.
+    ⚠️ L'ÉCHELLE EST MESURÉE SUR LA PHOTO LATÉRALE ELLE-MÊME (écartement de 25,00 mm des 2 mires).
+    La photo faciale n'entre ni dans le calcul ni dans la validité : les deux clichés sont pris à
+    des distances différentes, et la détection latérale est indépendante par construction.
+    `scale_mm_per_px` (échelle frontale), quand il est fourni, n'est transmis au détecteur que
+    comme **ordre d'essai** — il ne peut plus invalider une détection juste.
     """
     contents = await file.read()
     img = decode_image(contents)
@@ -1570,31 +1572,27 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
         raise HTTPException(422, detail="Impossible de détecter les 2 marqueurs latéraux. "
                                          "Vérifiez que le clip est bien visible sur la photo de profil.")
 
-    # 2. Échelle — priorité à l'échelle calibration frontale
+    # 2. Échelle — LA PHOTO LATÉRALE MESURE LA SIENNE.
+    #    L'échelle frontale n'entre plus NI dans le calcul NI dans la validité. Les 2 photos sont
+    #    prises à des distances différentes (c'est la règle, pas l'exception), et la détection
+    #    latérale est indépendante par construction. La comparaison à l'échelle frontale faisait
+    #    REFUSER un amorçage juste — mesuré : échelle frontale 2× trop grande, mires à 1 px de la
+    #    vérité, écart 48,5 % → `scale_consistent=False`, échelle retenue 0,12 au lieu de 0,0617.
+    #    Seul critère de validité restant : la PLAUSIBILITÉ DU CHAMP impliqué par le couple.
     d_px = np.linalg.norm(np.array(markers_px[0]) - np.array(markers_px[1]))
-    scale_from_markers = effective_spacing / d_px
-
-    # Le contrôle porte D'ABORD sur la géométrie, pas sur la comparaison avec une
-    # autre échelle : un couple de mires qui implique un champ hors
-    # [FIELD_MIN_MM, FIELD_MAX_MM] n'est pas le clip. Sans ce test,
-    # scale_consistent restait True par défaut faute d'échelle frontale à
-    # comparer — et a validé un champ de 2,7 m sur une vraie photo de profil.
+    scale = effective_spacing / d_px
     scale_plausible = pair_is_plausible(d_px, effective_spacing, w, h)
-    scale_consistent = scale_plausible
     if not scale_plausible:
         log.warning(
             "[analyze-profile] ⛔ échelle des mires invraisemblable : "
             f"{d_px:.0f}px → champ de "
             f"{field_width_mm(d_px, LATERAL_MARKER_SPACING_MM, w, h):.0f}mm")
-
     if scale_mm_per_px:
-        scale = scale_mm_per_px
-        # Validation croisée : l'échelle des mires doit être cohérente avec la frontale
-        dev = abs(scale_from_markers - scale) / scale
-        scale_consistent = scale_plausible and dev <= 0.10
-        log.info(f"[analyze-profile] échelle mires={scale_from_markers:.4f} vs frontale={scale:.4f} (écart {dev*100:.1f}%, cohérente={scale_consistent})")
-    else:
-        scale = scale_from_markers
+        dev = abs(scale - scale_mm_per_px) / scale_mm_per_px
+        log.info(f"[analyze-profile] échelle mires={scale:.4f} vs frontale={scale_mm_per_px:.4f} "
+                 f"(écart {dev*100:.1f} % — INFORMATIF : les 2 photos peuvent être prises à des "
+                 "distances différentes, cela n'invalide pas la détection)")
+    log.info(f"[analyze-profile] échelle retenue (photo latérale) = {scale:.6f} mm/px")
 
     # 3. Détection de l'angle de la branche (temple)
     # La branche est dans la zone droite de l'image, autour du niveau des marqueurs
@@ -1643,8 +1641,7 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
         height=h,
         lateral_markers=markers_px,
         scale_mm_per_px=round(scale, 6),
-        scale_from_markers_mm_per_px=round(scale_from_markers, 6),
-        scale_consistent=scale_consistent,
+        scale_plausible=scale_plausible,
         pantoscopic_angle=pantoscopic,
         vertex_distance=vertex,
         face_detected=face_detected,
