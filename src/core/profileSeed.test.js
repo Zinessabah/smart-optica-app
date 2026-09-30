@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { seedFromProfile, LATERAL_SPACING_MM } from './profileSeed'
+import { seedFromProfile, evalClipTriangle, LATERAL_SPACING_MM } from './profileSeed'
 
 /**
  * Réponse RÉELLE de /api/analyze-profile, relevée sur une photo de profil du projet
@@ -95,5 +95,48 @@ describe('seedFromProfile — amorçage depuis les mires détectées', () => {
     expect(KO(null)).toEqual({ ok: false, reason: 'no_input' })
     expect(KO(REPONSE_REELLE, null)).toEqual({ ok: false, reason: 'no_input' })
     expect(KO(REPONSE_REELLE, { width: 0, height: 0 })).toEqual({ ok: false, reason: 'no_input' })
+  })
+})
+
+/**
+ * La FIGURE du clip vérifie le placement. C'est tout l'intérêt du 3e marqueur : avec 2 points,
+ * n'importe quel écartement « est » 25 mm par définition, donc rien ne peut contredire une pose
+ * approximative. Le triangle, lui, doit coller au rapport mesuré du clip (1,2313).
+ */
+describe('evalClipTriangle — la figure du clip contrôle le placement', () => {
+  // Triangle conforme : base 25 mm, surélevée à 16/25 de la base au-dessus de son milieu.
+  const base = 400
+  const conforme = [
+    { x: 1000, y: 500 },
+    { x: 1000 + base, y: 500 },
+    { x: 1000 + base / 2, y: 500 - (base * 16) / 25 },
+  ]
+
+  it('reconnaît le triangle du clip et trouve la base par la GÉOMÉTRIE', () => {
+    const t = evalClipTriangle(conforme)
+    expect(t.coherent).toBe(true)
+    expect(t.basePx).toBeCloseTo(base, 0)
+    expect(Math.abs(t.errPct)).toBeLessThan(1)
+    expect(t.baseIndexes).toEqual([0, 1])
+  })
+
+  it('donne le même verdict quel que soit l’ORDRE des marqueurs posés', () => {
+    for (const ordre of [[1, 2, 0], [2, 0, 1], [1, 0, 2]]) {
+      const t = evalClipTriangle(ordre.map((i) => conforme[i]))
+      expect(t.coherent, `ordre ${ordre}`).toBe(true)
+      expect(t.basePx).toBeCloseTo(base, 0)
+    }
+  })
+
+  it('REFUSE une figure qui n’est pas le triangle du clip', () => {
+    const t = evalClipTriangle([{ x: 0, y: 0 }, { x: 400, y: 0 }, { x: 200, y: -100 }])
+    expect(t.coherent).toBe(false)
+    expect(Math.abs(t.errPct)).toBeGreaterThan(8)
+  })
+
+  it('ne rend RIEN avec seulement 2 points (aucun contrôle possible)', () => {
+    expect(evalClipTriangle([{ x: 0, y: 0 }, { x: 400, y: 0 }])).toBe(null)
+    expect(evalClipTriangle([])).toBe(null)
+    expect(evalClipTriangle(null)).toBe(null)
   })
 })

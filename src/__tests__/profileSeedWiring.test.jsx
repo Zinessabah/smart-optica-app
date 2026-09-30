@@ -4,7 +4,7 @@ import ProfileMeasure from '../ProfileMeasure'
 
 /**
  * Câblage de l'amorçage depuis le backend (`/api/analyze-profile`) :
- * les 2 mires du clip détectées deviennent les 2 poignées de l'échelle, et leur hauteur
+ * les mires du clip détectées deviennent les marqueurs de l'échelle, et leur hauteur
  * moyenne sert de ligne d'œil au vertex.
  *
  * L'API est SIMULÉE avec la réponse RÉELLE relevée sur une photo du projet.
@@ -23,7 +23,7 @@ const REPONSE = {
 // Ce que voit le navigateur : orientation EXIF appliquée → même espace que le backend.
 const W = 3024, H = 4032
 const EYE_LINE = 1108              // (989 + 1227) / 2
-const LEFT_0 = 43, LEFT_1 = 57     // repli proportionnel des 2 poignées de l'échelle
+const LEFT_0 = 43, LEFT_1 = 57     // repli proportionnel des 2 premiers marqueurs
 
 function stubImageLoad() {
   class FakeImage {
@@ -122,7 +122,7 @@ describe('ProfileMeasure — amorçage depuis les mires détectées', () => {
     analyzeProfileMock.mockReturnValue(new Promise(r => { resolveIt = r }))
     const { container } = renderPM()
 
-    await waitFor(() => expect(byType(container, 'verify').length).toBe(2))
+    await waitFor(() => expect(byType(container, 'verify').length).toBe(3))
     const handle = byType(container, 'verify')[0]
     // L'utilisateur déplace une poignée AVANT l'arrivée de la réponse
     fireEvent.pointerDown(handle, { clientX: 100, clientY: 150 })

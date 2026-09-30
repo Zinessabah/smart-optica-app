@@ -21,8 +21,69 @@
 /** Écartement réel des 2 mires du clip latéral (design actuel : « 2 cercles noirs à 25 mm »). */
 export const LATERAL_SPACING_MM = 25
 
+/**
+ * Les 3 mires d'un côté forment un triangle ISOCÈLE : base 25,00 mm (les deux mires basses) et
+ * deux pattes de hypot(12,50 ; 16,00) = 20,3039 mm (la mire surélevée est à mi-profondeur et
+ * 16 mm plus haut). Cotes MESURÉES sur le clip, miroir de `backend/clip_geometry.py`.
+ *
+ * C'est ce rapport qui rend un placement VÉRIFIABLE : avec 2 points, n'importe quel écartement
+ * « est » 25 mm par définition, donc rien ne peut contredire une pose approximative.
+ */
+export const ISOCELE_RATIO = LATERAL_SPACING_MM / Math.hypot(12.5, 16.0)
+
+/**
+ * Tolérance sur l'écart du rapport — LA MÊME que le détecteur (`backend/lateral_checker.py`,
+ * `RATIO_TOL = 0.08`) et la même DÉFINITION (base / patte la plus longue). Si les deux
+ * divergeaient, le même placement serait accepté d'un côté et refusé de l'autre.
+ *
+ * Mesuré : photos réelles à triangle établi −1,75 % · −3,16 % · −4,44 % (l'écart vient de la pose :
+ * un lacet de 20° vaut ~−4,4 %) ; un placement qui n'est pas le triangle du clip dépasse 15 %.
+ * 8 % laisse donc 1,8× de marge sur la pire photo réelle et rejette large.
+ */
+export const ISOCELE_TOL = 0.08
+
 /** En dessous, les 2 points sont confondus : l'échelle qui en découle est absurde. */
 const MIN_GAP_PX = 10
+
+const _dist = (a, b) => Math.hypot(b.x - a.x, b.y - a.y)
+
+/**
+ * Évalue un triplet de points comme étant le triangle du clip.
+ *
+ * La BASE est le côté le plus long — 25,00 mm > 20,30 mm par construction — donc AUCUN rôle n'a
+ * besoin d'être connu à l'avance, ni l'ordre dans lequel l'utilisateur a posé ses marqueurs :
+ * c'est la géométrie qui décide.
+ *
+ * @param {Array<{x:number,y:number}>} points
+ * @returns {{baseIndexes:[number,number], basePx:number, pattesPx:[number,number],
+ *            errPct:number, coherent:boolean}|null}  null si moins de 3 points
+ */
+export function evalClipTriangle(points) {
+  if (!Array.isArray(points) || points.length !== 3) return null
+  const cotes = [[0, 1], [0, 2], [1, 2]]
+    .map(([i, j]) => ({ i, j, d: _dist(points[i], points[j]) }))
+    .sort((a, b) => b.d - a.d)
+  const [base, pA, pB] = cotes
+  if (!(base.d > 0) || !(pA.d > 0)) return null
+  // Même définition que le détecteur : base / patte la plus longue (le cas le plus défavorable).
+  const errPct = (base.d / pB.d / ISOCELE_RATIO - 1) * 100
+  return {
+    baseIndexes: [base.i, base.j],
+    basePx: base.d,
+    pattesPx: [pA.d, pB.d],
+    errPct: Math.round(errPct * 100) / 100,
+    coherent: Math.abs(errPct) <= ISOCELE_TOL * 100,
+  }
+}
+
+/** Un point de la réponse backend → {x, y} entiers, ou null si absent/illisible. */
+function _point(raw, imageSize) {
+  if (!Array.isArray(raw) || raw.length !== 2) return null
+  const p = { x: Math.round(Number(raw[0])), y: Math.round(Number(raw[1])) }
+  if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return null
+  if (p.x < 0 || p.y < 0 || p.x > imageSize.width || p.y > imageSize.height) return null
+  return p
+}
 
 /**
  * @param {object|null} result      réponse JSON de /api/analyze-profile
@@ -66,10 +127,19 @@ export function seedFromProfile(result, imageSize) {
   //    ⚠️ `scale_plausible` peut être absent (ancien backend) : seul `false` bloque.
   if (result.scale_plausible === false) return { ok: false, reason: 'implausible_scale' }
 
+  // 6. La 3e mire (la surélevée), quand le détecteur a établi le triangle isocèle du clip.
+  //    Facultative — un backend sans ce champ reste utilisable — mais c'est elle qui permet à
+  //    l'app de VÉRIFIER un placement à 3 marqueurs au lieu de faire confiance.
+  const raised = _point(result.lateral_raised, imageSize)
+
   return {
     ok: true,
     reason: 'ok',
     markers,
+    raised,
+    // Contrôle croisé : le triangle des 3 points annoncés par le backend doit être cohérent.
+    // (Les 2 mires seules ne permettent AUCUN contrôle — c'est tout l'intérêt du 3e point.)
+    triangle: evalClipTriangle(raised ? [...markers, raised] : null),
     px: Math.round(px),
     // Les mires sont à hauteur d'œil → leur moyenne donne la ligne du vertex.
     eyeLine: Math.round((markers[0].y + markers[1].y) / 2),

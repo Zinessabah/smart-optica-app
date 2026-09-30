@@ -6,7 +6,7 @@ import PrecisionLoupe from './components/PrecisionLoupe'
 import { calculatePantoscopicAngle, isProfileMeasurementReady } from './core/profileGeometry'
 import MeasureRuler from './components/MeasureRuler'
 import { analyzeProfile } from './services/api'
-import { seedFromProfile } from './core/profileSeed'
+import { seedFromProfile, evalClipTriangle, LATERAL_SPACING_MM } from './core/profileSeed'
 
 // ── Poignée de drag DÉPORTÉE (design validé par Driss) ──
 // Le point de mesure exact reste SUR la mire ; la poignée (octogone translucide)
@@ -213,22 +213,33 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
   // Mesuré sur une photo de 4032 px de large : poignées de départ à 0,43 et 0,57 de la largeur
   // → 564 px → « 22,56 px/mm » annoncés, contre 16,11 px/mm pour les vraies mires (403 px) :
   // un facteur 1,40 d'écart, et aucune indication que le nombre ne valait rien.
-  const [verifyMeasured, setVerifyMeasured] = useState(false)   // le backend a posé les 2 poignées
-  // Index des poignées que l'utilisateur a VRAIMENT déplacées (geste délibéré, cf. seuil ci-dessus).
-  // Il en faut DEUX : le placement manuel consiste à amener les 2 poignées sur les 2 mires, donc
-  // un frémissement sur une seule ne peut pas produire un écartement qui vaille 25 mm.
+  const [verifyMeasured, setVerifyMeasured] = useState(false)   // le backend a posé les marqueurs
+  // Index des marqueurs que l'utilisateur a VRAIMENT déplacés (geste délibéré, cf. seuil ci-dessus).
+  // Il en faut TROIS : le placement manuel consiste à amener les 3 marqueurs sur les 3 mires du
+  // triangle, donc un frémissement sur un seul ne peut pas produire une figure qui vaille le clip.
   const [placed, setPlaced] = useState([])
+  // ── Les 3 mires du clip forment un triangle ISOCÈLE (base 25,00 mm, pattes 20,3039 mm) ──
+  // La BASE est le côté le plus long — 25,00 > 20,30 par construction — donc c'est la GÉOMÉTRIE
+  // qui décide quel couple porte la métrologie, jamais l'ordre de pose : l'utilisateur peut poser
+  // ses 3 marqueurs dans n'importe quel ordre.
+  // L'écart du rapport au triangle théorique (1,2313) VÉRIFIE que les 3 marqueurs sont bien sur
+  // les mires — c'est exactement ce que 2 points ne peuvent pas faire, tout écartement valant
+  // 25 mm par définition. Tolérance et définition identiques à celles du détecteur.
+  const triangle = evalClipTriangle(verifyLine)
   const verifyResult = (() => {
     if (verifyLine.length < 2) return null
-    const d = Math.hypot(verifyLine[1].x - verifyLine[0].x, verifyLine[1].y - verifyLine[0].y)
-    if (d === 0) return null
-    return { px: Math.round(d), impliedScale: 25 / d }
+    const basePx = triangle
+      ? triangle.basePx
+      : Math.hypot(verifyLine[1].x - verifyLine[0].x, verifyLine[1].y - verifyLine[0].y)
+    if (!(basePx > 0)) return null
+    return { px: Math.round(basePx), impliedScale: LATERAL_SPACING_MM / basePx }
   })()
   // L'échelle latérale vient des mires latérales, UNIQUEMENT, et seulement quand elles ont été
-  // MESURÉES (détectées par le backend, ou les 2 poignées placées par l'utilisateur). Aucun repli
-  // sur une échelle de la photo de face, ni sur l'écartement provisoire de départ : ce serait une
-  // échelle fausse de 20 à 50 % qui contaminerait vertex et pantoscopique sans rien signaler.
-  const handlesMeasured = verifyMeasured || placed.length >= 2
+  // MESURÉES : soit posées par le détecteur (il a vérifié le triangle), soit les 3 marqueurs placés
+  // par l'utilisateur ET formant un triangle conforme. Aucun repli sur une échelle de la photo de
+  // face, ni sur un écartement provisoire : ce serait une échelle fausse de 20 à 50 % sans signal.
+  const handlesMeasured = verifyMeasured
+    || (placed.length >= 3 && triangle !== null && triangle.coherent)
   const effectiveScale = handlesMeasured && verifyResult ? verifyResult.impliedScale : null
 
   // ── Angle pantoscopique : 3 points (extrémité A, SOMMET, extrémité B) ──
@@ -312,17 +323,28 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
     ]
   }, [imageSize, vertexStartHalfPx, seed])
 
-  // Les 2 poignées de l'échelle (les marqueurs du clip) : c'est leur écartement
-  // qui donne les px/mm. Positions de départ à ajuster sur les 2 cercles noirs.
+  // Les 3 marqueurs du clip (les 3 mires d'un côté) : c'est leur figure qui donne l'échelle.
+  // Positions de départ à amener sur les 3 mires — le triangle provisoire a la FORME du clip
+  // (base 25 mm, surélevée à 16/25 de la base au-dessus de son milieu) mais son écartement ne
+  // mesure rien tant que les 3 n'ont pas été placés (cf. `handlesMeasured`).
   const defaultVerifyPts = useCallback(() => {
     if (!imageSize) return []
     const { width: w, height: h } = imageSize
     const y = Math.round(h * EYE_LINE_Y_RATIO)
+    const base = Math.round(w * 0.14)
+    const x0 = Math.round(w * 0.43)
     return [
-      { x: Math.round(w * 0.43), y },
-      { x: Math.round(w * 0.57), y },
+      { x: x0, y },
+      { x: x0 + base, y },
+      { x: Math.round(x0 + base / 2), y: y - Math.round((base * 16) / 25) },
     ]
   }, [imageSize])
+
+  // Marqueurs déduits d'un amorçage : la base (25 mm) + la surélevée quand le détecteur l'a
+  // établie. Sans elle, on garde 2 marqueurs — utilisable, mais sans contrôle possible.
+  const markersFromSeed = useCallback((s) => (
+    s?.raised ? [...s.markers, s.raised] : (s?.markers || [])
+  ), [])
 
   const toImageCoords = useCallback((clientX, clientY) => {
     if (!containerRef.current || !imageSize) return null
@@ -350,11 +372,11 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
   // poignées »). Si le backend a DÉJÀ détecté les mires, on les pose dessus.
   useEffect(() => {
     if (toolOn.scale && verifyLine.length === 0 && imageSize) {
-      const pts = seed ? seed.markers : defaultVerifyPts()
+      const pts = seed ? markersFromSeed(seed) : defaultVerifyPts()
       autoVerifyRef.current = pts   // mémorisé : si l'utilisateur les déplace, on n'y touche plus
       setVerifyLine(pts)
     }
-  }, [toolOn.scale, verifyLine.length, imageSize, defaultVerifyPts, seed])
+  }, [toolOn.scale, verifyLine.length, imageSize, defaultVerifyPts, seed, markersFromSeed])
 
   // ── Détection des mires du clip (une seule fois par photo) ──
   // L'endpoint est INDÉPENDANT de la photo faciale : il mesure l'échelle sur les mires
@@ -383,9 +405,10 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
         // uniquement si l'utilisateur ne les a pas déjà prises en main.
         setVerifyLine(prev => {
           const auto = autoVerifyRef.current
+          const cibles = markersFromSeed(found)
           if (!auto || JSON.stringify(prev) !== JSON.stringify(auto)) return prev
-          autoVerifyRef.current = found.markers
-          return found.markers
+          autoVerifyRef.current = cibles
+          return cibles
         })
       } catch {
         if (alive) setSeedStatus('failed')
@@ -575,7 +598,7 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
     const mapped = toImageCoords(e.clientX, e.clientY)
     if (!mapped) return
     const pt = { x: Math.round(mapped.x), y: Math.round(mapped.y) }
-    if (toolOn.scale && verifyLine.length < 2) {
+    if (toolOn.scale && verifyLine.length < 3) {
       setVerifyLine(prev => [...prev, pt])
       return
     }
@@ -600,6 +623,8 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
     vertexRequestRef.current += 1
     setVertexLoading(false)
     setVerifyLine([]); setAnglePts([]); setVertexLine([]); setHandleAngles({}); setVertexMm(null); setVertexError(null); setVertexAdjusted(false)
+    // Un « Refaire » remet le placement à zéro : ni les marqueurs mesurés, ni les gestes déjà faits.
+    setVerifyMeasured(false); setPlaced([])
     setToolOn({ scale: true, ruler: false, angle: false, vertex: false })
   }, [])
 
@@ -607,7 +632,7 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
   const confirm = useCallback(() => {
     onCapture({
       width: imageSize?.width || 0, height: imageSize?.height || 0,
-      lateral_markers: verifyLine.length === 2 ? [[verifyLine[0].x, verifyLine[0].y], [verifyLine[1].x, verifyLine[1].y]] : null,
+      lateral_markers: verifyLine.length >= 2 ? verifyLine.map((p) => [p.x, p.y]) : null,
       temple_markers: anglePts.length === 3 ? [[anglePts[0].x, anglePts[0].y], [anglePts[1].x, anglePts[1].y]] : null,
       vertex_markers: vertexLine.length === 2 ? [[vertexLine[0].x, vertexLine[0].y], [vertexLine[1].x, vertexLine[1].y]] : null,
       pantoscopic_angle: pantoscopic || 0,
@@ -626,9 +651,29 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
       <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 10 }}>
         {/* Ligne de calibrage cyan — fine, tirets longs (outil « échelle ») */}
         {toolOn.scale && verifyLine.length >= 2 && (
-          <line x1={toPct(verifyLine[0].x, imageSize.width)} y1={toPct(verifyLine[0].y, imageSize.height)}
-            x2={toPct(verifyLine[1].x, imageSize.width)} y2={toPct(verifyLine[1].y, imageSize.height)}
-            stroke="#22d3ee" strokeWidth="1.4" strokeLinecap="round" opacity="0.75" strokeDasharray="6 4" />
+          <>
+            {/* La BASE (25,00 mm) est tracée plus franchement : c'est elle qui porte la métrologie,
+                et la couleur le dit sans avoir à poser la question. */}
+            {(() => {
+              const [bi, bj] = triangle ? triangle.baseIndexes : [0, 1]
+              return (
+                <line x1={toPct(verifyLine[bi].x, imageSize.width)} y1={toPct(verifyLine[bi].y, imageSize.height)}
+                  x2={toPct(verifyLine[bj].x, imageSize.width)} y2={toPct(verifyLine[bj].y, imageSize.height)}
+                  stroke="#22d3ee" strokeWidth="1.8" strokeLinecap="round" opacity="0.9" />
+              )
+            })()}
+            {/* Les 2 autres côtés du triangle (mire surélevée ↔ les deux basses) : tracés dès que
+                le 3e marqueur existe, ils sont le contrôle visuel du placement. */}
+            {triangle && [[0, 1], [0, 2], [1, 2]]
+              .filter(([i, j]) => !triangle.baseIndexes.includes(i) || !triangle.baseIndexes.includes(j))
+              .map(([i, j]) => (
+                <line key={`arete-${i}-${j}`}
+                  x1={toPct(verifyLine[i].x, imageSize.width)} y1={toPct(verifyLine[i].y, imageSize.height)}
+                  x2={toPct(verifyLine[j].x, imageSize.width)} y2={toPct(verifyLine[j].y, imageSize.height)}
+                  stroke="#c084fc" strokeWidth="1.4" strokeLinecap="round" opacity="0.75"
+                  strokeDasharray="6 4" />
+              ))}
+          </>
         )}
         {/* Angle : 2 segments fins reliés au sommet */}
         {toolOn.angle && anglePts.length >= 2 && (
@@ -804,19 +849,22 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
       const detect = seedStatus === 'loading' ? 'détection des mires…'
         : seedStatus === 'done' ? 'mires détectées'
           : seedStatus === 'failed' ? 'mires non détectées' : null
+      // Ce qui manque encore pour que l'échelle vaille quelque chose. Le triangle CONTRÔLE le
+      // placement : s'il s'écarte du triangle du clip, les 3 marqueurs ne sont pas sur les mires
+      // et on l'écrit — un écart mesuré, pas un conseil.
+      const manque = triangle && !triangle.coherent
+        ? <> · triangle à <strong>{triangle.errPct.toFixed(1)} %</strong> du clip — posez les 3 marqueurs sur les mires</>
+        : handlesMeasured
+          ? (detect ? <> · {detect}</> : null)
+          : <>{detect ? <> · {detect}</> : null} — posez les 3 marqueurs sur les <strong>3 mires</strong> ({verifyLine.length}/3)</>
       return {
-        text: verifyLine.length === 2
-          ? <>🔷 Échelle <strong>{effectiveScale ? `${(1 / effectiveScale).toFixed(2)} px/mm` : '—'}</strong>
-            {detect
-              ? <> · {detect}</>
-              : <> — posez les 2 poignées sur les <strong>2 cercles noirs</strong></>}</>
-          : <>🔷 Placez les 2 poignées sur les <strong>2 cercles noirs</strong> ({verifyLine.length}/2)</>,
+        text: <>🔷 Échelle <strong>{effectiveScale ? `${(1 / effectiveScale).toFixed(2)} px/mm` : '—'}</strong>{manque}</>,
         color: GOLD, bg: 'var(--color-gold-bg)', border: 'rgba(201,160,90,0.3)',
       }
     }
     if (toolOn.ruler) {
       return {
-        text: <>📐 Réglette affichée — elle se dessine dès que l'échelle est mesurée (2 poignées sur les mires).</>,
+        text: <>📐 Réglette affichée — elle se dessine dès que l'échelle est mesurée (3 marqueurs sur les mires).</>,
         color: '#22d3ee', bg: 'rgba(34,211,238,0.08)', border: 'rgba(34,211,238,0.3)',
       }
     }

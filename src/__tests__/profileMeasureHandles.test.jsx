@@ -95,12 +95,12 @@ describe('ProfileMeasure — poignées du profil', () => {
     return btn
   }
 
-  // Les 2 poignées de l'échelle sont créées dès l'arrivée (l'outil est actif)
+  // Les 3 marqueurs du clip sont créés dès l'arrivée (l'outil est actif)
   async function renderBase() {
     const utils = renderPM()
     const { container } = utils
     await waitFor(() => expect(container.querySelector('img')).toBeTruthy())
-    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2))
+    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(3))
     return { ...utils, stage: container.querySelector('.aspect-\\[3\\/4\\]') }
   }
 
@@ -113,9 +113,9 @@ describe('ProfileMeasure — poignées du profil', () => {
     return utils
   }
 
-  it("les 2 poignées de l'échelle sont créées dès l'arrivée", async () => {
+  it("les 3 marqueurs du clip sont créés dès l'arrivée", async () => {
     const { container } = await renderBase()
-    expect(byType(container, 'verify').length).toBe(2)
+    expect(byType(container, 'verify').length).toBe(3)
   })
 
   it('l’octogone est 20 % plus petit qu’à l’étape précédente (r = 11,52)', async () => {
@@ -124,7 +124,7 @@ describe('ProfileMeasure — poignées du profil', () => {
     expect(maxAbs).toBeCloseTo(R * Math.cos(Math.PI / 8), 1)   // ≈ 10,6
   })
 
-  it("échelle : les 2 poignées sont à DROITE (aucun automatisme)", async () => {
+  it("échelle : les 3 marqueurs portent leur poignée à DROITE (aucun automatisme)", async () => {
     const { container } = await renderBase()
     const [m0, m1] = byType(container, 'verify')
     expect(angleOf(m0)).toBe(0)
@@ -237,14 +237,14 @@ describe('ProfileMeasure — poignées du profil', () => {
       <ProfileMeasure imageUrl="blob:fake"
         onCapture={() => {}} onSkip={() => {}} onBack={() => {}} />)
     await waitFor(() => expect(container.querySelector('img')).toBeTruthy())
-    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2))
+    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(3))
     // L'échelle n'est légitime qu'une fois les poignées MESURÉES : les positions de départ sont
-    // provisoires et ne mesurent rien. On place donc DÉLIBÉRÉMENT les deux (comme au doigt).
+    // provisoires et ne mesurent rien. On place donc DÉLIBÉRÉMENT les trois (comme au doigt).
     const hv = byType(container, 'verify')
-    hv.forEach((h, i) => {
+    hv.forEach((h) => {
       fireEvent.pointerDown(octagonOf(h), { clientX: 100, clientY: 150 })
-      fireEvent.pointerMove(window, { clientX: 100 + 30 * (i + 1), clientY: 150 })
-      fireEvent.pointerUp(window, { clientX: 100 + 30 * (i + 1), clientY: 150 })
+      fireEvent.pointerMove(window, { clientX: 130, clientY: 160 })
+      fireEvent.pointerUp(window, { clientX: 130, clientY: 160 })
     })
     clickTool(container, 'Angle pantoscopique')
     clickTool(container, 'Vertex')
@@ -252,7 +252,7 @@ describe('ProfileMeasure — poignées du profil', () => {
 
     const [v0, v1] = byType(container, 'vertex')
     const gapPx = (pctLeft(v1) - pctLeft(v0)) * 4032
-    // échelle réelle = celle que l'app dérive des 2 poignées de l'échelle (mires 25 mm)
+    // échelle réelle = celle que l'app dérive de la BASE du triangle (les 2 mires basses, 25 mm)
     const [m0, m1] = byType(container, 'verify')
     const scale = 25 / ((pctLeft(m1) - pctLeft(m0)) * 4032)
     expect(gapPx * scale).toBeCloseTo(12, 0)     // 12 mm ± 0,5
@@ -412,7 +412,7 @@ describe('ProfileMeasure — poignées du profil', () => {
     fakeNow += 100  // < 300 ms
     fireEvent.click(stage, { clientX: 180, clientY: 240 })
 
-    expect(byType(container, 'verify').length).toBe(2)
+    expect(byType(container, 'verify').length).toBe(3)
   })
 
   it('un tap après un drag n’ajoute aucun point (groupes complets)', async () => {
@@ -426,6 +426,6 @@ describe('ProfileMeasure — poignées du profil', () => {
     fakeNow += 500  // > 300 ms
     fireEvent.click(stage, { clientX: 300, clientY: 400 })
 
-    await waitFor(() => expect(byType(container, 'verify').length).toBe(2))
+    await waitFor(() => expect(byType(container, 'verify').length).toBe(3))
   })
 })

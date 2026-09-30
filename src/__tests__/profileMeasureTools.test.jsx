@@ -55,13 +55,14 @@ describe('ProfileMeasure — barre d’outils', () => {
   }
   const MIRES = [[100, 150], [300, 160]]
   const withMires = () => placePoints(MIRES)
-  // Place DÉLIBÉRÉMENT les 2 poignées de l'échelle (geste > 6 px client sur chacune). Un
-  // placement manuel, c'est les 2 poignées amenées sur les 2 mires : une seule ne suffit pas.
-  const placerLesDeuxPoignees = (container) => {
-    ;[...container.querySelectorAll('[data-pt-type="verify"]')].forEach((h, i) => {
+  // Place DÉLIBÉRÉMENT les 3 marqueurs en DÉCALANT la figure entière : c'est ce que fait
+  // l'utilisateur — il amène le triangle sur les mires sans le déformer. Un déplacement différent
+  // par marqueur casserait la figure, et l'app le refuserait (c'est le contrôle qui a été ajouté).
+  const placerLesMarqueurs = (container) => {
+    ;[...container.querySelectorAll('[data-pt-type="verify"]')].forEach((h) => {
       fireEvent.pointerDown(h, { clientX: 100, clientY: 150 })
-      fireEvent.pointerMove(window, { clientX: 100 + 30 * (i + 1), clientY: 150 })
-      fireEvent.pointerUp(window, { clientX: 100 + 30 * (i + 1), clientY: 150 })
+      fireEvent.pointerMove(window, { clientX: 130, clientY: 160 })
+      fireEvent.pointerUp(window, { clientX: 130, clientY: 160 })
     })
   }
 
@@ -88,10 +89,10 @@ describe('ProfileMeasure — barre d’outils', () => {
 
   it('la Réglette s’active à la demande', async () => {
     const { container } = await renderPM()
-    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2))
+    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(3))
     // La réglette ne se dessine qu'avec une échelle MESURÉE : une longueur en mm calculée sur
     // les positions de départ provisoires serait fausse.
-    placerLesDeuxPoignees(container)
+    placerLesMarqueurs(container)
 
     clickTool(container, 'Réglette')
     await waitFor(() => expect(isOn(btn(container, 'Réglette'))).toBe(true))
@@ -104,13 +105,13 @@ describe('ProfileMeasure — barre d’outils', () => {
   it("n'affiche AUCUNE échelle tant que les poignées n'ont pas été mesurées", async () => {
     const { container } = await renderPM()
     await waitFor(() => expect(container.querySelector('img')).toBeTruthy())
-    // Les 2 poignées existent bien dès l'arrivée (l'écran n'est pas vide), mais leurs positions
+    // Les 3 marqueurs existent bien dès l'arrivée (l'écran n'est pas vide), mais leurs positions
     // de départ sont PROVISOIRES : leur écartement ne mesure rien, donc aucun nombre à l'écran.
     // Mesuré sur une photo de 4032 px de large : ces positions donnaient « 22,56 px/mm » alors
     // que les vraies mires valaient 16,11 px/mm (facteur 1,40) — sans que rien ne le signale.
-    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2))
-    expect(btn(container, 'Échelle').textContent).not.toMatch(/\d+\.\d+ px\/mm/)
-    expect(btn(container, 'Échelle').textContent).toContain('—')
+    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(3))
+    expect(container.textContent).not.toMatch(/\d+\.\d+ px\/mm/)
+    expect(container.textContent).toContain('—')
   })
 
   it("un simple appui sur une poignée ne légitime PAS l'échelle (frémissement du doigt)", async () => {
@@ -118,33 +119,51 @@ describe('ProfileMeasure — barre d’outils', () => {
     // vaut ~10 px image, donc bien au-delà du seuil de drag de 3 px IMAGE.
     stubImageLoad(4032, 3024)
     const { container } = await renderPM()
-    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2))
+    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(3))
     const h = container.querySelector('[data-pt-type="verify"]')
     // Un appui iOS produit toujours quelques pixels de mouvement : ce n'est pas un placement,
     // l'échelle doit rester au tiret.
     fireEvent.pointerDown(h, { clientX: 100, clientY: 150 })
     fireEvent.pointerMove(window, { clientX: 101, clientY: 150 })
     fireEvent.pointerUp(window, { clientX: 101, clientY: 150 })
-    expect(btn(container, 'Échelle').textContent).not.toMatch(/\d+\.\d+ px\/mm/)
-    expect(btn(container, 'Échelle').textContent).toContain('—')
+    expect(container.textContent).not.toMatch(/\d+\.\d+ px\/mm/)
+    expect(container.textContent).toContain('—')
   })
 
-  it("affiche les px/mm dès que l'utilisateur a placé les 2 poignées", async () => {
+  it("affiche les px/mm dès que l'utilisateur a placé les 3 marqueurs", async () => {
     const { container } = await renderPM()
-    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2))
-    placerLesDeuxPoignees(container)
-    // Les 2 poignées placées = une mesure de l'utilisateur : l'échelle devient légitime
-    await waitFor(() => expect(btn(container, 'Échelle').textContent).toMatch(/\d+\.\d+ px\/mm/))
+    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(3))
+    placerLesMarqueurs(container)
+    // Les 3 marqueurs placés = une mesure de l'utilisateur : l'échelle devient légitime
+    await waitFor(() => expect(container.textContent).toMatch(/\d+\.\d+ px\/mm/))
   })
 
-  it("désactiver puis réactiver l'Échelle garde ses 2 poignées", async () => {
+  it("REFUSE l'échelle quand les 3 marqueurs ne forment PAS le triangle du clip", async () => {
     const { container } = await renderPM()
-    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2))
+    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(3))
+    // Chaque marqueur décalé d'une quantité DIFFÉRENTE : la figure est cassée, comme un utilisateur
+    // qui poserait ses marqueurs n'importe où. Avec 2 points on ne pourrait pas le voir ; le
+    // triangle, si — et l'app doit le DIRE plutôt que d'afficher une échelle.
+    const decalages = [[10, 0], [10, 0], [60, 0]]
+    ;[...container.querySelectorAll('[data-pt-type="verify"]')].forEach((h, i) => {
+      const [dx, dy] = decalages[i]
+      fireEvent.pointerDown(h, { clientX: 100, clientY: 150 })
+      fireEvent.pointerMove(window, { clientX: 100 + dx, clientY: 150 + dy })
+      fireEvent.pointerUp(window, { clientX: 100 + dx, clientY: 150 + dy })
+    })
+    await waitFor(() => expect(container.textContent).toMatch(/triangle à/))
+    // Aucune échelle nulle part dans l'écran : le placement est déclaré non conforme.
+    expect(container.textContent).not.toMatch(/\d+\.\d+ px\/mm/)
+  })
+
+  it("désactiver puis réactiver l'Échelle garde ses 3 marqueurs", async () => {
+    const { container } = await renderPM()
+    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(3))
 
     clickTool(container, 'Échelle')
     await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(0))
     clickTool(container, 'Échelle')
-    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2))
+    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(3))
   })
 
   it("le bouton Angle pantoscopique active PUIS désactive les 3 poignées", async () => {
@@ -171,7 +190,7 @@ describe('ProfileMeasure — barre d’outils', () => {
 
   it("désactiver l'échelle masque ses 2 marqueurs", async () => {
     const { container } = await withMires()
-    expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2)
+    expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(3)
 
     clickTool(container, 'Échelle')
     await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(0))
@@ -189,7 +208,7 @@ describe('ProfileMeasure — barre d’outils', () => {
 
   it("le tap ne pose un point que pour un outil ACTIF (l'angle est désactivé par défaut)", async () => {
     const { container } = await placePoints([[100, 150], [300, 160], [120, 420]])
-    expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2)
+    expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(3)
     expect(container.querySelectorAll('[data-pt-type="angle"]').length).toBe(0)
   })
 })
