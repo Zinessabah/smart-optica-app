@@ -289,15 +289,13 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
   const [seedStatus, setSeedStatus] = useState('idle')  // idle | loading | done | failed
   const [seed, setSeed] = useState(null)   // { markers, eyeLine, centerX } — état : les défauts en dépendent
   const seedTriedRef = useRef(false)       // un seul essai par photo
-  const autoVerifyRef = useRef(null)       // dernières positions posées AUTOMATIQUEMENT
+  const poseManuelleRef = useRef(false)   // l'utilisateur a posé ses marqueurs lui-même → aucun automatisme
   // ── DIAGNOSTIC TEMPORAIRE (à retirer une fois le défaut localisé) ──
   // Il existe parce que quatre correctifs successifs n'ont rien changé à l'écran : devant « la
   // mesure est bonne mais l'écran dit autre chose », il faut VOIR la chaîne complète telle que la
   // voit l'appareil — version servie, espace de coordonnées de la photo, réponse du service,
   // verdict d'amorçage, positions réelles des marqueurs, valeur affichée.
-  const [diag, setDiag] = useState({ tag: 'd3', etape: 'départ' })
-  const verifyLineRef = useRef([])
-  useEffect(() => { verifyLineRef.current = verifyLine }, [verifyLine])
+  const [diag, setDiag] = useState({ tag: 'd4', etape: 'départ' })
 
   // ── Écartement de DÉPART des 2 poignées du vertex ──
   // Ce n'est PAS une mesure : l'utilisateur pose ensuite les 2 points sur la cornée puis
@@ -375,15 +373,17 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
 
   const allAngleDone = anglePts.length >= 3
 
-  // ── L'échelle est active dès l'arrivée : on crée donc ses 2 poignées tout de
-  // suite (Driss : « en appuyant sur le bouton échelle tu devrais activer les 2
-  // poignées »). Si le backend a DÉJÀ détecté les mires, on les pose dessus.
+  // ── Les marqueurs de l'échelle : la DÉTECTION d'abord, le provisoire seulement à défaut ──
+  // Règle explicite, sans comparaison de tableaux : tant que l'utilisateur n'a pas posé ses
+  // marqueurs lui-même, l'automatisme place la DÉTECTION quand elle existe et les positions
+  // provisoires sinon. Un provisoire ne peut donc jamais écraser une détection.
+  // (Avant, un `autoVerifyRef` comparait des tableaux sérialisés : l'effet de remise à zéro —
+  // déclaré APRÈS celui-ci, et rejoué deux fois par StrictMode en dev — repassait avec `seed` à
+  // null et replaçait le provisoire sur une détection réussie. Mesure : marqueurs à 1734/2298 px
+  // (0,43 et 0,57 × 4032 → 22,56 px/mm) alors que le service avait rendu les mires.)
   useEffect(() => {
-    if (toolOn.scale && verifyLine.length === 0 && imageSize) {
-      const pts = seed ? markersFromSeed(seed) : defaultVerifyPts()
-      autoVerifyRef.current = pts   // mémorisé : si l'utilisateur les déplace, on n'y touche plus
-      setVerifyLine(pts)
-    }
+    if (!toolOn.scale || !imageSize || verifyLine.length > 0 || poseManuelleRef.current) return
+    setVerifyLine(seed ? markersFromSeed(seed) : defaultVerifyPts())
   }, [toolOn.scale, verifyLine.length, imageSize, defaultVerifyPts, seed, markersFromSeed])
 
   // ── Détection des mires du clip (une seule fois par photo) ──
@@ -416,22 +416,16 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
           setDiag(d => ({ ...d, verdict: found.reason }))
           setSeedStatus('failed'); return
         }
-        const bouge = !!autoVerifyRef.current
-          && JSON.stringify(verifyLineRef.current) === JSON.stringify(autoVerifyRef.current)
-        setDiag(d => ({ ...d, verdict: 'ok', deplacement: bouge ? 'appliqué' : 'bloqué' }))
+        setDiag(d => ({
+          ...d, verdict: 'ok',
+          deplacement: poseManuelleRef.current ? 'utilisateur (conservé)' : 'appliqué',
+        }))
         setSeed(found)
-        // Les poignées vont être posées sur les mires DÉTECTÉES : l'écartement devient une mesure.
+        // Les marqueurs vont sur les mires DÉTECTÉES : l'écartement devient une mesure.
         setVerifyMeasured(true)
         setSeedStatus('done')
-        // Les poignées de l'échelle : on les déplace sur les mires DÉTECTÉES, mais
-        // uniquement si l'utilisateur ne les a pas déjà prises en main.
-        setVerifyLine(prev => {
-          const auto = autoVerifyRef.current
-          const cibles = markersFromSeed(found)
-          if (!auto || JSON.stringify(prev) !== JSON.stringify(auto)) return prev
-          autoVerifyRef.current = cibles
-          return cibles
-        })
+        // …sauf si l'utilisateur a déjà posé les siens : son geste est une mesure, il prime.
+        setVerifyLine(prev => (poseManuelleRef.current ? prev : markersFromSeed(found)))
       } catch (err) {
         // Le motif exact compte : « échec réseau » ne dit pas si le service a répondu 500, renvoyé
         // du HTML (mauvais proxy) ou si rien n'est parti. L'API lève « API profile error: <statut> ».
@@ -563,6 +557,7 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
       if (d.setter === setVerifyLine && d.startClient &&
           Math.hypot(ev.clientX - d.startClient.x, ev.clientY - d.startClient.y)
           > SEUIL_PLACEMENT_CLIENT_PX) {
+        poseManuelleRef.current = true   // geste délibéré : l'automatisme ne touchera plus à ses marqueurs
         setPlaced(p => (p.includes(d.index) ? p : [...p, d.index]))
       }
       const nx = Math.round(Math.max(0, Math.min(imageSize.width, d.oX + dx)))
@@ -608,7 +603,10 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
     setToolOn(prev => ({ ...prev, [tool]: !prev[tool] }))
     if (!turningOn) return
     // À l'activation, chaque outil crée TOUTES ses poignées d'un coup (Driss)
-    if (tool === 'scale' && verifyLine.length === 0) setVerifyLine(defaultVerifyPts())
+    // Activer l'outil repose les marqueurs : ceux de la DÉTECTION quand elle existe, le provisoire sinon.
+    if (tool === 'scale' && verifyLine.length === 0) {
+      setVerifyLine(seed ? markersFromSeed(seed) : defaultVerifyPts())
+    }
     if (tool === 'angle' && anglePts.length === 0) setAnglePts(defaultAnglePts())
     if (tool === 'vertex' && vertexLine.length === 0) {
       setVertexLine(defaultVertexPts())
@@ -626,6 +624,7 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
     if (!mapped) return
     const pt = { x: Math.round(mapped.x), y: Math.round(mapped.y) }
     if (toolOn.scale && verifyLine.length < 3) {
+      poseManuelleRef.current = true   // marqueur posé à la main
       setVerifyLine(prev => [...prev, pt])
       return
     }
@@ -654,6 +653,7 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
     setVerifyLine([]); setAnglePts([]); setVertexLine([]); setHandleAngles({})
     setVertexMm(null); setVertexError(null); setVertexAdjusted(false)
     setVerifyMeasured(!!detectionRetenue); setPlaced([])
+    poseManuelleRef.current = false   // « Refaire » réarme les automatismes (détection comprise)
     setToolOn({ scale: true, ruler: false, angle: false, vertex: false })
   }, [])
   const resetMeasure = useCallback(() => resetMesure(seed), [resetMesure, seed])

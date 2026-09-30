@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { StrictMode } from 'react'
 import { render, fireEvent, waitFor, act } from '@testing-library/react'
 import ProfileMeasure from '../ProfileMeasure'
 
@@ -121,6 +122,41 @@ describe('ProfileMeasure — amorçage depuis les mires détectées', () => {
       expect(pts).toContainEqual([1000, 900])
       expect(pts).not.toContainEqual([2484, 989])
     })
+  })
+
+  // Le mode strict est ACTIF dans main.jsx : React monte chaque composant DEUX fois en dev et
+  // rejoue tous les effets. C'est ce double passage qui replaçait les marqueurs provisoires
+  // par-dessus une détection réussie (marqueurs à 1734/2298 px → 22,56 px/mm) — invisible en test,
+  // car jsdom n'est pas en StrictMode.
+  it('en StrictMode (double montage), les marqueurs restent ceux de la DÉTECTION', async () => {
+    // Surélevée construite avec les cotes du clip, pour que le triangle soit CONFORME
+    // (sinon le contrôle du placement refuse l'échelle — c'est son rôle, pas un défaut).
+    const [m0, m1] = REPONSE.lateral_markers
+    const basePx = Math.hypot(m1[0] - m0[0], m1[1] - m0[1])
+    const mid = [(m0[0] + m1[0]) / 2, (m0[1] + m1[1]) / 2]
+    const h = Math.sqrt((basePx * (20.3039 / 25)) ** 2 - (basePx / 2) ** 2)
+    const perp = [(m1[1] - m0[1]) / basePx, -(m1[0] - m0[0]) / basePx]
+    const raised = [Math.round(mid[0] + perp[0] * h), Math.round(mid[1] + perp[1] * h)]
+    analyzeProfileMock.mockResolvedValue({ ...REPONSE, lateral_raised: raised })
+    const { container } = render(
+      <StrictMode>
+        <ProfileMeasure imageUrl="blob:fake"
+          onCapture={() => {}} onSkip={() => {}} onBack={() => {}} />
+      </StrictMode>
+    )
+    await waitFor(() => {
+      const pts = byType(container, 'verify').map((p) => [
+        Math.round(pctLeft(p) * W), Math.round(pctTop(p) * H)])
+      expect(pts).toContainEqual(m0)
+      expect(pts).toContainEqual(m1)
+      expect(pts).toContainEqual(raised)
+    })
+    // et JAMAIS les positions provisoires (0,43 / 0,57 de la largeur)
+    const provisoire = Math.round(0.43 * W)
+    const pts2 = byType(container, 'verify').map((p) => Math.round(pctLeft(p) * W))
+    expect(pts2).not.toContain(provisoire)
+    // l'échelle affichée est celle des mires (239,8 px pour 25 mm), pas celle des provisoires
+    await waitFor(() => expect(container.textContent).toMatch(/9\.\d+ px\/mm/))
   })
 
   it('l’échelle déduite des mires est correcte (25 mm entre les 2 points)', async () => {
