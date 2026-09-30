@@ -9,7 +9,7 @@ import logging
 import threading
 import numpy as np
 import cv2
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
@@ -1535,7 +1535,7 @@ async def compute_vertex(req: VertexRequest):
 
 
 @app.post("/api/analyze-profile", response_model=ProfileResult)
-async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optional[float] = Form(None), spacing_mm: Optional[float] = Form(None)):
+async def analyze_profile(request: Request, file: UploadFile = File(...), scale_mm_per_px: Optional[float] = Form(None), spacing_mm: Optional[float] = Form(None)):
     """
     Analyse une photo de PROFIL DROIT du patient avec le clip de calibration.
     Détecte les 2 marqueurs latéraux (damier 2×2, 5 mm, 25 mm — clip v19.5) sur la face latérale du clip.
@@ -1548,6 +1548,14 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
     comme **ordre d'essai** — il ne peut plus invalider une détection juste.
     """
     contents = await file.read()
+    # D'où vient la requête : le port et le Referer disent QUELLE version de l'app l'envoie
+    # (dev server 5173, prévisualisation d'un dist, autre page…). Indispensable pour distinguer
+    # « le service se trompe » de « l'app en face n'est pas celle qu'on croit ».
+    logger.info(
+        "[analyze-profile] 🌐 origine=%s referer=%s agent=%s",
+        request.headers.get("origin"), request.headers.get("referer"),
+        (request.headers.get("user-agent") or "")[:60],
+    )
     img = decode_image(contents)
     h, w, _ = img.shape
     check_resolution(w, h, KIND_PROFILE)

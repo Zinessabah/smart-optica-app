@@ -290,6 +290,14 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
   const [seed, setSeed] = useState(null)   // { markers, eyeLine, centerX } — état : les défauts en dépendent
   const seedTriedRef = useRef(false)       // un seul essai par photo
   const autoVerifyRef = useRef(null)       // dernières positions posées AUTOMATIQUEMENT
+  // ── DIAGNOSTIC TEMPORAIRE (à retirer une fois le défaut localisé) ──
+  // Il existe parce que quatre correctifs successifs n'ont rien changé à l'écran : devant « la
+  // mesure est bonne mais l'écran dit autre chose », il faut VOIR la chaîne complète telle que la
+  // voit l'appareil — version servie, espace de coordonnées de la photo, réponse du service,
+  // verdict d'amorçage, positions réelles des marqueurs, valeur affichée.
+  const [diag, setDiag] = useState({ tag: 'd3', etape: 'départ' })
+  const verifyLineRef = useRef([])
+  useEffect(() => { verifyLineRef.current = verifyLine }, [verifyLine])
 
   // ── Écartement de DÉPART des 2 poignées du vertex ──
   // Ce n'est PAS une mesure : l'utilisateur pose ensuite les 2 points sur la cornée puis
@@ -387,6 +395,7 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
     if (!imageUrl || !imageSize || seedTriedRef.current) return
     seedTriedRef.current = true
     setSeedStatus('loading')
+    setDiag(d => ({ ...d, etape: 'requête' }))
     let alive = true
     const timer = setTimeout(() => { if (alive) setSeedStatus('failed') }, SEED_TIMEOUT_MS)
 
@@ -395,8 +404,21 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
         const blob = await (await fetchWithTimeout(imageUrl)).blob()
         const result = await analyzeProfile(blob)
         if (!alive) return
+        setDiag(d => ({
+          ...d, etape: 'réponse',
+          rep: `${result.width}x${result.height}`,
+          mires: (result.lateral_markers || []).length,
+          sur: result.lateral_raised ? 'oui' : 'non',
+          echelle: result.scale_mm_per_px,
+        }))
         const found = seedFromProfile(result, imageSize)
-        if (!found.ok) { setSeedStatus('failed'); return }
+        if (!found.ok) {
+          setDiag(d => ({ ...d, verdict: found.reason }))
+          setSeedStatus('failed'); return
+        }
+        const bouge = !!autoVerifyRef.current
+          && JSON.stringify(verifyLineRef.current) === JSON.stringify(autoVerifyRef.current)
+        setDiag(d => ({ ...d, verdict: 'ok', deplacement: bouge ? 'appliqué' : 'bloqué' }))
         setSeed(found)
         // Les poignées vont être posées sur les mires DÉTECTÉES : l'écartement devient une mesure.
         setVerifyMeasured(true)
@@ -411,7 +433,7 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
           return cibles
         })
       } catch {
-        if (alive) setSeedStatus('failed')
+        if (alive) { setDiag(d => ({ ...d, etape: 'échec réseau' })); setSeedStatus('failed') }
       } finally {
         clearTimeout(timer)
       }
@@ -1004,6 +1026,19 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
 
       <button onClick={onSkip} className="w-full py-2 rounded-full text-xs"
         style={{ background: 'transparent', color: 'var(--color-text-dim)' }}>Passer cette étape</button>
+
+      {/* ── DIAGNOSTIC TEMPORAIRE — recopie-moi cette ligne telle quelle ── */}
+      <div data-diag className="w-full mt-1 px-2 py-1 rounded text-[9px] font-mono"
+        style={{ background: 'rgba(0,0,0,0.78)', color: '#a3e635', lineHeight: 1.35, wordBreak: 'break-all' }}>
+        {diag.tag} · étape {diag.etape}
+        {' · photo '}{imageSize ? `${imageSize.width}x${imageSize.height}` : '—'}
+        {' · rép '}{diag.rep || '—'} · mires {diag.mires ?? '—'} · surél {diag.sur || '—'}
+        {' · verdict '}{diag.verdict || '…'}{diag.deplacement ? ` (${diag.deplacement})` : ''}
+        {' · μ '}{diag.echelle ? diag.echelle.toFixed(5) : '—'}
+        {' · pts '}{verifyLine.map(p => `${p.x},${p.y}`).join(' ')}
+        {' · aff '}{effectiveScale ? (1 / effectiveScale).toFixed(2) : '—'}
+        {' · mesuré '}{String(handlesMeasured)}
+      </div>
     </div>
   )
 }
