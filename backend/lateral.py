@@ -167,12 +167,33 @@ def _detect_dark_circle_candidates(gray: np.ndarray, roi: tuple,
             cands.append({"x": int(x) + x0, "y": int(y) + y0, "radius": r,
                           "score": float(contrast[y, x])})
 
-    # NMS : distance ≥ somme des rayons
+    # NMS : distance ≥ somme des rayons (+3). La comparaison naïve était en O(n × |out|) et, sur
+    # une photo SANS clip (peau, monture, textures), le filtre adapté rend des MILLIERS de disques :
+    # cette boucle devenait le puits de temps du repli hérité. Grille régulière de côté 2×rmax+3 :
+    # tout candidat susceptible d'être supprimé tombe forcément dans le voisinage 3×3. Sémantique
+    # identique (seuil strictement supérieur), coût linéaire.
     cands.sort(key=lambda c: c["score"], reverse=True)
+    if not cands:
+        return []
+    cell = 2 * max(c["radius"] for c in cands) + 3
+    grille: dict = {}
     out = []
     for c in cands:
-        if all((c["x"] - o["x"]) ** 2 + (c["y"] - o["y"]) ** 2 >
-               (c["radius"] + o["radius"] + 3) ** 2 for o in out):
+        gx, gy = c["x"] // cell, c["y"] // cell
+        libre = True
+        for ax in (gx - 1, gx, gx + 1):
+            for ay in (gy - 1, gy, gy + 1):
+                for o in grille.get((ax, ay), ()):
+                    seuil = c["radius"] + o["radius"] + 3
+                    if (c["x"] - o["x"]) ** 2 + (c["y"] - o["y"]) ** 2 <= seuil ** 2:
+                        libre = False
+                        break
+                if not libre:
+                    break
+            if not libre:
+                break
+        if libre:
+            grille.setdefault((gx, gy), []).append(c)
             out.append(c)
     return out
 
@@ -188,6 +209,16 @@ def _find_best_dark_pair(candidates: List[dict], expected_spacing,
     """
     if len(candidates) < 2:
         return None
+    # Garde-fou déterministe : ce stock vient d'un filtre adapté qui, sur une photo SANS clip,
+    # rend des milliers de disques — mesuré 2 247 candidats → 2 523 381 paires → 2,04 s pour UNE
+    # seule ROI, et plusieurs ROI par photo : l'endpoint ne rendait plus la main (bloqué > 160 s,
+    # un cœur à 100 %). On ne garde que les candidats les plus contrastés : les vraies mires sont
+    # les disques les plus francs, le reste est du bruit de texture. Borne en NOMBRE, jamais en
+    # temps : un budget de temps rendrait le résultat dépendant de la charge de la machine.
+    max_candidats = 120
+    if len(candidates) > max_candidats:
+        candidates = sorted(candidates, key=lambda c: c.get("score", 0.0),
+                            reverse=True)[:max_candidats]
     candidates.sort(key=lambda c: c["y"])
     best_pair, best_score = None, float("inf")
     for i in range(len(candidates)):
