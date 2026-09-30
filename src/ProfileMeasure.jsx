@@ -3,7 +3,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { ArrowLeft, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react'
 import { computeContainedImageRect, screenPointToImage } from './core/imageGeometry'
 import PrecisionLoupe from './components/PrecisionLoupe'
-import { calculatePantoscopicAngle, isProfileMeasurementReady } from './core/profileGeometry'
+import { calculatePantoscopicAngle, calculatePantoscopicAngleWithBase, isProfileMeasurementReady } from './core/profileGeometry'
 import MeasureRuler from './components/MeasureRuler'
 import { analyzeProfile } from './services/api'
 import { seedFromProfile, evalClipTriangle, LATERAL_SPACING_MM } from './core/profileSeed'
@@ -218,6 +218,9 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
   // Il en faut TROIS : le placement manuel consiste à amener les 3 marqueurs sur les 3 mires du
   // triangle, donc un frémissement sur un seul ne peut pas produire une figure qui vaille le clip.
   const [placed, setPlaced] = useState([])
+  // Index des points d'ANGLE réellement posés (geste délibéré). Tant qu'ils ne le sont pas, l'app
+  // affiche le tiret : les positions de départ ne mesurent rien — même règle que l'échelle.
+  const [anglePlaces, setAnglePlaces] = useState([])
   // ── Les 3 mires du clip forment un triangle ISOCÈLE (base 25,00 mm, pattes 20,3039 mm) ──
   // La BASE est le côté le plus long — 25,00 > 20,30 par construction — donc c'est la GÉOMÉTRIE
   // qui décide quel couple porte la métrologie, jamais l'ordre de pose : l'utilisateur peut poser
@@ -241,6 +244,21 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
   const handlesMeasured = verifyMeasured
     || (placed.length >= 3 && triangle !== null && triangle.coherent)
   const effectiveScale = handlesMeasured && verifyResult ? verifyResult.impliedScale : null
+
+  // ── Référence MESURÉE de la branche : la droite des 2 mires BASSES ──
+  // Les mires du clip sont montées dans l'axe avant-arrière de la branche : cette droite EST donc
+  // la branche, mesurée sur la photo. Elle ne vaut que si les marqueurs ont été MESURÉS — la même
+  // porte que l'échelle : une direction provisoire donnerait un angle pantoscopique inventé.
+  const baseMesuree = (() => {
+    if (!handlesMeasured) return null
+    if (triangle && verifyLine.length >= 3) {
+      return [verifyLine[triangle.baseIndexes[0]], verifyLine[triangle.baseIndexes[1]]]
+    }
+    return verifyLine.length === 2 ? [verifyLine[0], verifyLine[1]] : null
+  })()
+  // Points demandés à l'outil d'angle : 2 (la ligne du verre seule) quand la branche est mesurée,
+  // 3 (branche + sommet + verre) sinon — le repli reste exactement l'ancien outil.
+  const anglePtsRequis = baseMesuree ? 2 : 3
 
   // ── Angle pantoscopique : 3 points (extrémité A, SOMMET, extrémité B) ──
   const [anglePts, setAnglePts] = useState([])   // [{x,y} ×3]
@@ -275,12 +293,29 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
   const defaultAnglePts = useCallback(() => {
     if (!imageSize) return []
     const { width: w, height: h } = imageSize
+    // Branche MESURÉE : la ligne du verre part PERPENDICULAIRE à la base mesurée et centrée sur
+    // elle — c'est la géométrie attendue (pantoscopie nulle), donc le meilleur point de départ
+    // pour l'ajuster du doigt. Ce n'est PAS une mesure : tant que les points n'ont pas été posés,
+    // l'app affiche le tiret (règle : jamais un nombre qui n'en est pas une).
+    if (baseMesuree) {
+      const [b0, b1] = baseMesuree
+      const mx = (b0.x + b1.x) / 2
+      const my = (b0.y + b1.y) / 2
+      const n = Math.hypot(b1.x - b0.x, b1.y - b0.y) || 1
+      const ux = -(b1.y - b0.y) / n          // perpendiculaire à la base
+      const uy = (b1.x - b0.x) / n
+      const demi = Math.max(60, n * 0.5)     // longueur visible, proportionnelle à la base
+      return [
+        { x: Math.round(mx - ux * demi), y: Math.round(my - uy * demi) },
+        { x: Math.round(mx + ux * demi), y: Math.round(my + uy * demi) },
+      ]
+    }
     return [
       { x: Math.round(w * 0.62), y: Math.round(h * 0.42) },  // 🟠 extrémité sur la branche
       { x: Math.round(w * 0.50), y: Math.round(h * 0.42) },  // 🟣 sommet (charnière)
       { x: Math.round(w * 0.50), y: Math.round(h * 0.55) },  // 🔵 extrémité sur le plan du verre
     ]
-  }, [imageSize])
+  }, [imageSize, baseMesuree])
 
   // ── Amorçage depuis le BACKEND ──
   // Les 2 mires du clip latéral sont détectées dans la photo de profil : on pose les 2
@@ -374,7 +409,7 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
     img.src = imageUrl
   }, [imageUrl])
 
-  const allAngleDone = anglePts.length >= 3
+  const allAngleDone = anglePts.length >= anglePtsRequis
 
   // ── Les marqueurs de l'échelle : la DÉTECTION d'abord, le provisoire seulement à défaut ──
   // Règle explicite, sans comparaison de tableaux : tant que l'utilisateur n'a pas posé ses
@@ -511,7 +546,7 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
       : draggingPt.type === 'verify' ? 'Échelle' : 'Vertex')
     : null
 
-  const allDone = isProfileMeasurementReady(anglePts, vertexLine, vertexMm, vertexLoading, vertexAdjusted)
+  const allDone = isProfileMeasurementReady(anglePts, vertexLine, vertexMm, vertexLoading, vertexAdjusted, anglePtsRequis)
 
   // ── Drag & drop des poignées (data-pt-type + data-pt-index) ──
   const handlePointerDown = useCallback((e) => {
@@ -562,6 +597,12 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
           > SEUIL_PLACEMENT_CLIENT_PX) {
         poseManuelleRef.current = true   // geste délibéré : l'automatisme ne touchera plus à ses marqueurs
         setPlaced(p => (p.includes(d.index) ? p : [...p, d.index]))
+      }
+      // Un point d'ANGLE délibérément déplacé : la ligne du verre devient une mesure de l'utilisateur.
+      if (d.setter === setAnglePts && d.startClient &&
+          Math.hypot(ev.clientX - d.startClient.x, ev.clientY - d.startClient.y)
+          > SEUIL_PLACEMENT_CLIENT_PX) {
+        setAnglePlaces(p => (p.includes(d.index) ? p : [...p, d.index]))
       }
       const nx = Math.round(Math.max(0, Math.min(imageSize.width, d.oX + dx)))
       const ny = Math.round(Math.max(0, Math.min(imageSize.height, d.oY + dy)))
@@ -631,7 +672,8 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
       setVerifyLine(prev => [...prev, pt])
       return
     }
-    if (toolOn.angle && anglePts.length < 3) {
+    if (toolOn.angle && anglePts.length < anglePtsRequis) {
+      setAnglePlaces(p => [...p, anglePts.length])   // point posé à la main
       setAnglePts(prev => [...prev, pt])
       return
     }
@@ -640,12 +682,31 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
       setVertexAdjusted(true)
       setVertexNeedsCompute(true)
     }
-  }, [imageSize, toolOn, verifyLine.length, anglePts.length, vertexLine.length, toImageCoords])
+  }, [imageSize, toolOn, verifyLine.length, anglePts.length, anglePtsRequis, vertexLine.length, toImageCoords])
 
   // ── Angle pantoscopique : écart à 90° de l'angle entre les 2 segments ──
   // Le plan du verre est perpendiculaire à la branche → angle brut ≈ 90°.
   // La pantoscopie est la DÉVIATION par rapport à cette perpendiculaire.
-  const pantoscopic = calculatePantoscopicAngle(anglePts)
+  // Pantoscopie : la référence est la branche MESURÉE quand elle existe (droite des 2 mires
+  // basses), sinon les 3 points posés à la main. Et elle n'est affichée que si les points ont été
+  // POSÉS — les positions par défaut ne mesurent rien (même règle que l'échelle).
+  const pantoscopicBrut = baseMesuree
+    ? calculatePantoscopicAngleWithBase(anglePts, baseMesuree)
+    : calculatePantoscopicAngle(anglePts)
+  const pantoscopic = anglePlaces.length >= anglePtsRequis ? pantoscopicBrut : null
+
+  // ── Changement de MODE de l'outil d'angle ──
+  // Dès que la détection arrive, la branche devient MESURÉE : l'outil passe de 3 points
+  // (branche + sommet + verre) à 2 (verre seul). Les points en place ne veulent plus dire la même
+  // chose — on les repose dans le nouveau mode plutôt que de les réinterpréter.
+  const modeAngleRef = useRef(null)
+  useEffect(() => {
+    if (modeAngleRef.current === null) { modeAngleRef.current = anglePtsRequis; return }
+    if (modeAngleRef.current === anglePtsRequis) return
+    modeAngleRef.current = anglePtsRequis
+    setAnglePts(defaultAnglePts())
+    setAnglePlaces([])
+  }, [anglePtsRequis, defaultAnglePts])
 
   // ── Remise à zéro d'une mesure (poignées, gestes, vertex) ──
   // `detectionRetenue` = la détection qui reste valable : ses marqueurs vont être REPOSÉS sur les
@@ -655,7 +716,7 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
     setVertexLoading(false)
     setVerifyLine([]); setAnglePts([]); setVertexLine([]); setHandleAngles({})
     setVertexMm(null); setVertexError(null); setVertexAdjusted(false)
-    setVerifyMeasured(!!detectionRetenue); setPlaced([])
+    setVerifyMeasured(!!detectionRetenue); setPlaced([]); setAnglePlaces([])
     poseManuelleRef.current = false   // « Refaire » réarme les automatismes (détection comprise)
     setToolOn({ scale: true, ruler: false, angle: false, vertex: false })
   }, [])
@@ -678,14 +739,19 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
     onCapture({
       width: imageSize?.width || 0, height: imageSize?.height || 0,
       lateral_markers: verifyLine.length >= 2 ? verifyLine.map((p) => [p.x, p.y]) : null,
-      temple_markers: anglePts.length === 3 ? [[anglePts[0].x, anglePts[0].y], [anglePts[1].x, anglePts[1].y]] : null,
+      // La BRANCHE : la référence MESURÉE quand elle existe (droite des 2 mires basses), sinon la
+      // branche posée à la main (points 0 et 1 du mode 3 points).
+      temple_markers: baseMesuree
+        ? [[baseMesuree[0].x, baseMesuree[0].y], [baseMesuree[1].x, baseMesuree[1].y]]
+        : (anglePts.length >= 3 ? [[anglePts[0].x, anglePts[0].y], [anglePts[1].x, anglePts[1].y]] : null),
       vertex_markers: vertexLine.length === 2 ? [[vertexLine[0].x, vertexLine[0].y], [vertexLine[1].x, vertexLine[1].y]] : null,
-      pantoscopic_angle: pantoscopic || 0,
+      // Rien plutôt qu'un zéro : un 0° ferait passer une position par défaut pour une mesure.
+      pantoscopic_angle: pantoscopic,
       vertex_distance: vertexMm,
       manual: true, face_detected: false,
       scale_mm_per_px: effectiveScale || 0,
     })
-  }, [imageSize, verifyLine, anglePts, vertexLine, pantoscopic, vertexMm, effectiveScale, onCapture])
+  }, [imageSize, verifyLine, anglePts, baseMesuree, vertexLine, pantoscopic, vertexMm, effectiveScale, onCapture])
 
   // ── Rendu SVG ──
   const toPct = (v, d) => `${(v / d) * 100}%`
@@ -720,21 +786,58 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
               ))}
           </>
         )}
-        {/* Angle : 2 segments fins reliés au sommet */}
+        {/* Angle. Deux modes :
+            · branche POSÉE (3 points) → segment orange (branche) puis bleu (verre) au sommet ;
+            · branche MESURÉE (2 points) → LA LIGNE DU VERRE en bleu, et la branche tracée en
+              orange POINTILLÉ depuis les mires : elle n'est pas posée, elle est mesurée. */}
         {toolOn.angle && anglePts.length >= 2 && (
           <>
-            <line x1={toPct(anglePts[0].x, imageSize.width)} y1={toPct(anglePts[0].y, imageSize.height)}
-              x2={toPct(anglePts[1].x, imageSize.width)} y2={toPct(anglePts[1].y, imageSize.height)}
-              stroke="#f59e0b" strokeWidth="1.8" strokeLinecap="round" opacity="0.85" />
-            {anglePts.length >= 3 && (
-              <line x1={toPct(anglePts[1].x, imageSize.width)} y1={toPct(anglePts[1].y, imageSize.height)}
-                x2={toPct(anglePts[2].x, imageSize.width)} y2={toPct(anglePts[2].y, imageSize.height)}
-                stroke="#3b9eff" strokeWidth="1.8" strokeLinecap="round" opacity="0.85" />
+            {anglePts.length >= 3 ? (
+              <>
+                <line x1={toPct(anglePts[0].x, imageSize.width)} y1={toPct(anglePts[0].y, imageSize.height)}
+                  x2={toPct(anglePts[1].x, imageSize.width)} y2={toPct(anglePts[1].y, imageSize.height)}
+                  stroke="#f59e0b" strokeWidth="1.8" strokeLinecap="round" opacity="0.85" />
+                <line x1={toPct(anglePts[1].x, imageSize.width)} y1={toPct(anglePts[1].y, imageSize.height)}
+                  x2={toPct(anglePts[2].x, imageSize.width)} y2={toPct(anglePts[2].y, imageSize.height)}
+                  stroke="#3b9eff" strokeWidth="1.8" strokeLinecap="round" opacity="0.85" />
+              </>
+            ) : (
+              <>
+                <line x1={toPct(anglePts[0].x, imageSize.width)} y1={toPct(anglePts[0].y, imageSize.height)}
+                  x2={toPct(anglePts[1].x, imageSize.width)} y2={toPct(anglePts[1].y, imageSize.height)}
+                  stroke="#3b9eff" strokeWidth="1.8" strokeLinecap="round" opacity="0.9" />
+                {baseMesuree && (() => {
+                  const [b0, b1] = baseMesuree
+                  const dx = b1.x - b0.x
+                  const dy = b1.y - b0.y
+                  const n = Math.hypot(dx, dy) || 1
+                  const ext = Math.max(imageSize.width, imageSize.height)
+                  const ux = dx / n
+                  const uy = dy / n
+                  return (
+                    <line
+                      x1={toPct(b0.x - ux * ext, imageSize.width)} y1={toPct(b0.y - uy * ext, imageSize.height)}
+                      x2={toPct(b1.x + ux * ext, imageSize.width)} y2={toPct(b1.y + uy * ext, imageSize.height)}
+                      stroke="#f59e0b" strokeWidth="1.6" strokeLinecap="round" opacity="0.7"
+                      strokeDasharray="10 6" />
+                  )
+                })()}
+                {/* Valeur, au milieu de la ligne du verre */}
+                {pantoscopic !== null && (
+                  <text
+                    x={toPct((anglePts[0].x + anglePts[1].x) / 2, imageSize.width)}
+                    y={toPct((anglePts[0].y + anglePts[1].y) / 2, imageSize.height)}
+                    textAnchor="middle" dominantBaseline="middle"
+                    fontSize="16" fontWeight="700" fill="#3b9eff"
+                    style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.8))' }}>{pantoscopic}°</text>
+                )}
+              </>
             )}
           </>
         )}
-        {/* Arc d'angle + valeur */}
-        {toolOn.angle && pantoscopic !== null && (() => {
+        {/* Arc d'angle + valeur — mode 3 points (branche posée). En mode à branche mesurée, il n'y a
+            pas de sommet : la valeur s'affiche sur la ligne du verre, ci-dessus. */}
+        {toolOn.angle && pantoscopic !== null && anglePts.length >= 3 && (() => {
           const [a, v, b] = anglePts
           const r = 34
           const a1 = Math.atan2(a.y - v.y, a.x - v.x)
@@ -878,7 +981,11 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
   const hint = (() => {
     if (toolOn.angle) {
       return {
-        text: <>∠ <strong>{pantoscopic !== null ? `${pantoscopic}°` : '—'}</strong> — ajustez les 3 poignées : 🟠 branche, 🟣 sommet (charnière), 🔵 plan du verre</>,
+        text: baseMesuree
+          ? (pantoscopic !== null
+            ? <>∠ <strong>{pantoscopic}°</strong> — ligne du verre posée · branche <strong>mesurée</strong> sur les mires</>
+            : <>∠ <strong>—</strong> — posez la <strong>ligne du verre</strong> ({anglePlaces.length}/{anglePtsRequis}) · la branche est <strong>mesurée</strong> sur les mires (pointillés orange)</>)
+          : <>∠ <strong>{pantoscopic !== null ? `${pantoscopic}°` : '—'}</strong> — ajustez les 3 poignées : 🟠 branche, 🟣 sommet (charnière), 🔵 plan du verre</>,
         color: '#a78bfa', bg: 'rgba(167,139,250,0.08)', border: 'rgba(167,139,250,0.25)',
       }
     }

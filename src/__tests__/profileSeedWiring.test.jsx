@@ -159,6 +159,28 @@ describe('ProfileMeasure — amorçage depuis les mires détectées', () => {
     await waitFor(() => expect(container.textContent).toMatch(/9\.\d+ px\/mm/))
   })
 
+  it("branche MESURÉE : l'outil d'angle ne demande que la LIGNE DU VERRE (2 points)", async () => {
+    analyzeProfileMock.mockResolvedValue(REPONSE)
+    const { container } = renderPM()
+    await waitFor(() => expect(container.textContent).toMatch(/mires détectées/))
+
+    clickTool(container, 'Angle pantoscopique')
+    // 2 points seulement : la branche vient des mires MESURÉES, elle ne se pose plus au doigt.
+    await waitFor(() => expect(byType(container, 'angle').length).toBe(2))
+    expect(container.textContent).toMatch(/branche est[^.]{0,40}mesurée/i)
+    // Et le tiret tant que la ligne du verre n'a pas été POSÉE.
+    expect(container.textContent).toContain('—')
+
+    // On pose la ligne du verre : la valeur apparaît. La ligne par défaut est perpendiculaire à la
+    // base mesurée, donc la pantoscopie lue est 0 — c'est un point de départ, pas une mesure.
+    for (const h of byType(container, 'angle')) {
+      fireEvent.pointerDown(h, { clientX: 100, clientY: 150 })
+      fireEvent.pointerMove(window, { clientX: 130, clientY: 160 })
+      fireEvent.pointerUp(window, { clientX: 130, clientY: 160 })
+    }
+    await waitFor(() => expect(container.textContent).toMatch(/∠\s*0(\.0)?°/))
+  })
+
   it('l’échelle déduite des mires est correcte (25 mm entre les 2 points)', async () => {
     analyzeProfileMock.mockResolvedValue(REPONSE)
     const { container } = renderPM()

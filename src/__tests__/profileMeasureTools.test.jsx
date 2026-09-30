@@ -66,6 +66,16 @@ describe('ProfileMeasure — barre d’outils', () => {
     })
   }
 
+  // Pose DÉLIBÉRÉMENT les points de l'angle, par un décalage IDENTIQUE (la figure est translatée,
+  // donc l'angle mesuré ne change pas).
+  const placerLesPointsDangle = (container) => {
+    ;[...container.querySelectorAll('[data-pt-type="angle"]')].forEach((h) => {
+      fireEvent.pointerDown(h, { clientX: 100, clientY: 150 })
+      fireEvent.pointerMove(window, { clientX: 130, clientY: 160 })
+      fireEvent.pointerUp(window, { clientX: 130, clientY: 160 })
+    })
+  }
+
   it('on a bien les 4 boutons demandés, présents dès le début', async () => {
     const { container } = await renderPM()
     await waitFor(() => expect(container.querySelector('img')).toBeTruthy())
@@ -199,6 +209,10 @@ describe('ProfileMeasure — barre d’outils', () => {
   it('les mesures restent affichées quand on masque l’outil', async () => {
     const { container } = await withMires()
     clickTool(container, 'Angle pantoscopique')
+    // Les positions de DÉPART ne mesurent rien : l'app affiche le tiret tant que la ligne du verre
+    // n'a pas été POSÉE (même règle que l'échelle).
+    expect(btn(container, 'Angle pantoscopique').textContent).toContain('—')
+    placerLesPointsDangle(container)
     await waitFor(() => expect(btn(container, 'Angle pantoscopique').textContent).toMatch(/\d+(\.\d+)?°/))
 
     const av = btn(container, 'Angle pantoscopique').textContent
