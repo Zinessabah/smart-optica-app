@@ -55,6 +55,15 @@ describe('ProfileMeasure — barre d’outils', () => {
   }
   const MIRES = [[100, 150], [300, 160]]
   const withMires = () => placePoints(MIRES)
+  // Place DÉLIBÉRÉMENT les 2 poignées de l'échelle (geste > 6 px client sur chacune). Un
+  // placement manuel, c'est les 2 poignées amenées sur les 2 mires : une seule ne suffit pas.
+  const placerLesDeuxPoignees = (container) => {
+    ;[...container.querySelectorAll('[data-pt-type="verify"]')].forEach((h, i) => {
+      fireEvent.pointerDown(h, { clientX: 100, clientY: 150 })
+      fireEvent.pointerMove(window, { clientX: 100 + 30 * (i + 1), clientY: 150 })
+      fireEvent.pointerUp(window, { clientX: 100 + 30 * (i + 1), clientY: 150 })
+    })
+  }
 
   it('on a bien les 4 boutons demandés, présents dès le début', async () => {
     const { container } = await renderPM()
@@ -82,10 +91,7 @@ describe('ProfileMeasure — barre d’outils', () => {
     await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2))
     // La réglette ne se dessine qu'avec une échelle MESURÉE : une longueur en mm calculée sur
     // les positions de départ provisoires serait fausse.
-    const hv = container.querySelector('[data-pt-type="verify"]')
-    fireEvent.pointerDown(hv, { clientX: 100, clientY: 150 })
-    fireEvent.pointerMove(window, { clientX: 145, clientY: 150 })
-    fireEvent.pointerUp(window, { clientX: 145, clientY: 150 })
+    placerLesDeuxPoignees(container)
 
     clickTool(container, 'Réglette')
     await waitFor(() => expect(isOn(btn(container, 'Réglette'))).toBe(true))
@@ -107,14 +113,27 @@ describe('ProfileMeasure — barre d’outils', () => {
     expect(btn(container, 'Échelle').textContent).toContain('—')
   })
 
-  it("affiche les px/mm dès que l'utilisateur déplace une poignée de l'échelle", async () => {
+  it("un simple appui sur une poignée ne légitime PAS l'échelle (frémissement du doigt)", async () => {
+    // Même géométrie que l'iPad : photo 4032 px de large affichée dans ~400 px → 1 px client
+    // vaut ~10 px image, donc bien au-delà du seuil de drag de 3 px IMAGE.
+    stubImageLoad(4032, 3024)
     const { container } = await renderPM()
     await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2))
     const h = container.querySelector('[data-pt-type="verify"]')
+    // Un appui iOS produit toujours quelques pixels de mouvement : ce n'est pas un placement,
+    // l'échelle doit rester au tiret.
     fireEvent.pointerDown(h, { clientX: 100, clientY: 150 })
-    fireEvent.pointerMove(window, { clientX: 145, clientY: 150 })   // > 3 px image : vrai drag
-    fireEvent.pointerUp(window, { clientX: 145, clientY: 150 })
-    // Déplacée = mesurée par l'utilisateur : l'échelle devient légitime
+    fireEvent.pointerMove(window, { clientX: 101, clientY: 150 })
+    fireEvent.pointerUp(window, { clientX: 101, clientY: 150 })
+    expect(btn(container, 'Échelle').textContent).not.toMatch(/\d+\.\d+ px\/mm/)
+    expect(btn(container, 'Échelle').textContent).toContain('—')
+  })
+
+  it("affiche les px/mm dès que l'utilisateur a placé les 2 poignées", async () => {
+    const { container } = await renderPM()
+    await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2))
+    placerLesDeuxPoignees(container)
+    // Les 2 poignées placées = une mesure de l'utilisateur : l'échelle devient légitime
     await waitFor(() => expect(btn(container, 'Échelle').textContent).toMatch(/\d+\.\d+ px\/mm/))
   })
 

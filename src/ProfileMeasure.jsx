@@ -67,6 +67,11 @@ const VERTEX_START_MM = 12
 // (cornée → face arrière du verre) se mesurent tous deux à cette hauteur.
 // ⚠ Constante PARTAGÉE par `defaultVerifyPts` et `defaultVertexPts` — une seule source.
 const EYE_LINE_Y_RATIO = 0.40
+// Un geste DÉLIBÉRÉ de placement, mesuré en pixels CLIENT. Le seuil de drag (3 px image) ne
+// convient pas ici : sur une photo de 4032 px affichée dans ~1000 px il ne vaut que 0,74 px
+// client, donc un simple frémissement de doigt sur un appui le franchit — et l'app affichait
+// alors une échelle tirée des positions de départ (mesuré : 22,16 px/mm au lieu du tiret).
+const SEUIL_PLACEMENT_CLIENT_PX = 6
 
 // Délai maximum accordé à la détection des mires du profil (garde-fou CÔTÉ CLIENT).
 // Mesuré sur une vraie photo : 0,9 s AVEC `scale_mm_per_px`.
@@ -208,7 +213,11 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
   // Mesuré sur une photo de 4032 px de large : poignées de départ à 0,43 et 0,57 de la largeur
   // → 564 px → « 22,56 px/mm » annoncés, contre 16,11 px/mm pour les vraies mires (403 px) :
   // un facteur 1,40 d'écart, et aucune indication que le nombre ne valait rien.
-  const [verifyMeasured, setVerifyMeasured] = useState(false)
+  const [verifyMeasured, setVerifyMeasured] = useState(false)   // le backend a posé les 2 poignées
+  // Index des poignées que l'utilisateur a VRAIMENT déplacées (geste délibéré, cf. seuil ci-dessus).
+  // Il en faut DEUX : le placement manuel consiste à amener les 2 poignées sur les 2 mires, donc
+  // un frémissement sur une seule ne peut pas produire un écartement qui vaille 25 mm.
+  const [placed, setPlaced] = useState([])
   const verifyResult = (() => {
     if (verifyLine.length < 2) return null
     const d = Math.hypot(verifyLine[1].x - verifyLine[0].x, verifyLine[1].y - verifyLine[0].y)
@@ -216,10 +225,11 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
     return { px: Math.round(d), impliedScale: 25 / d }
   })()
   // L'échelle latérale vient des mires latérales, UNIQUEMENT, et seulement quand elles ont été
-  // MESURÉES (détectées par le backend, ou placées par l'utilisateur). Aucun repli sur une échelle
-  // de la photo de face, ni sur l'écartement provisoire de départ : ce serait une échelle fausse de
-  // 20 à 50 % qui contaminerait vertex et pantoscopique sans rien signaler.
-  const effectiveScale = verifyMeasured && verifyResult ? verifyResult.impliedScale : null
+  // MESURÉES (détectées par le backend, ou les 2 poignées placées par l'utilisateur). Aucun repli
+  // sur une échelle de la photo de face, ni sur l'écartement provisoire de départ : ce serait une
+  // échelle fausse de 20 à 50 % qui contaminerait vertex et pantoscopique sans rien signaler.
+  const handlesMeasured = verifyMeasured || placed.length >= 2
+  const effectiveScale = handlesMeasured && verifyResult ? verifyResult.impliedScale : null
 
   // ── Angle pantoscopique : 3 points (extrémité A, SOMMET, extrémité B) ──
   const [anglePts, setAnglePts] = useState([])   // [{x,y} ×3]
@@ -484,7 +494,8 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
     setDraggingPt({ type: ptType, i: index })
     setter(prev => {
       const orig = prev[index]; if (!orig) return prev
-      dragRef.current = { setter, index, startImg, oX: orig.x, oY: orig.y }
+      dragRef.current = { setter, index, startImg, oX: orig.x, oY: orig.y,
+                          startClient: { x: e.clientX, y: e.clientY } }
       return prev
     })
     const onMove = (ev) => {
@@ -495,10 +506,15 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
       const dy = currentImg.y - d.startImg.y
       // Seuil de 3 px (image) : au-delà on considère que c'est un vrai drag
       if (Math.hypot(dx, dy) > 3) { d.moved = true; moved = true }
-      // Une poignée de l'échelle réellement DÉPLACÉE devient une mesure de l'utilisateur : c'est
-      // à partir de là que l'échelle affichée vaut quelque chose (un simple appui ne suffit pas,
-      // les poignées resteraient aux positions provisoires de départ).
-      if (d.moved && d.setter === setVerifyLine) setVerifyMeasured(true)
+      // Une poignée de l'échelle DÉLIBÉRÉMENT déplacée devient une mesure de l'utilisateur — et il
+      // en faut deux (les 2 mires). Le geste se juge en pixels CLIENT : le seuil ci-dessus (3 px
+      // image) vaut moins d'un pixel client sur une photo de 4032 px, donc un frémissement de doigt
+      // le franchissait et l'app affichait une échelle tirée des positions de départ.
+      if (d.setter === setVerifyLine && d.startClient &&
+          Math.hypot(ev.clientX - d.startClient.x, ev.clientY - d.startClient.y)
+          > SEUIL_PLACEMENT_CLIENT_PX) {
+        setPlaced(p => (p.includes(d.index) ? p : [...p, d.index]))
+      }
       const nx = Math.round(Math.max(0, Math.min(imageSize.width, d.oX + dx)))
       const ny = Math.round(Math.max(0, Math.min(imageSize.height, d.oY + dy)))
       d.setter(prev => { const n = [...prev]; n[d.index] = { x: nx, y: ny }; return n })

@@ -239,11 +239,13 @@ describe('ProfileMeasure — poignées du profil', () => {
     await waitFor(() => expect(container.querySelector('img')).toBeTruthy())
     await waitFor(() => expect(container.querySelectorAll('[data-pt-type="verify"]').length).toBe(2))
     // L'échelle n'est légitime qu'une fois les poignées MESURÉES : les positions de départ sont
-    // provisoires et ne mesurent rien. On déplace donc vraiment une poignée.
-    const hv = handleOf(container)
-    fireEvent.pointerDown(octagonOf(hv), { clientX: 100, clientY: 150 })
-    fireEvent.pointerMove(window, { clientX: 120, clientY: 150 })
-    fireEvent.pointerUp(window, { clientX: 120, clientY: 150 })
+    // provisoires et ne mesurent rien. On place donc DÉLIBÉRÉMENT les deux (comme au doigt).
+    const hv = byType(container, 'verify')
+    hv.forEach((h, i) => {
+      fireEvent.pointerDown(octagonOf(h), { clientX: 100, clientY: 150 })
+      fireEvent.pointerMove(window, { clientX: 100 + 30 * (i + 1), clientY: 150 })
+      fireEvent.pointerUp(window, { clientX: 100 + 30 * (i + 1), clientY: 150 })
+    })
     clickTool(container, 'Angle pantoscopique')
     clickTool(container, 'Vertex')
     await waitFor(() => expect(container.querySelectorAll('[data-pt-type="vertex"]').length).toBe(2))
