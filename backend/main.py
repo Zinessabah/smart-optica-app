@@ -1632,6 +1632,10 @@ async def analyze_profile(file: UploadFile = File(...), scale_mm_per_px: Optiona
         "raised_rejected": getattr(ld, "raised_rejected", False),
         "trap_spacing_rejected": getattr(ld, "trap_spacing_rejected", False),
         "triangle_isoceles": getattr(ld, "triangle_isoceles", False),
+        # Taille de carreau LUE sur la mire (5,00 mm) : une échelle obtenue sans rien savoir de
+        # la photo faciale. `qo_coherent` dit si les mires appariées répondent à la même taille.
+        "qo_px": getattr(ld, "qo_px", None),
+        "qo_coherent": getattr(ld, "qo_coherent", None),
     }
 
     return ProfileResult(
