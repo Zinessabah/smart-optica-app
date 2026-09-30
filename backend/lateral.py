@@ -100,6 +100,13 @@ class LateralDiagnostics:
     trap_spacing_rejected: Optional[bool] = None  # une paire à ~20,30 mm (surélevée) a été REFUSÉE
     triangle_isoceles: Optional[bool] = None      # pairage déduit du triangle (critère sans échelle)
     pair_roles: Optional[tuple] = None            # rôles déduits de la géométrie du clip
+    # ── Mesure de la mire elle-même (détection par corrélation) ──────────────
+    # `qo_px` = demi-carreau LU sur la mire (le carreau mesure 5,00 mm) : c'est une échelle
+    # indépendante, obtenue sans rien savoir de la photo faciale. `qo_coherent` dit si les
+    # mires appariées répondent à la même taille (±10 %) — le verrou qui écarte un triplet
+    # parasite quand on ne saurait pas distinguer 20,30 mm de 25,00 mm.
+    qo_px: Optional[float] = None
+    qo_coherent: Optional[bool] = None
 
 
 def _progressive_rois(w: int, h: int) -> List[Tuple[int, int, int, int]]:

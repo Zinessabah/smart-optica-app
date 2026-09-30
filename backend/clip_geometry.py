@@ -113,6 +113,11 @@ def orientation_depuis_quadrants(quadrants: Dict[str, float],
 
 PATTERN_DIAMETER_MM = 10.00       # Ø du motif rogné
 MARKER_DISC_MM = 12.00            # Ø du disque de mire (insert)
+COLLAR_DIAMETER_MM = 13.60        # Ø du collier/lèvre autour de l'insert (doc de référence du
+                                  # clip v19.5 : « alésage Ø12,1 ; collier/lèvre Ø13,6 »).
+                                  # Sert de BORD au gabarit de détection (`lateral_checker`) :
+                                  # c'est ce contour qui fixe l'échelle lue sur la mire. Cote
+                                  # de forme, jamais utilisée dans un calcul de mesure.
 MARKER_DEPTH_MM = 0.6             # profondeur du motif (4 couches à 0,15)
 
 # ── Plans de référence (le clip se porte comme des lunettes) ─────────────────
