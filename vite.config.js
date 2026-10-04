@@ -21,6 +21,12 @@ const hasCert = fs.existsSync(certPath) && fs.existsSync(keyPath)
 // sur HTTP plutôt que de planter au démarrage.
 const sharedServer = {
   host: '0.0.0.0',
+  // ⚠️ strictPort : si 5173 est déjà pris, Vite DOIT échouer au lieu de glisser sur le
+  // port suivant. Sans ça, un `vite` orphelin qui occupe 5173 pousse silencieusement ce
+  // service vers 5174 — le même port que l'admin, qui glisse alors vers 5175 et
+  // disparaît de l'URL. Le glissement silencieux a déjà rendu l'admin introuvable :
+  // mieux vaut un service qui refuse de démarrer, visible dans `systemctl status`.
+  strictPort: true,
   https: hasCert ? {
     key: fs.readFileSync(keyPath),
     cert: fs.readFileSync(certPath),

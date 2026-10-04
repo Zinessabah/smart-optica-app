@@ -18,6 +18,9 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5174,
+    // ⚠️ strictPort : refuser de démarrer si 5174 est occupé, plutôt que de glisser
+    // silencieusement vers 5175 (ce qui rend la page admin introuvable à son URL).
+    strictPort: true,
     https: hasCert ? {
       key: fs.readFileSync(keyPath),
       cert: fs.readFileSync(certPath),
@@ -30,6 +33,9 @@ export default defineConfig({
   preview: {
     host: '0.0.0.0',
     port: 5174,
+    // ⚠️ strictPort : refuser de démarrer si 5174 est occupé, plutôt que de glisser
+    // silencieusement vers 5175 (ce qui rend la page admin introuvable à son URL).
+    strictPort: true,
     // ⚠️ Le preview sert le build figé : sans HTTPS il serait inaccessible à l'iPad, et le
     // proxy /api doit rester actif (sinon la connexion admin échoue).
     https: hasCert ? {
