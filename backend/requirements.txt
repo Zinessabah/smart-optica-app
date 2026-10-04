@@ -44,6 +44,7 @@ opencv-python-headless==5.0.0.93
 packaging==26.2
 passlib==1.7.4
 pillow==12.3.0
+pillow-heif==1.8.0    # ajoute pour la lecture des photos HEIC (iOS)
 pluggy==1.6.0
 protobuf==7.35.1
 psycopg2-binary==2.9.12
