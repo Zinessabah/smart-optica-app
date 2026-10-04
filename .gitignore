@@ -47,3 +47,6 @@ ruler-mockup*.html
 AUDIT_*.md
 strong-class-query.md
 
+
+# venvs sauvegardes lors d une reparation (python-venv-broken-recovery)
+venv*/
