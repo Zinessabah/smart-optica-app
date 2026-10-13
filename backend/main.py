@@ -1686,6 +1686,23 @@ async def analyze_profile(request: Request, file: UploadFile = File(...), scale_
     )
 
 
+# ── Interface web, servie par le backend lui-même ───────────────────────────────
+# Le client Android charge cette interface dans une WebView. La servir ICI, depuis le backend,
+# la place sur la MÊME ORIGINE que l'API. Trois conséquences, toutes des simplifications :
+#   - plus de CORS ni de proxy inverse : les chemins relatifs `/api/...` tombent juste ;
+#   - une modification de l'interface ne demande PAS de reconstruire l'APK ;
+#   - les 2,4 Mo de `dist/` ne sont pas dupliqués dans l'application.
+#
+# Le montage est déclaré EN DERNIER : c'est un attrape-tout, il ne doit masquer ni les routes
+# `/api`, ni `/captures`, ni `health`, toutes déclarées plus haut. Sans `dist/` (dépôt non
+# construit), on ne monte rien — le backend reste utilisable seul.
+_WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "dist")
+if os.path.isdir(_WEB_DIR):
+    from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+    app.mount("/", StaticFiles(directory=_WEB_DIR, html=True), name="web")
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
