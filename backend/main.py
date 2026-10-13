@@ -117,11 +117,21 @@ from measurements import measurements_router  # noqa: E402
 # ses chemins relatifs contre l'URL de base saisie dans ses réglages, et `health` est
 # déjà servi à la racine. Un préfixe `/api` l'obligerait à saisir une URL terminée par
 # `/api` — et `health` ne serait plus trouvé au même endroit.
-from captures import captures_router  # noqa: E402
+from captures import (  # noqa: E402
+    CaptureError,
+    capture_error_handler,
+    captures_router,
+)
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(measurements_router)
 app.include_router(captures_router)
+
+# Les erreurs du pont de captures sortent au format `ApiError` du contrat
+# (`{code, message, retryable}`), et non au format `{"detail": ...}` par défaut de FastAPI :
+# c'est le premier que l'application Android sait lire. Le gestionnaire ne concerne que
+# CaptureError — les autres routes gardent leur forme habituelle.
+app.add_exception_handler(CaptureError, capture_error_handler)  # type: ignore[arg-type]
 
 # CORS — liste blanche d'origines (configurable via env, défaut = serveurs de dev Vite)
 # Ne JAMAIS mettre "*" en production : risque d'appels inter-sites malveillants.
