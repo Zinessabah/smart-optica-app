@@ -98,7 +98,24 @@ export default function Webcam({ onCapture, onCancel }) {
       setFacingMode(targetMode)
       setStreaming(true)
     } catch (err) {
-      setError("Impossible d'accéder à la caméra. Vérifiez les permissions.")
+      // Diagnostic reel, et non « permissions » par reflexe.
+      //
+      // Sur un service en HTTP, `navigator.mediaDevices` n'existe PAS : le navigateur ne fournit
+      // l'acces camera qu'en contexte securise (HTTPS, ou localhost). Annoncer « verifiez les
+      // permissions » envoie alors l'utilisateur chercher un reglage qui n'a rien a voir, alors
+      // que la cause est le schema de l'adresse.
+      //
+      // Cette voie n'est de toute facon pas utilisee par l'application Android, qui fournit ses
+      // photos autrement — d'ou l'interet de le DIRE plutot que de laisser croire a une panne.
+      const sansApi = !navigator.mediaDevices?.getUserMedia
+      const refuse = err?.name === 'NotAllowedError' || err?.name === 'SecurityError'
+      setError(
+        sansApi
+          ? "L'accès à la caméra du navigateur demande une adresse sécurisée (HTTPS). Utilisez « Télécharger 2 photos »."
+          : refuse
+            ? "Caméra refusée. Autorisez l'accès dans les réglages du navigateur, ou utilisez « Télécharger 2 photos »."
+            : "Impossible d'accéder à la caméra. Utilisez « Télécharger 2 photos »."
+      )
       console.error(err)
     }
   }, [facingMode])

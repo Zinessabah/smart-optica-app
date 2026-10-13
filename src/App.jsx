@@ -10,6 +10,7 @@ import AuthScreen from './components/AuthScreen'
 import HistoryPage from './pages/HistoryPage'
 import { getToken, fetchMe, clearSession } from './services/auth'
 import { serializeSession, restoreSession, isStepResumable, SESSION_KEY } from './core/sessionPersistence'
+import { readCaptureIds, loadCapturePair } from './core/captureBridge'
 
 // ── Écran d'accueil simplifié ──
 function HomeScreen({ onStart, onHistory }) {
@@ -116,6 +117,48 @@ export default function App() {
     return () => clearInterval(interval)
   }, [])
 
+  /**
+   * Captures venues de l'application Android.
+   *
+   * L'application ouvre cette interface avec les deux photos qu'elle vient de prendre
+   * (`?face=…&profile=…`). On les charge AVANT tout affichage, puis on saute directement à la
+   * calibration : l'opticien a déjà fait les photos, lui montrer l'écran d'accueil — qui propose
+   * de les prendre — serait lui demander deux fois le même geste.
+   *
+   * C'est aussi ce qui rend inutile la caméra du navigateur, et donc son échec : sur un service
+   * en HTTP, `navigator.mediaDevices` n'existe pas (contexte non sécurisé), et l'interface
+   * annonçait à tort un problème de permissions.
+   */
+  const [bridge, setBridge] = useState(null) // null | 'loading' | 'failed'
+
+  useEffect(() => {
+    const ids = readCaptureIds()
+    if (!ids) return
+    let abandonne = false
+    setBridge('loading')
+
+    loadCapturePair(ids)
+      .then(async ({ faceUrl, profileUrl }) => {
+        if (abandonne) return
+        setImageData(faceUrl)
+        setProfileImageUrl(profileUrl)
+        // 'native' : ni la caméra du navigateur, ni un fichier choisi à la main.
+        setPhotoSource('native')
+        setStep('calibrate')
+        setBridge(null)
+        // Détection du visage, comme pour une photo prise dans l'interface. Facultative : si elle
+        // échoue, le pointage manuel reste disponible et la mesure reste possible.
+        try {
+          const blob = await (await fetch(faceUrl)).blob()
+          const result = await analyzeImage(blob)
+          if (result?.face_detected && !abandonne) setFaceData(result)
+        } catch { /* détection facultative */ }
+      })
+      .catch(() => { if (!abandonne) setBridge('failed') })
+
+    return () => { abandonne = true }
+  }, [])
+
   const handleStart = useCallback((source) => {
     setPhotoSource(source)
     setStep('photo')
@@ -180,7 +223,45 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--color-bg)' }}>
-      {/* Header minimal */}
+
+      {/* Chargement des photos venues de l'application. Un voile, et non une carte : pendant ce
+          temps rien d'autre n'est utilisable, et laisser l'ecran actif ferait croire a un blocage. */}
+      {bridge && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6"
+          style={{ background: 'rgba(0,0,0,0.82)' }}>
+          <div className="w-full max-w-sm rounded-2xl border p-6 text-center"
+            style={{ background: 'var(--color-card)', borderColor: 'var(--color-border)' }}>
+            {bridge === 'loading' ? (
+              <>
+                <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-2"
+                  style={{ borderColor: 'var(--color-border)', borderTopColor: 'var(--color-gold)' }} />
+                <p className="text-sm" style={{ color: 'var(--color-text)' }}>
+                  Chargement des photos prises avec l'appareil…
+                </p>
+                <p className="mt-2 text-xs" style={{ color: 'var(--color-text-muted)' }}>
+                  L'envoi depuis le téléphone peut demander quelques secondes.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm font-medium" style={{ color: 'var(--color-text)' }}>
+                  Photos indisponibles
+                </p>
+                <p className="mt-2 text-xs" style={{ color: 'var(--color-text-muted)' }}>
+                  Les deux photos n'ont pas pu être chargées. Vérifiez dans l'application que
+                  l'envoi est bien terminé, puis rouvrez le centrage.
+                </p>
+                <button onClick={() => setBridge(null)}
+                  className="mt-4 rounded-lg px-4 py-2 text-sm transition-opacity hover:opacity-70"
+                  style={{ border: '1px solid var(--color-border)', color: 'var(--color-text)' }}>
+                  Fermer
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       <header className="sticky top-0 z-30 px-4 py-2.5 flex items-center justify-between"
         style={{ background: 'var(--color-bg)', borderBottom: '1px solid var(--color-border)' }}>
         <div className="flex items-center gap-2">

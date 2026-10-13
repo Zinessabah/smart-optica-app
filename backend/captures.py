@@ -543,6 +543,39 @@ def list_my_captures(
     return [_summary(r) for r in rows]
 
 
+@captures_router.get("/by-client/{client_capture_id}", response_model=CaptureSummary)
+def get_capture_by_client_id(
+    client_capture_id: str,
+    db: SessionLocal = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Retrouve une capture par l'identifiant que l'APPAREIL lui a donné.
+
+    L'application Android connaît ses captures par leur `clientCaptureId` — c'est elle qui le
+    génère — tandis que le serveur les désigne par son propre identifiant. Quand l'application
+    ouvre l'interface de centrage, elle ne peut donc transmettre que le premier.
+
+    Cette route est le pont entre les deux. Elle sert aussi de sonde : tant qu'un envoi n'a pas
+    abouti, la capture n'existe pas ici, et la réponse 404 dit à l'interface « attends encore »,
+    ce qui est exact plutôt que de faire croire à une capture disparue.
+    """
+    wanted = client_capture_id.strip()[:MAX_CLIENT_ID]
+    if not wanted:
+        raise _bad_request("client_capture_id_manquant", "Identifiant vide.")
+
+    row = (db.query(Capture)
+             .filter(Capture.user_id == user.id, Capture.client_capture_id == wanted)
+             .first())
+    if row is None:
+        # 404 et non 403 : la capture n'est pas FORBIDDEN, elle n'est pas encore ARRIVEE. Le
+        # message doit le dire, sinon l'interface afficherait « acces refuse » sur un envoi en
+        # cours et l'utilisateur croirait a un probleme de droits.
+        raise CaptureError(
+            status.HTTP_404_NOT_FOUND, "capture_inconnue",
+            "Capture pas encore recue pour cet identifiant.", retryable=True)
+    return _summary(row)
+
+
 @captures_router.get("/{capture_id}", response_model=CaptureSummary)
 def get_capture(
     capture_id: str,
