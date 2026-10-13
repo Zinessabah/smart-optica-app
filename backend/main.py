@@ -112,9 +112,16 @@ app = FastAPI(title="Smart Optica API", version="1.0.0")
 from auth import router as auth_router  # noqa: E402
 from admin import admin as admin_router  # noqa: E402
 from measurements import measurements_router  # noqa: E402
+# Pont de collecte de l'application Android (`ma.smartoptica.levelcam`).
+# Routes montées à la RACINE (`/captures`), et non sous `/api` : l'application résout
+# ses chemins relatifs contre l'URL de base saisie dans ses réglages, et `health` est
+# déjà servi à la racine. Un préfixe `/api` l'obligerait à saisir une URL terminée par
+# `/api` — et `health` ne serait plus trouvé au même endroit.
+from captures import captures_router  # noqa: E402
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(measurements_router)
+app.include_router(captures_router)
 
 # CORS — liste blanche d'origines (configurable via env, défaut = serveurs de dev Vite)
 # Ne JAMAIS mettre "*" en production : risque d'appels inter-sites malveillants.

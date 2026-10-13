@@ -14,6 +14,11 @@ _TEST_DB = "/tmp/so_isolation_test.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB}"
 os.environ["APP_ENV"] = "test"
 
+# Photos de test hors du dépôt : sans cela, chaque exécution laissait des JPEG/PNG
+# réels dans backend/uploads/ (la DB jetable est vidée, pas le disque).
+_TEST_UPLOADS = "/tmp/so_captures_test"
+os.environ["CAPTURES_UPLOAD_ROOT"] = _TEST_UPLOADS
+
 # Nettoyer une éventuelle DB de test résiduelle
 for suffix in ("", "-wal", "-shm"):
     p = _TEST_DB + suffix
@@ -25,12 +30,31 @@ from fastapi.testclient import TestClient
 
 
 def _reset_db():
-    """Vide les tables measurements/users entre les tests (DB jetable)."""
+    """Vide les tables measurements/captures/users entre les tests (DB jetable).
+
+    ⚠️ Les modèles sont importés AVANT d'ouvrir la session, et non au milieu du
+    `try`. `captures` (comme `measurements` et `auth`) exécute `create_all` à
+    l'import : si une session tient déjà un verrou d'écriture — c'est le cas juste
+    après les `DELETE` — le `CREATE TABLE` part sur une seconde connexion et SQLite
+    répond « database is locked ». L'import échoue alors, Python retire le module de
+    `sys.modules`, et l'import suivant réexécute le corps de classe : au lieu d'une
+    erreur de verrou, on obtient « Table 'captures' is already defined ».
+    """
     from measurements import Measurement, SessionLocal
     from auth import User, _hits
+    try:
+        from captures import Capture
+    except ImportError:
+        Capture = None
+
     db = SessionLocal()
     try:
         db.query(Measurement).delete()
+        # Les captures aussi : sans cela, une capture laissée par un test précédent
+        # resterait en table, et le test suivant la retrouverait (SQLite n'applique
+        # pas ON DELETE CASCADE sans PRAGMA foreign_keys).
+        if Capture is not None:
+            db.query(Capture).delete()
         db.query(User).delete()
         db.commit()
         # Réinitialiser le rate-limiter EN MÉMOIRE (dict partagé au niveau module).
