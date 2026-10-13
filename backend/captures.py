@@ -20,17 +20,23 @@ Le client concatène `/captures` à l'URL de base saisie dans ses paramètres
 `POST http://hote:8000/captures`. C'est pourquoi `health` — déjà servi à la racine par
 `main.py` — et ces routes cohabitent sans préfixe `/api`.
 
-`metadata` est le document `CaptureMetadata` de l'OpenAPI :
+> `metadata` est le document `CaptureMetadata` de l'OpenAPI :
 
-    clientCaptureId             uuid     identifiant d'idempotence, stable
-    takenAtEpochMillis          int64    horodatage de la prise de vue
-    fileName                    texte    nom du fichier écrit par l'application
-    sizeBytes                   int64    taille RÉELLE du JPEG
-    rollDegrees                 float?   roulis dans le repère de l'ÉCRAN
-    pitchDegrees                float?   tangage, même règle
-    referenceIsCustom           bool     référence personnalisée active
-    exifOrientation             int?     orientation EXIF du fichier produit
-    angularSpeedDegreesPerSecond float?  vitesse angulaire (repère le flou de bougé)
+clientCaptureId             uuid     identifiant d'idempotence, stable
+takenAtEpochMillis          int64    horodatage de la prise de vue
+fileName                    texte    nom du fichier écrit par l'application
+sizeBytes                   int64    taille RÉELLE du JPEG
+kind                        texte?   `face` ou `profile`
+rollDegrees                 float?   roulis dans le repère de l'ÉCRAN
+pitchDegrees                float?   tangage, même règle
+referenceIsCustom           bool     référence personnalisée active
+exifOrientation             int?     orientation EXIF du fichier produit
+angularSpeedDegreesPerSecond float?  vitesse angulaire (repère le flou de bougé)
+
+`kind` dit ce que la photo MONTRE, et il est indispensable au centrage digital : celui-ci exige
+la face ET le profil, sans quoi il n'a ni les pupilles ni l'angle pantoscopique. Aucun calcul ne
+peut retrouver cette information — elle vient du geste de l'opticien. Une capture dont le genre
+est absent ou inconnu reste donc `NULL` en base, et n'est jamais supposée « face ».
 
 `rollDegrees` / `pitchDegrees` peuvent être `null` : l'application ne fabrique JAMAIS une
 mesure quand le capteur est muet. On conserve donc la distinction « angle nul » (0,0°,
@@ -82,8 +88,8 @@ from fastapi import (APIRouter, Depends, File, Form, Header, HTTPException,
                      Request, Response, UploadFile, status)
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import (Boolean, DateTime, BigInteger, Float, ForeignKey, Integer,
-                        String, Text, UniqueConstraint, func)
+from sqlalchemy import (BigInteger, Boolean, DateTime, Float, ForeignKey, Integer,
+                        String, Text, UniqueConstraint)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -177,13 +183,30 @@ class Capture(Base):
     exif_orientation: Mapped[int | None] = mapped_column(Integer, nullable=True)
     angular_speed_dps: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # Ce que la photo montre : `face` ou `profile`. Ajoute pour le centrage digital, qui a besoin
+    # des DEUX photos et ne peut pas les distinguer autrement — le genre vient du geste de
+    # l'opticien, aucun calcul ne peut le retrouver.
+    # `NULL` = capture anterieure au champ, genre INCONNU. On ne le suppose pas : une capture
+    # etiquetee « face » a tort serait utilisee comme telle par le centrage.
+    kind: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+
     # Métadonnées brutes conservées telles quelles : le contrat de l'application peut gagner
     # des champs sans qu'une migration soit nécessaire pour les retrouver.
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
 
     status: Mapped[str] = mapped_column(String(20), default="received")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
-                                                 server_default=func.now())
+
+    # Horodatage serveur, pose par PYTHON et non par la base.
+    #
+    # La resolution de `CURRENT_TIMESTAMP` varie selon le moteur — la seconde sur SQLite — et deux
+    # captures envoyees dans la meme seconde recevaient alors le MEME horodatage. L'ordre de
+    # l'historique devenait arbitraire, et « la derniere face » — ce que demande le centrage —
+    # pouvait rendre une photo plus ancienne. Une fonction d'horloge dont la precision depend du
+    # moteur ne convient pas a une donnee qui sert a ORDONNER.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
 
 
 Base.metadata.create_all(engine)
@@ -204,6 +227,7 @@ class CaptureSummary(BaseModel):
     id: str
     clientCaptureId: str
     fileName: str = ""
+    kind: str | None = None
     receivedAtEpochMillis: int | None = None
     width: int = 0
     height: int = 0
@@ -232,6 +256,7 @@ def _summary(c: Capture) -> CaptureSummary:
         id=c.id,
         clientCaptureId=c.client_capture_id,
         fileName=c.file_name,
+        kind=c.kind,
         receivedAtEpochMillis=_epoch_millis(c.created_at),
         width=c.image_width,
         height=c.image_height,
@@ -263,6 +288,24 @@ def _text(value, limit: int = MAX_SHORT) -> str:
     if value is None:
         return ""
     return str(value)[:limit]
+
+
+# Genres admis. Volontairement une liste fermee : le contrat les enumere, et une valeur libre
+# finirait par servir de filtre sans qu'on sache ce qu'elle designe.
+KINDS = ("face", "profile")
+
+
+def _kind(value) -> str | None:
+    """Genre de la capture, ou `None` s'il est absent ou inconnu.
+
+    On ne retombe PAS sur « face » : une capture dont le genre est inconnu doit rester inconnue,
+    sinon le centrage l'utiliserait comme une face et produirait une mesure fausse — sans que
+    rien ne le signale.
+    """
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip().lower()
+    return candidate if candidate in KINDS else None
 
 
 def _image_size(data: bytes) -> tuple[int, int]:
@@ -436,6 +479,9 @@ async def create_capture(
         isinstance(meta.get("referenceIsCustom"), bool) else False,
         exif_orientation=_num(meta.get("exifOrientation"), int),
         angular_speed_dps=_num(meta.get("angularSpeedDegreesPerSecond")),
+        # Genre borne a ce que le contrat connait : une valeur libre venue du client finirait par
+        # servir de filtre sans qu'on sache ce qu'elle contient. `None` reste `None` — inconnu.
+        kind=_kind(meta.get("kind")),
         metadata_json=json.dumps(meta, ensure_ascii=False),
     )
 
@@ -476,18 +522,24 @@ def list_my_captures(
     user: User = Depends(get_current_user),
     limit: int = 50,
     offset: int = 0,
+    kind: str | None = None,
 ):
     """Liste des captures de l'utilisateur, la plus récente d'abord.
 
-    N'appartient pas au contrat de l'application (elle n'émet que des POST) : cette route
-    sert l'interface embarquée, qui choisit la photo à mesurer dans cet historique.
+    N'appartient pas au contrat de l'application (elle n'émet que des POST) : cette route sert
+    l'interface embarquée, qui choisit les photos à centrer dans cet historique.
+
+    `kind` permet de demander directement « la dernière face » ou « le dernier profil » : c'est
+    exactement ce dont le centrage a besoin, et le faire ici évite au client de trier lui-même
+    une liste qui peut être longue.
     """
     limit = max(1, min(int(limit or 50), 200))
     offset = max(0, int(offset or 0))
-    rows = (db.query(Capture)
-              .filter(Capture.user_id == user.id)
-              .order_by(Capture.created_at.desc())
-              .offset(offset).limit(limit).all())
+    query = db.query(Capture).filter(Capture.user_id == user.id)
+    if kind is not None:
+        query = query.filter(Capture.kind == _kind(kind))
+    rows = (query.order_by(Capture.created_at.desc())
+                 .offset(offset).limit(limit).all())
     return [_summary(r) for r in rows]
 
 

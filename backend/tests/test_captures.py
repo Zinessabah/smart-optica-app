@@ -56,6 +56,7 @@ def _meta(client_id: str = "client-abc", **over) -> dict:
         "referenceIsCustom": False,
         "exifOrientation": 6,
         "angularSpeedDegreesPerSecond": 0.7,
+        "kind": "face",
     }
     m.update(over)
     return m
@@ -225,6 +226,59 @@ def test_une_reference_personnalisee_est_enregistree(client):
     r = _post(client, h, client_id="c-ref", meta=_meta("c-ref", referenceIsCustom=True))
     c = client.get(f"{BASE}/{r.json()['serverCaptureId']}", headers=h).json()
     assert c["referenceIsCustom"] is True
+
+
+# ── Genre de la capture : face ou profil ────────────────────────────────────────
+#
+# Le centrage digital exige les DEUX photos : la face donne les pupilles et le pont, le profil la
+# distance vertex et l'angle pantoscopique. Aucun calcul ne peut retrouver le genre — il vient du
+# geste de l'opticien. D'ou l'importance de ne JAMAIS en inventer un.
+
+def test_le_genre_de_la_capture_est_conserve(client):
+    h = _auth(client)
+    face = _post(client, h, client_id="c-face", meta=_meta("c-face", kind="face"))
+    profil = _post(client, h, client_id="c-profil", meta=_meta("c-profil", kind="profile"))
+
+    assert client.get(f"{BASE}/{face.json()['serverCaptureId']}", headers=h).json()["kind"] == "face"
+    assert client.get(f"{BASE}/{profil.json()['serverCaptureId']}",
+                      headers=h).json()["kind"] == "profile"
+
+
+def test_un_genre_absent_n_est_pas_invente(client):
+    """Une capture anterieure au champ n'a PAS de genre. La supposer « face » la ferait utiliser
+    comme telle par le centrage, et produirait une mesure fausse sans que rien ne le signale."""
+    h = _auth(client)
+    meta = _meta("c-sans-genre")
+    meta.pop("kind")
+    # `_post` calcule `sizeBytes` sur les octets reellement envoyes : sans cela l'envoi serait
+    # refuse pour une raison qui n'a rien a voir avec ce que ce test mesure.
+    r = _post(client, h, client_id="c-sans-genre", meta=meta)
+    assert r.status_code == 201, r.text
+    assert client.get(f"{BASE}/{r.json()['serverCaptureId']}", headers=h).json()["kind"] is None
+
+
+def test_un_genre_inconnu_est_refuse_et_devient_null(client):
+    """Valeur libre venue du client : on ne l'archive pas telle quelle. Une chaine arbitraire
+    finirait par servir de filtre sans qu'on sache ce qu'elle designe."""
+    h = _auth(client)
+    r = _post(client, h, client_id="c-genre-bizarre", meta=_meta("c-genre-bizarre", kind="oreille"))
+    assert r.status_code == 201, r.text
+    assert client.get(f"{BASE}/{r.json()['serverCaptureId']}", headers=h).json()["kind"] is None
+
+
+def test_le_filtre_par_genre_rend_la_derniere_capture_correspondante(client):
+    """C'est ce que le centrage demande : « la derniere face », « le dernier profil ». Le tri
+    cote serveur evite au client de parcourir une liste qui peut etre longue."""
+    h = _auth(client)
+    _post(client, h, client_id="f-1", meta=_meta("f-1", kind="face"))
+    _post(client, h, client_id="p-1", meta=_meta("p-1", kind="profile"))
+    _post(client, h, client_id="f-2", meta=_meta("f-2", kind="face"))
+
+    faces = client.get(f"{BASE}?kind=face&limit=1", headers=h).json()
+    profils = client.get(f"{BASE}?kind=profile&limit=1", headers=h).json()
+
+    assert len(faces) == 1 and faces[0]["clientCaptureId"] == "f-2", faces
+    assert len(profils) == 1 and profils[0]["clientCaptureId"] == "p-1", profils
 
 
 # ── Vérification de la taille annoncée ──────────────────────────────────────────
