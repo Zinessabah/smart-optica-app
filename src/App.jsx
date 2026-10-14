@@ -11,9 +11,29 @@ import HistoryPage from './pages/HistoryPage'
 import { getToken, fetchMe, clearSession } from './services/auth'
 import { serializeSession, restoreSession, isStepResumable, SESSION_KEY } from './core/sessionPersistence'
 import { readCaptureIds, loadCapturePair } from './core/captureBridge'
+import { isNativeApp, requestNativePhotos } from './core/nativeBridge'
 
 // ── Écran d'accueil simplifié ──
 function HomeScreen({ onStart, onHistory }) {
+  /**
+   * Bouton « Prendre 2 photos ».
+   *
+   * Deux chemins, et un seul est emprunte :
+   *
+   *  1. dans l'APPLICATION ANDROID, on demande l'appareil photo NATIF (jauges a bulle, deux genres
+   *     de capture, envoi vers le serveur). La camera du navigateur ne s'ouvrirait meme pas ici :
+   *     `getUserMedia` exige HTTPS, et le service est en HTTP.
+   *  2. dans un NAVIGATEUR, le pont est absent, `requestNativePhotos()` rend `false`, et on suit
+   *     exactement le chemin d'avant.
+   *
+   * L'ordre compte : on demande le natif EN PREMIER, et on ne bascule sur le navigateur que s'il
+   * n'a pas repondu. Un pont present mais en echec rend `false`, donc l'utilisateur n'est jamais
+   * laisse devant un bouton sans effet.
+   */
+  const handleTakeTwoPhotos = useCallback(() => {
+    if (requestNativePhotos()) return
+    onStart('camera')
+  }, [onStart])
   const card = "flex flex-col items-center rounded-2xl border cursor-pointer transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]"
   return (
     <div className="space-y-4 animate-fade-in">
@@ -26,14 +46,18 @@ function HomeScreen({ onStart, onHistory }) {
         </p>
       </div>
 
-      <button onClick={() => onStart('camera')} className={card}
+      <button onClick={handleTakeTwoPhotos} className={card}
         style={{ background: 'var(--color-card)', borderColor: 'var(--color-border)' }}>
         <div className="flex flex-col items-center py-12 px-6" style={{ minHeight: 180 }}>
           <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-4" style={{ background: 'var(--color-gold-bg)' }}>
             <Camera size={28} style={{ color: 'var(--color-gold)' }} />
           </div>
           <span className="text-base font-medium" style={{ color: 'var(--color-text)' }}>Prendre 2 photos</span>
-          <span className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>Face + Profil avec l'appareil</span>
+          <span className="text-xs mt-1" style={{ color: 'var(--color-text-muted)' }}>
+            {isNativeApp()
+              ? 'Face + Profil, caméra à niveaux'
+              : "Face + Profil avec l'appareil"}
+          </span>
         </div>
       </button>
 
