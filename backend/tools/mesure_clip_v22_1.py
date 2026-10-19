@@ -15,7 +15,8 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-BANDE_FACIALE_Y = (0.00, 0.12)     # sièges à +0,050 (v22.1), tolérance d'épaisseur
+BANDE_FACIALE_Y = (0.00, 0.12)     # sièges à +0,050 (v22.1) ; 0,000 sur la v22 à inserts
+BANDE_LATERALE_X = (76.70, 76.80)  # lèvre du collier latéral, au plan de la face interne du bras
 
 
 def lire_sommets_binaire(chemin: str) -> np.ndarray:
@@ -94,6 +95,39 @@ def mesurer(chemin: str) -> List[Dict]:
                     "y_min": float(g[:, 1].min()), "y_max": float(g[:, 1].max()),
                     "n": len(g)})
     return sorted(out, key=lambda m: (m["z"], m["x"]))
+
+
+def mesurer_laterales(chemin: str) -> List[Dict]:
+    """Les mires latérales d'un bras : cercles dans le plan (y, z), à |x| ≈ 76,75.
+
+    Même méthode que les faciales — ajustement de cercle sur la lèvre du collier —
+    mais le plan de coupe est celui de la face INTERNE du bras : on isole les
+    sommets à |x| ∈ [76,70 ; 76,80] et on ajuste dans (y, z).
+
+    ⚠️ Ce sont des INSERTS sur la v22 (6 latéraux, documentés « 5 faciaux + 6
+    latéraux »), donc le plan des faces est |x| = 76,75 et le CENTRE des disques
+    |x| = 76,00. C'est 76,75 qui porte le vertex.
+    """
+    V = lire_sommets_binaire(chemin)
+    bande = V[(np.abs(V[:, 0]) >= BANDE_LATERALE_X[0]) & (np.abs(V[:, 0]) <= BANDE_LATERALE_X[1])]
+    out = []
+    for g in composantes(bande, rayon=1.0, min_sommets=16):
+        cy0, cz0 = g[:, 1].mean(), g[:, 2].mean()
+        r0 = np.hypot(g[:, 1] - cy0, g[:, 2] - cz0)
+        levre = g[r0 > r0.max() - 0.6]
+        if len(levre) < 8:
+            continue
+        x, y, z = levre[:, 0], levre[:, 1], levre[:, 2]
+        A = np.column_stack([2 * y, 2 * z, np.ones(len(y))])
+        sol, *_ = np.linalg.lstsq(A, y * y + z * z, rcond=None)
+        cy, cz, c = sol
+        r = math.sqrt(max(c + cy * cy + cz * cz, 0.0))
+        res = float(np.sqrt(np.mean((np.hypot(y - cy, z - cz) - r) ** 2)))
+        if res > 0.35 or not (5.0 < r < 9.0):
+            continue
+        out.append({"x": float(np.mean(np.abs(x))), "y": cy, "z": cz, "r": r,
+                    "residu": res, "n": len(g)})
+    return sorted(out, key=lambda m: m["y"])
 
 
 if __name__ == "__main__":

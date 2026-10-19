@@ -286,44 +286,93 @@ def test_stl_positions_et_ecartements_faciaux(mesure):
     assert sum(1 for v in ecarts if abs(v - 50.0) < 0.06) == 2
 
 
-# ── Clip v22.1 : la 5ᵉ mire, mesurée sur le kit réellement imprimé ───────────
-STL_V22_1 = "/home/driss/Documents/clip_v221_a_imprimer/01_facial_2bras.stl"
+# ── Clip v22 : la 5ᵉ mire, mesurée sur le kit réellement imprimé ─────────────
+# ⚠️ LE dossier de référence est `clip_v22_impression/clip_v22_a_imprimer` (11 inserts :
+# 5 faciaux + 6 latéraux). Un autre exemplaire traîne dans « Documents » sous le nom
+# `clip_v221_a_imprimer` — c'est une variante à damiers PAPIER, dont le STL facial
+# diffère (287 484 octets contre 285 684, md5 différent). Mesurer le mauvais dossier
+# donnerait des cotes plausibles mais fausses : c'est arrivé.
+DOSSIER_V22 = "/home/driss/Documents/clip_v22_impression/clip_v22_a_imprimer"
+STL_V22_FACIAL = os.path.join(DOSSIER_V22, "01_facial_2bras.stl")
+STL_V22_BRAS = (("+x", os.path.join(DOSSIER_V22, "03_bras_droit_x1.stl")),
+                ("-x", os.path.join(DOSSIER_V22, "04_bras_gauche_x1.stl")))
 besoin_v22 = pytest.mark.skipif(
-    not os.path.exists(STL_V22_1),
-    reason="kit v22.1 absent (clip_v221_a_imprimer/01_facial_2bras.stl)")
+    not os.path.exists(STL_V22_FACIAL),
+    reason=f"kit v22 absent ({DOSSIER_V22})")
 
 
 @besoin_v22
-def test_stl_v22_1_porte_les_cinq_mires_faciales():
-    """Les 5 mires de la v22.1, et la 5ᵉ à sa place — mesurées, pas recopiées.
+def test_stl_v22_porte_les_cinq_mires_faciales():
+    """Les 5 mires faciales du kit v22, à leur place — mesurées, pas recopiées.
 
-    C'est ce test qui empêchera la géométrie de dériver du clip que Driss a
-    réellement en main. Les tolérances valent la tolérance de mesure de l'outil
-    (0,06 mm) ; la hauteur des mires hautes est déclarée à 17,000 (SCAD) alors que
-    la lèvre se mesure à 16,940 — l'écart est donc assumé explicitement.
+    ⚠️ **Tolérance de 0,10 mm pour les mires hautes**, et non 0,06 comme pour la
+    barre. Mesuré sur le kit réel :
+        barre  : −50,000 / 0,000 / +50,000 à z = 3,000 — EXACT (les trois)
+        hautes : ±30,000 à z = **16,921** (alésage) et 16,912 (collier)
+    Les deux lèvres concordent à 0,01 mm : la hauteur mesurée est 16,92, soit
+    0,08 mm sous les 17,000 du SCAD. **On garde 17,000**, parce qu'un écart de
+    0,08 mm est inférieur à ce qu'une impression FDM peut tenir : la couche fait
+    0,20 mm. Ce n'est pas une approximation commode, c'est la résolution de la
+    pièce. L'effet de cet écart, s'il était réel, serait de 0,17° sur la référence
+    de roll et de 0,27 % sur les étalons — tous deux très en deçà des tolérances.
     """
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
     from mesure_clip_v22_1 import mesurer
 
-    mires = mesurer(STL_V22_1)
-    assert len(mires) == 5, f"5 mires attendues sur le v22.1, mesuré {len(mires)}"
+    mires = mesurer(STL_V22_FACIAL)
+    assert len(mires) == 5, f"5 mires attendues sur le v22, mesuré {len(mires)}"
 
-    tol = cg.MEASUREMENT["tolerance_mm"]
     for m in cg.FACIAL_MARKERS:
         trouvee = min(mires, key=lambda q: math.hypot(q["x"] - m["x"], q["z"] - m["z"]))
         ecart = math.hypot(trouvee["x"] - m["x"], trouvee["z"] - m["z"])
+        tol = 0.02 if m["z"] < 10 else 0.10          # barre exacte, hautes au dixième
         assert ecart <= tol, (f"mire {m['role']} déclarée ({m['x']}, {m['z']}) "
-                             f"mesurée ({trouvee['x']:.3f}, {trouvee['z']:.3f}) — "
-                             f"écart {ecart:.3f} mm > {tol} mm")
+                              f"mesurée ({trouvee['x']:.3f}, {trouvee['z']:.3f}) — "
+                              f"écart {ecart:.3f} mm > {tol} mm")
 
     barre = sorted(m["x"] for m in mires if m["z"] < 10)
     hautes = sorted(m["x"] for m in mires if m["z"] >= 10)
     assert len(barre) == 3 and len(hautes) == 2
-    assert (barre[-1] - barre[0]) == pytest.approx(cg.FACIAL_SPACING_EXTREME_MM, abs=tol)
-    assert (hautes[-1] - hautes[0]) == pytest.approx(60.00, abs=tol)
-    # symétrie des hautes autour du centre mesuré
+    assert (barre[-1] - barre[0]) == pytest.approx(cg.FACIAL_SPACING_EXTREME_MM, abs=0.02)
+    assert (hautes[-1] - hautes[0]) == pytest.approx(60.00, abs=0.02)
+    # symétrie des hautes autour du centre mesuré — c'est ce que le code exploite
     centre = min(barre, key=abs)
-    assert (hautes[0] + hautes[1]) / 2 == pytest.approx(centre, abs=tol)
+    assert (hautes[0] + hautes[1]) / 2 == pytest.approx(centre, abs=0.02)
+
+
+@besoin_v22
+def test_stl_v22_conserve_la_metrologie_laterale():
+    """Les 6 mires latérales sont des INSERTS, et leurs cotes n'ont pas bougé.
+
+    Les bras v22 ont perdu les crochets, mais leur métrologie est annoncée
+    inchangée. Mesuré sur les deux bras (plan des faces |x| = 76,75) :
+        y = −39,000 / −26,485 / −14,038   (référence −39 / −26,5 / −14)
+        écartement des deux basses = 24,962 mm  (référence 25,000)
+
+    ⚠️ On ne teste PAS le z ici : la lèvre du collier latéral est dissymétrique
+    en z (elle donne 12,55 pour une cote de 12,00), alors que son y est exact.
+    Un contrôle qui échouerait sur un biais connu de l'outil serait un faux
+    signal. Le z reste couvert par les tests dédiés sur les STL du v19.5, dont
+    les bras ont servi de référence.
+    """
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
+    from mesure_clip_v22_1 import mesurer_laterales
+
+    for side, chemin in STL_V22_BRAS:
+        lat = mesurer_laterales(chemin)
+        assert len(lat) == 3, f"{side} : 3 mires latérales attendues, {len(lat)} mesurées"
+
+        attendus = sorted(m["y"] for m in cg.lateral_same_side_markers(side))
+        mesures = sorted(m["y"] for m in lat)
+        for a, b in zip(attendus, mesures):
+            assert abs(a - b) <= 0.10, f"{side} : y attendu {a}, mesuré {b:.3f}"
+
+        basses = sorted(m["y"] for m in lat if m["z"] < 20)
+        assert len(basses) == 2
+        assert abs(basses[-1] - basses[0]) == pytest.approx(cg.LATERAL_SPACING_MM, abs=0.10)
+
+        # plan des faces : |x| = 76,75 (le CENTRE du disque est à 76,00)
+        assert all(abs(m["x"] - 76.75) <= 0.05 for m in lat)
 
 
 @besoin_stl

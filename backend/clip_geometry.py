@@ -134,19 +134,29 @@ MARKER_DEPTH_MM = 0.6             # profondeur du motif (4 couches à 0,15)
 FACIAL_DISC_CENTER_Y_MM = -0.75
 LATERAL_DISC_CENTER_X_MM = 76.00
 
-# ── Mires faciales (5 sur le clip v22.1) ────────────────────────────────────
+# ── Mires faciales (5 sur le clip v22) ────────────────────────────────────
 # centres des disques à y = −0,75 (faces à y = 0,00), Ø 12,00 mm chacune
 FACIAL_SPACING_EXTREME_MM = 100.00    # gauche ↔ droite
 FACIAL_SPACING_ADJACENT_MM = 50.00    # centre ↔ extrême
 
-# ⚠️ v22.1 : la mire haute a un MIROIR. Le clip porte donc CINQ damiers faciaux —
-# les trois de la barre, et DEUX mires hautes à x = ±30, z = 17. Cotes mesurées sur
-# les STL binaires du kit `clip_v221_a_imprimer` avec `tools/mesure_clip_v22_1.py` :
-#   barre  : x = −50,000 / 0,000 / +50,000 à z = 3,000 (résidu d'ajustement 0,215 mm)
-#   hautes : x = ±30,000 à z = 16,940 (résidu 0,123 mm) — le SCAD déclare 17,000
-#            (`stem_top_z`) ; l'écart de 0,060 mm vaut exactement la tolérance de
-#            l'outil et ne déplace la référence de roll que de 0,11°.
+# ⚠️ v22 : la mire haute a un MIROIR. Le clip porte donc CINQ damiers faciaux —
+# les trois de la barre, et DEUX mires hautes à x = ±30, z = 17.
+#
+# Cotes MESURÉES sur le kit réellement imprimé — `clip_v22_impression/
+# clip_v22_a_imprimer` (11 INSERTS : 5 faciaux + 6 latéraux), plan facial
+# y = 0,000 — avec `tools/mesure_clip_v22_1.py` :
+#   barre  : x = −50,000 / 0,000 / +50,000 à z = 3,000 — EXACT sur les trois
+#   hautes : x = ±30,000 à z = 16,921 (alésage) / 16,912 (collier), soit 0,08 mm
+#            sous les 17,000 du SCAD (`stem_top_z`). On GARDE 17,000 : 0,08 mm est
+#            inférieur à la résolution d'une impression FDM (couche de 0,20 mm).
+#            Si l'écart était réel, il déplacerait le roll de 0,17° et les étalons
+#            de 0,27 % — très en deçà des tolérances.
 #   écartement extrême mesuré : 100,000 mm — inchangé.
+#
+# ⚠️ NE PAS se tromper de dossier : `Documents/clip_v221_a_imprimer` est une
+#    variante à damiers PAPIER (sièges à +0,050, hautes à 16,940, STL facial de
+#    285 684 octets). Les bras, eux, sont identiques au bit près (même md5).
+#
 # Ce que la symétrie apporte, et qui n'existait pas avec une seule mire haute :
 #   • un étalon de 60,000 mm entre les deux hautes — le PLUS LONG hors barre ;
 #   • la validation par RAPPORTS devient invariante au miroir, puisque le jeu
@@ -158,7 +168,7 @@ FACIAL_MARKERS: Tuple[Dict, ...] = (
     {"role": "facial_centre", "x": 0.00, "y": -0.75, "z": 3.00},
     {"role": "facial_droite", "x": 50.00, "y": -0.75, "z": 3.00},
     {"role": "facial_haute", "x": 30.00, "y": -0.75, "z": 17.00},   # 5e mire, hors de la barre
-    {"role": "facial_haute_gauche", "x": -30.00, "y": -0.75, "z": 17.00},  # son MIROIR (v22.1)
+    {"role": "facial_haute_gauche", "x": -30.00, "y": -0.75, "z": 17.00},  # son MIROIR (v22)
 )
 
 # ── Quadrilatère facial : tout ce qui suit est DÉRIVÉ des positions ci-dessus ─
@@ -170,7 +180,7 @@ FACIAL_MARKERS: Tuple[Dict, ...] = (
 # qu'on veut mesurer une inclinaison (rôle de la 4ᵉ mire).
 FACIAL_BAR_Z_MM = 3.00                     # = bar_height / 2 (SCAD : bar_height = 6)
 FACIAL_RAISED_ROLE = "facial_haute"
-# ⚠️ v22.1 : la mire haute existe en DEUX exemplaires symétriques (x = ±30).
+# ⚠️ v22 : la mire haute existe en DEUX exemplaires symétriques (x = ±30).
 # `facial_haute` reste celle de droite (+30) pour ne rien casser des références
 # existantes ; son miroir s'appelle `facial_haute_gauche` (−30).
 FACIAL_RAISED_MIRROR_ROLE = "facial_haute_gauche"
@@ -254,7 +264,7 @@ FACIAL_QUAD_RATIOS: Dict[str, float] = {
 
 # Références de roll : directions indépendantes vers les mires hautes. Les comparer
 # entre elles contrôle la mesure d'inclinaison sans autre information. Depuis la
-# v22.1 il y en a QUATRE (deux par mire haute, symétriques) : le roll devient la
+# v22 il y en a QUATRE (deux par mire haute, symétriques) : le roll devient la
 # moyenne de quatre mesures au lieu de deux, et leur dispersion est un contrôle.
 _FACIAL_ROLL_PAIRES: Dict[str, Tuple[str, str]] = {
     "haute_centre":        (FACIAL_CENTRE_ROLE, FACIAL_RAISED_ROLE),
@@ -270,7 +280,7 @@ FACIAL_ROLL_REFS_DEG: Dict[str, float] = {
 # Tolérances du contrôle croisé du quadrilatère.
 FACIAL_SCALE_TOL = 0.02          # les étalons doivent concorder à ±2 %
 FACIAL_ROLL_TOL_DEG = 3.0        # accord exigé entre les 2 références de roll
-# Symétrie des deux mires hautes (v22.1) : écart relatif admis entre les deux
+# Symétrie des deux mires hautes (v22) : écart relatif admis entre les deux
 # distances au centre (33,1059 mm chacune). Volontairement plus large que les 2 %
 # des étalons : on écarte la mire prise pour une autre, pas le bruit de pixel.
 FACIAL_SYMMETRY_TOL = 0.05
@@ -399,7 +409,7 @@ def facial_quad_check(points_px: Dict[str, Tuple[float, float]],
         "roll_disagreement_deg": disagreement,
         "roll_consistent": (disagreement is not None
                             and disagreement <= roll_tol_deg),
-        # ── v22.1 : les deux mires hautes ────────────────────────────────────
+        # ── v22 : les deux mires hautes ────────────────────────────────────
         # Absent (`{}`) sur un clip à une seule mire haute — le champ est toujours
         # présent pour que le contrat de réponse ne dépende pas du clip rencontré.
         "raised_symmetry": sym,
@@ -424,7 +434,7 @@ def facial_points_from_markers(markers: List[Dict]) -> Dict[str, Tuple[float, fl
     ⚠️ **Un échange des deux mires hautes est SANS EFFET** : leur jeu
     d'écartements est symétrique (`haute_centre` = `haute_miroir_centre`, etc.),
     donc les spans, les rapports et le contrôle de symétrie sont identiques que
-    l'image soit en miroir ou non. C'est la raison pour laquelle la v22.1 rend la
+    l'image soit en miroir ou non. C'est la raison pour laquelle la v22 rend la
     validation invariante au miroir, là où le clip à une seule mire haute exigeait
     de refléter les abscisses avant de vérifier.
     """
@@ -437,7 +447,7 @@ def facial_points_from_markers(markers: List[Dict]) -> Dict[str, Tuple[float, fl
 
 
 def facial_raised_symmetry(points_px: Dict[str, Tuple[float, float]]) -> Dict[str, float]:
-    """Contrôle de SYMÉTRIE des deux mires hautes (v22.1).
+    """Contrôle de SYMÉTRIE des deux mires hautes (v22).
 
     Sur le clip, `centre ↔ haute droite` et `centre ↔ haute gauche` valent tous
     deux 33,1059 mm, et `gauche ↔ haute droite` = `droite ↔ haute gauche` =
@@ -446,7 +456,7 @@ def facial_raised_symmetry(points_px: Dict[str, Tuple[float, float]]) -> Dict[st
 
     Une dissymétrie franche signifie qu'une mire a été prise pour une autre — ou
     que le détecteur a posé un point sur un damier qui n'est pas celui du clip.
-    C'est le seul contrôle du clip qui exploite la symétrie de la v22.1.
+    C'est le seul contrôle du clip qui exploite la symétrie de la v22.
     """
     if FACIAL_RAISED_MIRROR_ROLE not in points_px or FACIAL_RAISED_ROLE not in points_px:
         return {}

@@ -584,9 +584,9 @@ def _best_facial_quadruplet(peaks: list, gray: np.ndarray, integral: np.ndarray,
         if y_4e < 0 or y_4e >= h:
             continue
 
-        # ── Les mires hautes : UNE (v19.5) ou DEUX (v22.1) ────────────────────
+        # ── Les mires hautes : UNE (v19.5) ou DEUX (v22) ────────────────────
         # On cherche des deux côtés du centre, et on garde ce qui est trouvé.
-        # La v22.1 porte deux mires hautes symétriques (x = ±30) : les trouver
+        # La v22 porte deux mires hautes symétriques (x = ±30) : les trouver
         # TOUTES LES DEUX n'est pas un confort, c'est ce qui donne l'étalon de
         # 60 mm et rend la validation invariante au miroir.
         trouvees = {}
@@ -630,7 +630,7 @@ def _best_facial_quadruplet(peaks: list, gray: np.ndarray, integral: np.ndarray,
         if abs(dy_mesure - dy_raised) > FACIAL_RAISED_TOL * dy_raised:
             continue                               # hauteur incompatible avec le clip
 
-        # ── La SECONDE mire haute (v22.1) doit être à la MÊME hauteur ────────
+        # ── La SECONDE mire haute (v22) doit être à la MÊME hauteur ────────
         # Deux garde-fous, pas un : la hauteur (c'est la signature d'une mire
         # haute) ET le score relatif. Les damiers du clip sont identiques et de
         # même orientation, donc un vrai damier corrèle aussi bien que l'autre ;
@@ -843,7 +843,7 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
                     m["x"], m["y"] = ref["x"], ref["y"]
             diag = clip.facial_quad_check(clip.facial_points_from_markers(
                 [{"x": float(m["x"]), "y": float(m["y"])} for m in quadruplet]))
-            # ⚠️ 4 OU 5 mires : depuis la v22.1 le clip porte DEUX mires hautes.
+            # ⚠️ 4 OU 5 mires : depuis la v22 le clip porte DEUX mires hautes.
             # Les écartements des deux hautes sont symétriques, donc les rapports
             # et la dispersion des étalons sont les mêmes quel que soit le côté où
             # chaque mire a été assignée — le test reste valable sans réordonner.
@@ -926,7 +926,7 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
                         "côté %s (attendu %s) — clip monté à l'envers, ou mire douteuse",
                         orientation_prise, info.get("cote_4e"), attendu)
     elif orientation_prise != clip.ORIENTATION_INDETERMINEE and len(best_quad) >= 5:
-        # v22.1 : les DEUX mires hautes rendent la géométrie symétrique, donc le
+        # v22 : les DEUX mires hautes rendent la géométrie symétrique, donc le
         # côté où tombe chaque mire haute n'est plus une information. Le contrôle
         # de cohérence « signature ↔ côté de la 4ᵉ mire » n'a plus d'objet : on
         # le remplace par le contrôle de SYMÉTRIE, plus fort (il porte sur des
@@ -954,11 +954,11 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
     #      91 % d'incohérence sur une géométrie pourtant parfaite (mesuré).
     # ⚠️ Les marqueurs PUBLIÉS restent aux positions réelles : on ne normalise que
     # pour la vérification.
-    # ⚠️ v22.1 : avec DEUX mires hautes, la réflexion ne change plus le JEU
+    # ⚠️ v22 : avec DEUX mires hautes, la réflexion ne change plus le JEU
     # d'écartements (il est symétrique). Elle reste utile pour le ROLL, dont les
     # quatre références sont signées.
     # ⚠️ QUELLE SOURCE pour le miroir ?
-    #   • 5 mires (v22.1) : la géométrie est SYMÉTRIQUE, donc le contrôle ne dépend
+    #   • 5 mires (v22) : la géométrie est SYMÉTRIQUE, donc le contrôle ne dépend
     #     plus du miroir ; seule la SIGNATURE des damiers compte, pour le signe du
     #     roll. C'est la source autoritaire (le clip porte l'information).
     #   • 4 mires : on garde le comportement historique — le côté où tombe la mire
@@ -998,7 +998,7 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
         if quad_diag.get("roll_deg") is not None:
             quad_diag["roll_deg"] = -quad_diag["roll_deg"]
 
-    # 4 OU 5 mires (v22.1). La SYMÉTRIE des deux mires hautes s'ajoute aux
+    # 4 OU 5 mires (v22). La SYMÉTRIE des deux mires hautes s'ajoute aux
     # critères existants : une dissymétrie franche signifie qu'une mire a été
     # prise pour une autre, donc que les points ne sont pas ceux du clip.
     # `raised_symmetric` vaut None sur un clip à une seule mire haute — absence
