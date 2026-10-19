@@ -309,8 +309,8 @@ Y_BARRE = 700
 
 
 def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE, avec_4e=True, cote_4e=1,
-                miroir=False):
-    """Image synthétique du clip : 3 mires alignées + (option) la 4ᵉ surélevée.
+                miroir=False, avec_5e=False):
+    """Image synthétique du clip : 3 mires alignées + (option) les mires surélevées.
 
     `avec_4e=False` reproduit un clip à **3 mires faciales seulement** — le cas des
     photos réelles disponibles (3 damiers alignés, aucune mire surélevée).
@@ -318,6 +318,8 @@ def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE, avec_4e=True, cote_4e=
     prise en MIROIR (selfie iOS), où le clip apparaît retourné.
     `miroir=True` retourne VRAIMENT l'image (`np.fliplr`) : la signature des quadrants
     s'inverse alors (NE+SO sombres au lieu de NO+SE), exactement comme sur un selfie.
+    `avec_5e=True` ajoute la SECONDE mire surélevée, symétrique : c'est le clip
+    **v22.1**, qui porte cinq damiers faciaux (x = ±30 au lieu de +30 seul).
     """
     if dy_mm is None:
         dy_mm = clip.FACIAL_RAISED_Z_GAP_MM
@@ -335,6 +337,12 @@ def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE, avec_4e=True, cote_4e=
         for (sx, sy) in ((-1, -1), (1, 1)):
             img[y4 + (0 if sy > 0 else -demi):y4 + (demi if sy > 0 else 0),
                 x4 + (0 if sx > 0 else -demi):x4 + (demi if sx > 0 else 0)] = 30
+    if avec_5e:
+        # la mire haute symétrique — exactement à la même hauteur, à l'opposé du centre
+        x5 = xs[1] - cote_4e * int(round(0.6 * ecart))
+        for (sx, sy) in ((-1, -1), (1, 1)):
+            img[y4 + (0 if sy > 0 else -demi):y4 + (demi if sy > 0 else 0),
+                x5 + (0 if sx > 0 else -demi):x5 + (demi if sx > 0 else 0)] = 30
     if miroir:
         img = np.fliplr(img)
         xs = [W - 1 - x for x in xs]
@@ -343,10 +351,10 @@ def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE, avec_4e=True, cote_4e=
 
 
 def _detecte(dy_mm=None, y_barre=Y_BARRE, known_scale=SCALE, avec_4e=True, cote_4e=1,
-             miroir=False):
+             miroir=False, avec_5e=False):
     return main.detect_facial_quadruplet(
         _image_clip(dy_mm, y_barre, avec_4e=avec_4e, cote_4e=cote_4e,
-                    miroir=miroir)[0],
+                    miroir=miroir, avec_5e=avec_5e)[0],
         Y_BARRE, 100, 1100, known_scale)
 
 
@@ -579,3 +587,54 @@ def test_refine_marker_2d_rend_le_centre_reel_du_damier():
         # seuils, qui portent sur l'écart vertical de 14 mm à 15 % près.
         assert abs(r["y"] - y_vrai) <= 3, f"y {r['y']} vs {y_vrai}"
         assert r["x"] == cx
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Clip v22.1 — DEUX mires hautes (cinq damiers faciaux)
+# ════════════════════════════════════════════════════════════════════════════
+
+def test_bout_en_bout_cinq_mires_rendent_cinq_points():
+    """Le clip v22.1 porte DEUX mires hautes : le détecteur doit rendre 5 points.
+
+    Ce que la seconde mire apporte, et qui est vérifié ici :
+      • un point de plus dans la réponse (l'app n'en pose que 3, rien ne change pour elle) ;
+      • l'étalon de 60,000 mm entre les deux hautes — le plus long hors barre ;
+      • un contrôle de SYMÉTRIE, qui n'existait pas avec une mire seule.
+    """
+    r = _detecte(avec_5e=True)
+    d = r["facial_quad_check"]
+
+    assert len(r["markers"]) == 5, "cinq damiers faciaux sur le clip v22.1"
+    assert d["n_points"] == 5
+    assert d["n_raised"] == 2
+    assert d["quad_valid"] is True
+
+    # La symétrie : les deux distances au centre doivent coïncider.
+    assert d["raised_symmetric"] is True
+    assert d["raised_symmetry"]["dissymetrie_max"] < clip.FACIAL_SYMMETRY_TOL
+
+    # L'étalon de 60 mm est présent et exploité.
+    assert "entre_hautes" in d["scale_by_span"]
+    assert d["scale_by_span"]["entre_hautes"] == pytest.approx(
+        clip.FACIAL_QUAD_SPANS_MM["entre_hautes"] / (60.0 / SCALE), rel=0.03)
+
+    # L'échelle reste juste, et la médiane porte maintenant sur 9 étalons au lieu de 5.
+    assert r["scale_mm_per_px"] == pytest.approx(SCALE, rel=0.01)
+    assert len(d["scale_by_span"]) == 9
+
+
+def test_cinq_mires_et_quatre_mires_donnent_la_meme_echelle():
+    """La 5ᵉ mire ne doit RIEN changer aux grandeurs déjà mesurées.
+
+    C'est le test de non-régression qui compte : un clip v19.5 (une mire haute) et
+    un clip v22.1 (deux) doivent produire la même échelle sur la même prise de vue.
+    """
+    r4 = _detecte(avec_5e=False)
+    r5 = _detecte(avec_5e=True)
+    assert len(r4["markers"]) == 4 and len(r5["markers"]) == 5
+    assert r4["scale_mm_per_px"] == pytest.approx(r5["scale_mm_per_px"], rel=0.005)
+    # le roll est la moyenne de 2 références en v19.5, de 4 en v22.1
+    assert len(r4["facial_quad_check"]["roll_by_ref"]) == 2
+    assert len(r5["facial_quad_check"]["roll_by_ref"]) == 4
+    assert r4["facial_quad_check"]["roll_deg"] == pytest.approx(
+    r5["facial_quad_check"]["roll_deg"], abs=0.5)

@@ -8,6 +8,7 @@ Deux niveaux :
 import math
 import os
 import pathlib
+import sys
 
 import pytest
 
@@ -99,17 +100,30 @@ def test_triangle_lateral_isoceles_et_rapport_1232():
 
 
 def test_mires_faciales_et_ecartements():
-    """4 mires faciales coplanaires, 100 mm entre les extrêmes, 50 mm avec le centre."""
+    """5 mires faciales coplanaires : 100 mm entre les extrêmes, 50 mm avec le centre,
+    et depuis la v22.1 une mire haute à x = +30 **et son miroir** à x = −30.
+    """
     roles = {m["role"]: (m["x"], m["z"]) for m in cg.FACIAL_MARKERS}
-    assert len(roles) == 4
+    assert len(roles) == 5
     gauche, centre, droite, haute = (roles["facial_gauche"], roles["facial_centre"],
-                                    roles["facial_droite"], roles["facial_haute"])
+                                     roles["facial_droite"], roles["facial_haute"])
+    miroir = roles[cg.FACIAL_RAISED_MIRROR_ROLE]
 
     assert math.dist(gauche, droite) == pytest.approx(cg.FACIAL_SPACING_EXTREME_MM)
     assert math.dist(gauche, centre) == pytest.approx(cg.FACIAL_SPACING_ADJACENT_MM)
     assert math.dist(centre, droite) == pytest.approx(cg.FACIAL_SPACING_ADJACENT_MM)
     assert gauche[1] == centre[1] == droite[1] == 3.0        # barre alignée
-    assert haute[1] == 17.0 and haute[0] == 30.0             # 4e mire, surélevée
+    assert haute[1] == 17.0 and haute[0] == 30.0             # mire haute, surélevée
+
+    # ── Le miroir (v22.1) ───────────────────────────────────────────────────
+    assert miroir == (-30.0, 17.0)
+    assert miroir[1] == haute[1]                   # même hauteur
+    assert miroir[0] == -haute[0]                  # symétrique par rapport à l'axe
+    assert math.dist(miroir, haute) == pytest.approx(60.00)   # l'étalon le plus long
+    # Les deux distances au centre sont ÉGALES : c'est ce qui rend le contrôle de
+    # symétrie possible, et la validation invariante au miroir.
+    assert math.dist(miroir, centre) == pytest.approx(math.dist(haute, centre))
+    assert set(cg.FACIAL_RAISED_ROLES) == {"facial_haute", cg.FACIAL_RAISED_MIRROR_ROLE}
 
 
 def test_ecart_vertical_de_la_4e_mire_vaut_14_et_pas_17():
@@ -249,15 +263,67 @@ def test_stl_positions_laterales(mesure):
 
 @besoin_stl
 def test_stl_positions_et_ecartements_faciaux(mesure):
+    """Les 4 mires faciales du STL v19.5, et l'ABSENCE du miroir sur ce clip-là.
+
+    ⚠️ Le sens du contrôle a changé avec la v22.1 : ce n'est plus « toute mire
+    déclarée doit exister sur le STL » (le v19.5 n'a qu'une mire haute), mais
+    « toute position trouvée sur le STL doit correspondre à une mire déclarée ».
+    Un STL est la vérité de ce qu'il contient ; le code doit savoir lire les deux.
+    """
     plans = [(round(m["plan"][0], 1), round(m["plan"][1], 1)) for m in mesure["faciales"]]
-    assert len(plans) == 4
-    for m in cg.FACIAL_MARKERS:
-        assert any(abs(m["x"] - x) <= 0.1 and abs(m["z"] - z) <= 0.1 for x, z in plans), \
-            f"mire faciale {m['x']},{m['z']} absente (trouvé {plans})"
+
+    for x, z in plans:
+        assert any(abs(m["x"] - x) <= 0.1 and abs(m["z"] - z) <= 0.1
+                   for m in cg.FACIAL_MARKERS), \
+            f"position ({x}, {z}) trouvée sur le STL mais absente de FACIAL_MARKERS"
+
+    assert len(plans) == 4, "le clip v19.5 porte QUATRE mires faciales"
+    assert not any(abs(x + 30.0) <= 0.1 and abs(z - 17.0) <= 0.1 for x, z in plans), \
+        "le v19.5 n'a pas de mire haute gauche : le miroir est une addition de la v22.1"
 
     ecarts = [v for v in mesure["ecartements_faciaux"].values() if v > 1]
     assert min(ecarts, key=lambda v: abs(v - 100)) == pytest.approx(100.0, abs=0.06)
     assert sum(1 for v in ecarts if abs(v - 50.0) < 0.06) == 2
+
+
+# ── Clip v22.1 : la 5ᵉ mire, mesurée sur le kit réellement imprimé ───────────
+STL_V22_1 = "/home/driss/Documents/clip_v221_a_imprimer/01_facial_2bras.stl"
+besoin_v22 = pytest.mark.skipif(
+    not os.path.exists(STL_V22_1),
+    reason="kit v22.1 absent (clip_v221_a_imprimer/01_facial_2bras.stl)")
+
+
+@besoin_v22
+def test_stl_v22_1_porte_les_cinq_mires_faciales():
+    """Les 5 mires de la v22.1, et la 5ᵉ à sa place — mesurées, pas recopiées.
+
+    C'est ce test qui empêchera la géométrie de dériver du clip que Driss a
+    réellement en main. Les tolérances valent la tolérance de mesure de l'outil
+    (0,06 mm) ; la hauteur des mires hautes est déclarée à 17,000 (SCAD) alors que
+    la lèvre se mesure à 16,940 — l'écart est donc assumé explicitement.
+    """
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
+    from mesure_clip_v22_1 import mesurer
+
+    mires = mesurer(STL_V22_1)
+    assert len(mires) == 5, f"5 mires attendues sur le v22.1, mesuré {len(mires)}"
+
+    tol = cg.MEASUREMENT["tolerance_mm"]
+    for m in cg.FACIAL_MARKERS:
+        trouvee = min(mires, key=lambda q: math.hypot(q["x"] - m["x"], q["z"] - m["z"]))
+        ecart = math.hypot(trouvee["x"] - m["x"], trouvee["z"] - m["z"])
+        assert ecart <= tol, (f"mire {m['role']} déclarée ({m['x']}, {m['z']}) "
+                             f"mesurée ({trouvee['x']:.3f}, {trouvee['z']:.3f}) — "
+                             f"écart {ecart:.3f} mm > {tol} mm")
+
+    barre = sorted(m["x"] for m in mires if m["z"] < 10)
+    hautes = sorted(m["x"] for m in mires if m["z"] >= 10)
+    assert len(barre) == 3 and len(hautes) == 2
+    assert (barre[-1] - barre[0]) == pytest.approx(cg.FACIAL_SPACING_EXTREME_MM, abs=tol)
+    assert (hautes[-1] - hautes[0]) == pytest.approx(60.00, abs=tol)
+    # symétrie des hautes autour du centre mesuré
+    centre = min(barre, key=abs)
+    assert (hautes[0] + hautes[1]) / 2 == pytest.approx(centre, abs=tol)
 
 
 @besoin_stl

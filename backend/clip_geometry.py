@@ -134,16 +134,31 @@ MARKER_DEPTH_MM = 0.6             # profondeur du motif (4 couches à 0,15)
 FACIAL_DISC_CENTER_Y_MM = -0.75
 LATERAL_DISC_CENTER_X_MM = 76.00
 
-# ── Mires faciales (4) ───────────────────────────────────────────────────────
+# ── Mires faciales (5 sur le clip v22.1) ────────────────────────────────────
 # centres des disques à y = −0,75 (faces à y = 0,00), Ø 12,00 mm chacune
 FACIAL_SPACING_EXTREME_MM = 100.00    # gauche ↔ droite
 FACIAL_SPACING_ADJACENT_MM = 50.00    # centre ↔ extrême
 
+# ⚠️ v22.1 : la mire haute a un MIROIR. Le clip porte donc CINQ damiers faciaux —
+# les trois de la barre, et DEUX mires hautes à x = ±30, z = 17. Cotes mesurées sur
+# les STL binaires du kit `clip_v221_a_imprimer` avec `tools/mesure_clip_v22_1.py` :
+#   barre  : x = −50,000 / 0,000 / +50,000 à z = 3,000 (résidu d'ajustement 0,215 mm)
+#   hautes : x = ±30,000 à z = 16,940 (résidu 0,123 mm) — le SCAD déclare 17,000
+#            (`stem_top_z`) ; l'écart de 0,060 mm vaut exactement la tolérance de
+#            l'outil et ne déplace la référence de roll que de 0,11°.
+#   écartement extrême mesuré : 100,000 mm — inchangé.
+# Ce que la symétrie apporte, et qui n'existait pas avec une seule mire haute :
+#   • un étalon de 60,000 mm entre les deux hautes — le PLUS LONG hors barre ;
+#   • la validation par RAPPORTS devient invariante au miroir, puisque le jeu
+#     d'écartements est identique à gauche et à droite ;
+#   • un contrôle de SYMÉTRIE : centre ↔ haute gauche et centre ↔ haute droite
+#     doivent être égaux, sinon une mire a été prise pour une autre.
 FACIAL_MARKERS: Tuple[Dict, ...] = (
     {"role": "facial_gauche", "x": -50.00, "y": -0.75, "z": 3.00},
     {"role": "facial_centre", "x": 0.00, "y": -0.75, "z": 3.00},
     {"role": "facial_droite", "x": 50.00, "y": -0.75, "z": 3.00},
-    {"role": "facial_haute", "x": 30.00, "y": -0.75, "z": 17.00},   # 4e mire, hors de la barre
+    {"role": "facial_haute", "x": 30.00, "y": -0.75, "z": 17.00},   # 5e mire, hors de la barre
+    {"role": "facial_haute_gauche", "x": -30.00, "y": -0.75, "z": 17.00},  # son MIROIR (v22.1)
 )
 
 # ── Quadrilatère facial : tout ce qui suit est DÉRIVÉ des positions ci-dessus ─
@@ -155,6 +170,11 @@ FACIAL_MARKERS: Tuple[Dict, ...] = (
 # qu'on veut mesurer une inclinaison (rôle de la 4ᵉ mire).
 FACIAL_BAR_Z_MM = 3.00                     # = bar_height / 2 (SCAD : bar_height = 6)
 FACIAL_RAISED_ROLE = "facial_haute"
+# ⚠️ v22.1 : la mire haute existe en DEUX exemplaires symétriques (x = ±30).
+# `facial_haute` reste celle de droite (+30) pour ne rien casser des références
+# existantes ; son miroir s'appelle `facial_haute_gauche` (−30).
+FACIAL_RAISED_MIRROR_ROLE = "facial_haute_gauche"
+FACIAL_RAISED_ROLES = (FACIAL_RAISED_MIRROR_ROLE, FACIAL_RAISED_ROLE)
 FACIAL_CENTRE_ROLE = "facial_centre"
 FACIAL_BAR_ROLES = ("facial_gauche", FACIAL_CENTRE_ROLE, "facial_droite")
 
@@ -198,15 +218,33 @@ FACIAL_RAISED_Z_GAP_MM = facial_marker(FACIAL_RAISED_ROLE)["z"] - FACIAL_BAR_Z_M
 FACIAL_RAISED_X_FROM_CENTRE_MM = (facial_marker(FACIAL_RAISED_ROLE)["x"]
                                   - facial_marker(FACIAL_CENTRE_ROLE)["x"])
 
-# Écartements du quadrilatère, en mm, nommés par le couple qu'ils joignent.
+# ── Les couples de mires qui portent un étalon : la SEULE liste à tenir à jour ──
+# Tout le reste (écartements, rapports, contrôles) en est dérivé. Ils étaient
+# auparavant écrits deux fois — une fois pour les spans, une fois pour les paires —
+# et le commentaire promettait déjà « une seule liste ». Il n'y en a plus qu'une.
+_FACIAL_PAIRES: Dict[str, Tuple[str, str]] = {
+    "extreme":            ("facial_gauche", "facial_droite"),
+    "adjacente":          (FACIAL_CENTRE_ROLE, "facial_droite"),
+    # vers la mire haute droite (x = +30)
+    "haute_centre":       (FACIAL_CENTRE_ROLE, FACIAL_RAISED_ROLE),
+    "haute_droite":       ("facial_droite", FACIAL_RAISED_ROLE),
+    "haute_gauche":       ("facial_gauche", FACIAL_RAISED_ROLE),
+    # vers son MIROIR (x = −30) — même jeu d'écartements, d'où l'invariance au miroir
+    "haute_miroir_centre":  (FACIAL_CENTRE_ROLE, FACIAL_RAISED_MIRROR_ROLE),
+    "haute_miroir_gauche":  ("facial_gauche", FACIAL_RAISED_MIRROR_ROLE),
+    "haute_miroir_droite":  ("facial_droite", FACIAL_RAISED_MIRROR_ROLE),
+    # ⚠️ 60,000 mm : l'étalon le PLUS LONG hors barre (contre 50 mm pour une
+    # adjacente). Sur une photo de face, le bruit de pixel s'y rapporte le moins —
+    # c'est le meilleur estimateur d'échelle du clip, et il n'existait pas avant
+    # que la mire haute ait son miroir.
+    "entre_hautes":       (FACIAL_RAISED_MIRROR_ROLE, FACIAL_RAISED_ROLE),
+}
+
+# Écartements connus, en mm, nommés par le couple qu'ils joignent.
 # `extreme` (100,00 mm) est l'étalon de référence : les rapports ci-dessous sont
 # INVARIANTS D'ÉCHELLE, donc vérifiables sans connaître les mm/px.
 FACIAL_QUAD_SPANS_MM: Dict[str, float] = {
-    "extreme":      facial_span_mm("facial_gauche", "facial_droite"),
-    "adjacente":    facial_span_mm(FACIAL_CENTRE_ROLE, "facial_droite"),
-    "haute_centre": facial_span_mm(FACIAL_CENTRE_ROLE, FACIAL_RAISED_ROLE),
-    "haute_droite": facial_span_mm("facial_droite", FACIAL_RAISED_ROLE),
-    "haute_gauche": facial_span_mm("facial_gauche", FACIAL_RAISED_ROLE),
+    nom: facial_span_mm(ra, rb) for nom, (ra, rb) in _FACIAL_PAIRES.items()
 }
 
 FACIAL_QUAD_RATIOS: Dict[str, float] = {
@@ -214,26 +252,28 @@ FACIAL_QUAD_RATIOS: Dict[str, float] = {
     for name, span in FACIAL_QUAD_SPANS_MM.items()
 }
 
-# Références de roll : deux directions indépendantes vers la 4ᵉ mire. Les
-# comparer entre elles contrôle la mesure d'inclinaison sans autre information.
-FACIAL_ROLL_REFS_DEG: Dict[str, float] = {
-    "haute_centre": facial_direction_deg(FACIAL_CENTRE_ROLE, FACIAL_RAISED_ROLE),
-    "haute_gauche": facial_direction_deg("facial_gauche", FACIAL_RAISED_ROLE),
+# Références de roll : directions indépendantes vers les mires hautes. Les comparer
+# entre elles contrôle la mesure d'inclinaison sans autre information. Depuis la
+# v22.1 il y en a QUATRE (deux par mire haute, symétriques) : le roll devient la
+# moyenne de quatre mesures au lieu de deux, et leur dispersion est un contrôle.
+_FACIAL_ROLL_PAIRES: Dict[str, Tuple[str, str]] = {
+    "haute_centre":        (FACIAL_CENTRE_ROLE, FACIAL_RAISED_ROLE),
+    "haute_gauche":        ("facial_gauche", FACIAL_RAISED_ROLE),
+    "haute_miroir_centre": (FACIAL_CENTRE_ROLE, FACIAL_RAISED_MIRROR_ROLE),
+    "haute_miroir_droite": ("facial_droite", FACIAL_RAISED_MIRROR_ROLE),
 }
 
-# Les couples de mires qui portent un étalon, dans l'ordre (rôle A, rôle B).
-# Chaque entrée de FACIAL_QUAD_SPANS_MM en vient : une seule liste à tenir à jour.
-_FACIAL_PAIRES: Dict[str, Tuple[str, str]] = {
-    "extreme":      ("facial_gauche", "facial_droite"),
-    "adjacente":    (FACIAL_CENTRE_ROLE, "facial_droite"),
-    "haute_centre": (FACIAL_CENTRE_ROLE, FACIAL_RAISED_ROLE),
-    "haute_droite": ("facial_droite", FACIAL_RAISED_ROLE),
-    "haute_gauche": ("facial_gauche", FACIAL_RAISED_ROLE),
+FACIAL_ROLL_REFS_DEG: Dict[str, float] = {
+    nom: facial_direction_deg(ra, rb) for nom, (ra, rb) in _FACIAL_ROLL_PAIRES.items()
 }
 
 # Tolérances du contrôle croisé du quadrilatère.
 FACIAL_SCALE_TOL = 0.02          # les étalons doivent concorder à ±2 %
 FACIAL_ROLL_TOL_DEG = 3.0        # accord exigé entre les 2 références de roll
+# Symétrie des deux mires hautes (v22.1) : écart relatif admis entre les deux
+# distances au centre (33,1059 mm chacune). Volontairement plus large que les 2 %
+# des étalons : on écarte la mire prise pour une autre, pas le bruit de pixel.
+FACIAL_SYMMETRY_TOL = 0.05
 
 
 def _dist2(a: Tuple[float, float], b: Tuple[float, float]) -> float:
@@ -276,8 +316,7 @@ def facial_roll_by_ref(points_px: Dict[str, Tuple[float, float]]) -> Dict[str, f
     roll sortirait de signe opposé.
     """
     out: Dict[str, float] = {}
-    for nom, (ra, rb) in {"haute_centre": (FACIAL_CENTRE_ROLE, FACIAL_RAISED_ROLE),
-                          "haute_gauche": ("facial_gauche", FACIAL_RAISED_ROLE)}.items():
+    for nom, (ra, rb) in _FACIAL_ROLL_PAIRES.items():
         if ra not in points_px or rb not in points_px:
             continue
         (ax, ay), (bx, by) = points_px[ra], points_px[rb]
@@ -288,7 +327,8 @@ def facial_roll_by_ref(points_px: Dict[str, Tuple[float, float]]) -> Dict[str, f
 
 def facial_quad_check(points_px: Dict[str, Tuple[float, float]],
                       scale_tol: float = FACIAL_SCALE_TOL,
-                      roll_tol_deg: float = FACIAL_ROLL_TOL_DEG) -> Dict:
+                      roll_tol_deg: float = FACIAL_ROLL_TOL_DEG,
+                      symmetry_tol: float = FACIAL_SYMMETRY_TOL) -> Dict:
     """Diagnostic complet du quadrilatère facial : échelle, cohérence, roll.
 
     Trois apports, tous fondés sur la géométrie mesurée du clip :
@@ -313,6 +353,7 @@ def facial_quad_check(points_px: Dict[str, Tuple[float, float]],
     """
     est = facial_scale_estimates(points_px)
     roll = facial_roll_by_ref(points_px)
+    sym = facial_raised_symmetry(points_px)
 
     scale = None
     spread = None
@@ -358,20 +399,80 @@ def facial_quad_check(points_px: Dict[str, Tuple[float, float]],
         "roll_disagreement_deg": disagreement,
         "roll_consistent": (disagreement is not None
                             and disagreement <= roll_tol_deg),
+        # ── v22.1 : les deux mires hautes ────────────────────────────────────
+        # Absent (`{}`) sur un clip à une seule mire haute — le champ est toujours
+        # présent pour que le contrat de réponse ne dépende pas du clip rencontré.
+        "raised_symmetry": sym,
+        "raised_symmetric": (sym["dissymetrie_max"] <= symmetry_tol) if sym else None,
+        "n_raised": len([r for r in (FACIAL_RAISED_ROLE, FACIAL_RAISED_MIRROR_ROLE)
+                         if r in points_px]),
     }
 
 
 def facial_points_from_markers(markers: List[Dict]) -> Dict[str, Tuple[float, float]]:
-    """Associe les 4 mires MESURÉES à leurs rôles, pour `facial_quad_check`.
+    """Associe les mires MESURÉES à leurs rôles, pour `facial_quad_check`.
 
     `markers` : liste de dicts `{'x', 'y', ...}` dans l'ordre rendu par le
-    détecteur — `[gauche, centre, droite, 4ᵉ mire]`. L'ordre est celui du clip
-    (et non un tri par x), car la 4ᵉ mire tombe ENTRE le centre et la droite.
+    détecteur — `[gauche, centre, droite, mire haute, (mire haute miroir)]`.
+    L'ordre est celui du clip (et non un tri par x), car la mire haute tombe
+    ENTRE le centre et l'extrême.
+
+    ⚠️ **Le 5ᵉ point est facultatif** : un clip v19.5 n'a qu'une mire haute, et
+    une photo peut n'en montrer qu'une. Les 4 premiers rôles sont alors servis
+    comme avant, sans rien changer.
+
+    ⚠️ **Un échange des deux mires hautes est SANS EFFET** : leur jeu
+    d'écartements est symétrique (`haute_centre` = `haute_miroir_centre`, etc.),
+    donc les spans, les rapports et le contrôle de symétrie sont identiques que
+    l'image soit en miroir ou non. C'est la raison pour laquelle la v22.1 rend la
+    validation invariante au miroir, là où le clip à une seule mire haute exigeait
+    de refléter les abscisses avant de vérifier.
     """
     if len(markers) < 4:
         return {}
     roles = ("facial_gauche", FACIAL_CENTRE_ROLE, "facial_droite", FACIAL_RAISED_ROLE)
+    if len(markers) >= 5:
+        roles = roles + (FACIAL_RAISED_MIRROR_ROLE,)
     return {role: (float(m["x"]), float(m["y"])) for role, m in zip(roles, markers)}
+
+
+def facial_raised_symmetry(points_px: Dict[str, Tuple[float, float]]) -> Dict[str, float]:
+    """Contrôle de SYMÉTRIE des deux mires hautes (v22.1).
+
+    Sur le clip, `centre ↔ haute droite` et `centre ↔ haute gauche` valent tous
+    deux 33,1059 mm, et `gauche ↔ haute droite` = `droite ↔ haute gauche` =
+    81,2158 mm. Ces égalités sont vraies quelle que soit l'échelle : leur écart
+    RELATIF est donc un contrôle direct, sans rien supposer.
+
+    Une dissymétrie franche signifie qu'une mire a été prise pour une autre — ou
+    que le détecteur a posé un point sur un damier qui n'est pas celui du clip.
+    C'est le seul contrôle du clip qui exploite la symétrie de la v22.1.
+    """
+    if FACIAL_RAISED_MIRROR_ROLE not in points_px or FACIAL_RAISED_ROLE not in points_px:
+        return {}
+    c = points_px.get(FACIAL_CENTRE_ROLE)
+    g = points_px.get("facial_gauche")
+    d = points_px.get("facial_droite")
+    if c is None:
+        return {}
+    a = _dist2(points_px[FACIAL_CENTRE_ROLE], points_px[FACIAL_RAISED_MIRROR_ROLE])
+    b = _dist2(points_px[FACIAL_CENTRE_ROLE], points_px[FACIAL_RAISED_ROLE])
+    if min(a, b) <= 0:
+        return {}
+    out = {
+        "centre_haute_gauche": a,
+        "centre_haute_droite": b,
+        "dissymetrie_centre": abs(a - b) / ((a + b) / 2),
+    }
+    if g is not None and d is not None:
+        e = _dist2(points_px["facial_gauche"], points_px[FACIAL_RAISED_ROLE])
+        f = _dist2(points_px["facial_droite"], points_px[FACIAL_RAISED_MIRROR_ROLE])
+        if min(e, f) > 0:
+            out["gauche_haute_droite"] = e
+            out["droite_haute_gauche"] = f
+            out["dissymetrie_croisee"] = abs(e - f) / ((e + f) / 2)
+    out["dissymetrie_max"] = max(v for k, v in out.items() if k.startswith("dissymetrie"))
+    return out
 
 # ── Mires latérales (6 : 3 par côté, symétriques) ────────────────────────────
 # centres des disques dans les plans |x| = 76,00 (faces à |x| = 76,75), Ø 12,00 mm chacune

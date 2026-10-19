@@ -584,28 +584,40 @@ def _best_facial_quadruplet(peaks: list, gray: np.ndarray, integral: np.ndarray,
         if y_4e < 0 or y_4e >= h:
             continue
 
-        p4, x_4e_attendu, cote_4e = None, None, None
+        # ── Les mires hautes : UNE (v19.5) ou DEUX (v22.1) ────────────────────
+        # On cherche des deux côtés du centre, et on garde ce qui est trouvé.
+        # La v22.1 porte deux mires hautes symétriques (x = ±30) : les trouver
+        # TOUTES LES DEUX n'est pas un confort, c'est ce qui donne l'étalon de
+        # 60 mm et rend la validation invariante au miroir.
+        trouvees = {}
         for cote in (1, -1):        # +1 : entre centre et droite · −1 : miroir
             x_att = x_centre + cote * int(round(frac * d1))
             x_search_min = max(x0, x_att - tol_x)
             x_search_max = min(x1, x_att + tol_x)
             if x_search_max <= x_search_min:
                 continue
-            candidats = [p for p in
-                         sorted(_scan_facial_strip(gray, integral, x_search_min,
-                                                   x_search_max, y_4e,
-                                                   quadrant_offset, w, h),
-                                key=lambda p: -p["score"])
-                         if abs(p["x"] - x_att) <= tol_x]
+            cands = [p for p in
+                     sorted(_scan_facial_strip(gray, integral, x_search_min,
+                                               x_search_max, y_4e,
+                                               quadrant_offset, w, h),
+                            key=lambda p: -p["score"])
+                     if abs(p["x"] - x_att) <= tol_x]
             # Hauteur RÉELLE (le meilleur des 3 premiers candidats en x)
-            for cand in candidats[:3]:
+            for cand in cands[:3]:
                 r = _refine_marker_2d(gray, cand["x"], y_4e,
                                    0.6 * dy_raised, quadrant_offset, w, h)
                 if r and abs(r["x"] - x_att) <= tol_x \
-                        and (p4 is None or r["score"] > p4["score"]):
-                    p4, x_4e_attendu, cote_4e = r, x_att, cote
-        if p4 is None:
+                        and (cote not in trouvees or r["score"] > trouvees[cote]["score"]):
+                    trouvees[cote] = r
+
+        if not trouvees:
             continue
+        # La mire de référence reste la MEILLEURE des deux : c'est elle qui porte
+        # le contrôle de hauteur ci-dessous. Le côté retenu est mémorisé — il
+        # servait déjà à la cohérence miroir/signature.
+        cote_4e = max(trouvees, key=lambda c: trouvees[c]["score"])
+        p4 = trouvees[cote_4e]
+        p5 = trouvees.get(-cote_4e)          # la seconde mire haute, si le clip en a deux
 
         # Hauteur RÉELLE du niveau de la barre, mesurée sur la mire du CENTRE.
         ref_rangee = _refine_marker_2d(gray, x_centre, clip_y,
@@ -618,15 +630,28 @@ def _best_facial_quadruplet(peaks: list, gray: np.ndarray, integral: np.ndarray,
         if abs(dy_mesure - dy_raised) > FACIAL_RAISED_TOL * dy_raised:
             continue                               # hauteur incompatible avec le clip
 
-        # Quadruplet valide
-        score = (a["score"] + b["score"] + c["score"] + p4["score"]) \
+        # ── La SECONDE mire haute (v22.1) doit être à la MÊME hauteur ────────
+        # Deux garde-fous, pas un : la hauteur (c'est la signature d'une mire
+        # haute) ET le score relatif. Les damiers du clip sont identiques et de
+        # même orientation, donc un vrai damier corrèle aussi bien que l'autre ;
+        # un pic fantôme, lui, reste loin derrière.
+        if p5 is not None:
+            dy5 = ref_rangee["y"] - p5["y"]
+            if abs(dy5 - dy_raised) > FACIAL_RAISED_TOL * dy_raised \
+                    or p5["score"] < FACIAL_PEAK_MIN_RATIO * p4["score"]:
+                p5 = None
+
+        # Quadruplet — ou QUINTUPLET quand le clip porte ses deux mires hautes
+        score = (a["score"] + b["score"] + c["score"] + p4["score"]
+                 + (p5["score"] if p5 else 0.0)) \
                 - equi * 200.0 - abs(dy_mesure - dy_raised) * 5.0
         if score > info["score"]:
-            meilleur = [a, b, c, p4]
+            meilleur = [a, b, c, p4] + ([p5] if p5 else [])
             info = {"score": score, "equi": equi, "span_px": span_px,
                     "scale": scale_prov, "dy_raised_px": dy_mesure,
                     "quadrant_offset": quadrant_offset, "clip_y": clip_y,
-                    "cote_4e": cote_4e}
+                    "cote_4e": cote_4e, "cote_5e": (-cote_4e) if p5 else None,
+                    "n_raised": 2 if p5 else 1}
     return meilleur, info
 
 
@@ -818,7 +843,11 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
                     m["x"], m["y"] = ref["x"], ref["y"]
             diag = clip.facial_quad_check(clip.facial_points_from_markers(
                 [{"x": float(m["x"]), "y": float(m["y"])} for m in quadruplet]))
-            if diag["n_points"] == 4 and diag["scale_consistent"] \
+            # ⚠️ 4 OU 5 mires : depuis la v22.1 le clip porte DEUX mires hautes.
+            # Les écartements des deux hautes sont symétriques, donc les rapports
+            # et la dispersion des étalons sont les mêmes quel que soit le côté où
+            # chaque mire a été assignée — le test reste valable sans réordonner.
+            if diag["n_points"] >= 4 and diag["scale_consistent"] \
                     and diag["ratios_consistent"]:
                 break
         elif meilleur is None:
@@ -896,6 +925,15 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
             log.warning("Calibration : signature du damier = %s mais 4e mire trouvée du "
                         "côté %s (attendu %s) — clip monté à l'envers, ou mire douteuse",
                         orientation_prise, info.get("cote_4e"), attendu)
+    elif orientation_prise != clip.ORIENTATION_INDETERMINEE and len(best_quad) >= 5:
+        # v22.1 : les DEUX mires hautes rendent la géométrie symétrique, donc le
+        # côté où tombe chaque mire haute n'est plus une information. Le contrôle
+        # de cohérence « signature ↔ côté de la 4ᵉ mire » n'a plus d'objet : on
+        # le remplace par le contrôle de SYMÉTRIE, plus fort (il porte sur des
+        # égalités de distances, pas sur un choix de côté).
+        log.info("Calibration : prise de vue %s ; 5 mires faciales "
+                 "(géométrie symétrique, contrôle par symétrie)",
+                 "EN MIROIR" if image_mirrored else "normale")
     elif orientation_prise != clip.ORIENTATION_INDETERMINEE and len(best_quad) == 3:
         log.info("Calibration : prise de vue %s (lue sur la signature des damiers)",
                  "EN MIROIR" if image_mirrored else "normale")
@@ -906,32 +944,42 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
 
     detected_markers = [{"x": float(m["x"]), "y": float(m["y"])} for m in best_quad]
 
-    # ── MIROIR : refléter AVANT de vérifier la géométrie ─────────────────────
-    # Si la 4ᵉ mire est du côté GAUCHE du centre sur l'image, la prise de vue est en
-    # miroir (selfie iOS) — ou le clip est monté à l'envers. La géométrie du clip est
-    # symétrique : refléter les abscisses autour du centre ramène le cas à celui du
-    # clip « normal », et les écartements comme l'écart vertical sont conservés.
-    # ⚠️ Les marqueurs PUBLIÉS restent aux positions réelles : on ne reflète que pour
-    # la vérification. Sans ce traitement, un clip vu en miroir était rejeté alors que
-    # sa géométrie est parfaitement valide.
-    miroir = info.get("cote_4e") == -1 and len(detected_markers) == 4
+    # ── Normalisation des RÔLES : on vérifie la géométrie du CLIP, pas de l'image ──
+    # `facial_points_from_markers` assigne les rôles PAR POSITION dans la liste :
+    # il faut donc lui présenter [gauche, centre, droite] puis la mire haute du
+    # côté +x du clip, puis son miroir. Deux corrections, dans cet ordre :
+    #   1. TRIER chaque groupe par x — l'ordre de sortie du détecteur n'est pas garanti ;
+    #   2. REFLÉTER autour du centre si la prise de vue est en miroir, sinon les
+    #      rôles gauche/droite sont échangés et les rapports invariants sortent à
+    #      91 % d'incohérence sur une géométrie pourtant parfaite (mesuré).
+    # ⚠️ Les marqueurs PUBLIÉS restent aux positions réelles : on ne normalise que
+    # pour la vérification.
+    # ⚠️ v22.1 : avec DEUX mires hautes, la réflexion ne change plus le JEU
+    # d'écartements (il est symétrique). Elle reste utile pour le ROLL, dont les
+    # quatre références sont signées.
+    # ⚠️ QUELLE SOURCE pour le miroir ?
+    #   • 5 mires (v22.1) : la géométrie est SYMÉTRIQUE, donc le contrôle ne dépend
+    #     plus du miroir ; seule la SIGNATURE des damiers compte, pour le signe du
+    #     roll. C'est la source autoritaire (le clip porte l'information).
+    #   • 4 mires : on garde le comportement historique — le côté où tombe la mire
+    #     haute. Le remplacer par la signature changerait la lecture d'une image
+    #     dont le damier et la géométrie ne s'accordent pas (cas des images de test,
+    #     et d'un clip monté à l'envers) : ce n'est pas le sujet de cette évolution.
+    miroir = image_mirrored if len(detected_markers) >= 5 \
+        else (info.get("cote_4e") == -1)
+    x_centre_img = detected_markers[1]["x"]
+    rangee = sorted(detected_markers[:3], key=lambda p: p["x"])
+    hautes = sorted(detected_markers[3:], key=lambda p: p["x"])
     if miroir:
-        x_centre_img = detected_markers[1]["x"]
-        # ⚠️ Refléter ne suffit pas : la réflexion ÉCHANGE gauche et droite, alors que
-        # `facial_points_from_markers` assigne les rôles PAR POSITION dans la liste.
-        # Sans réordonner, « facial_gauche » recevait le point de droite (et
-        # réciproquement) et les rapports invariants sortaient à 91 % d'incohérence sur
-        # une géométrie pourtant parfaite (mesuré sur image synthétique). On remet donc
-        # la rangée dans l'ordre [gauche, centre, droite] après réflexion.
-        rangee = [{"x": 2 * x_centre_img - p["x"], "y": p["y"]}
-                  for p in detected_markers[:3]]
-        rangee.sort(key=lambda p: p["x"])
-        h4 = detected_markers[3]
-        markers_geo = rangee + [{"x": 2 * x_centre_img - h4["x"], "y": h4["y"]}]
-        log.info("Calibration : prise de vue EN MIROIR (4e mire à gauche du centre) → "
-                 "géométrie vérifiée après réflexion")
-    else:
-        markers_geo = detected_markers
+        rangee = sorted([{"x": 2 * x_centre_img - p["x"], "y": p["y"]} for p in rangee],
+                        key=lambda p: p["x"])
+        hautes = sorted([{"x": 2 * x_centre_img - p["x"], "y": p["y"]} for p in hautes],
+                        key=lambda p: p["x"])
+        log.info("Calibration : géométrie reflétée (prise de vue en miroir) avant "
+                 "vérification des écartements")
+    # Après normalisation, `hautes` est trié par x croissant : la DERNIÈRE est celle
+    # du côté +x du CLIP (x = +30) → rôle `facial_haute` ; la première est son miroir.
+    markers_geo = rangee + list(reversed(hautes))
 
     # ── A+B+C : contrôle croisé du quadrilatère ──────────────────────────────
     # A. l'échelle est prise en MÉDIANE des étalons du clip (extrême, adjacente,
@@ -950,8 +998,14 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
         if quad_diag.get("roll_deg") is not None:
             quad_diag["roll_deg"] = -quad_diag["roll_deg"]
 
-    quad_ok = (quad_diag["n_points"] == 4 and quad_diag["ratios_consistent"]
-               and quad_diag["ratio_spread"] <= FACIAL_QUAD_REJECT_TOL)
+    # 4 OU 5 mires (v22.1). La SYMÉTRIE des deux mires hautes s'ajoute aux
+    # critères existants : une dissymétrie franche signifie qu'une mire a été
+    # prise pour une autre, donc que les points ne sont pas ceux du clip.
+    # `raised_symmetric` vaut None sur un clip à une seule mire haute — absence
+    # de contrôle n'est pas échec du contrôle.
+    quad_ok = (quad_diag["n_points"] >= 4 and quad_diag["ratios_consistent"]
+               and quad_diag["ratio_spread"] <= FACIAL_QUAD_REJECT_TOL
+               and quad_diag.get("raised_symmetric") is not False)
     if not quad_ok:
         # DÉGRADATION GRACIEUSE, jamais l'échec — et surtout PAS `_fallback_hough`.
         # Des damiers du clip SONT visibles mais leur géométrie n'est pas celle du
