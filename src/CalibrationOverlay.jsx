@@ -96,8 +96,9 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
         const blob = await resp.blob()
         if (cancelAutoRef.current) { setAutoDetecting(false); setAutoFailed(true); return }
         const apiResult = await analyzeCalibration(blob)
-        // Le backend renvoie 3 mires… ou 4 : le clip v19.5 en a une QUATRIÈME,
-        // surélevée, qui sert à l'auto-contrôle des étalons et à la mesure du roll.
+        // Le backend renvoie 3 mires… 4 sur le clip v19.5, 5 sur le v22.1 (la mire
+        // haute a désormais un miroir). Les mires hors rangée servent à
+        // l'auto-contrôle des étalons, à la symétrie et à la mesure du roll.
         // Exiger `=== 3` rejetait donc une détection RÉUSSIE sur le clip v19.5.
         // Le calibrage n'utilise que la rangée (les 3 premières, dans l'ordre).
         const detected = Array.isArray(apiResult.markers) ? apiResult.markers : []
