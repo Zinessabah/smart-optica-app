@@ -1032,7 +1032,12 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
     geo_ok = (quad_diag.get("spans_consistent") is True
               or (quad_diag["ratios_consistent"]
                   and quad_diag["ratio_spread"] <= FACIAL_QUAD_REJECT_TOL))
-    quad_ok = (quad_diag["n_points"] >= 4 and geo_ok
+    # L'accord des deux triangles faciaux est un contrôle croise direct : ils sont
+    # symetriques sur le clip, ils doivent rendre la meme echelle. Un desaccord
+    # signifie qu'une mire haute n'est pas celle qu'on croit.
+    tri_diag = quad_diag.get("triangles") or {}
+    triangles_ok = tri_diag.get("sides_agree") is not False
+    quad_ok = (quad_diag["n_points"] >= 4 and geo_ok and triangles_ok
                and quad_diag.get("raised_symmetric") is not False)
     if not quad_ok:
         # DÉGRADATION GRACIEUSE, jamais l'échec — et surtout PAS `_fallback_hough`.
@@ -1063,9 +1068,20 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
         quad_diag = dict(quad_diag)
         quad_diag["quad_valid"] = True
 
-    # Échelle : médiane des étalons quand ils concordent, sinon span des extrêmes
-    # (la mesure d'alors reste honnête, mais elle est signalée dans le diagnostic).
-    if quad_diag["scale_consistent"] and quad_diag["scale_mm_per_px"]:
+    # ── Échelle : les TRIANGLES faciaux d'abord (idée Driss) ────────────────
+    # Le côté le plus long d'un triangle facial joint le CENTRE à l'EXTREME — deux
+    # mires de barre. La mire haute n'entre donc pas dans l'échelle, alors qu'elle
+    # pesait 3 étalons sur 5 dans la médiane et la faisait varier de 3,6 %.
+    # On n'utilise la moyenne des deux triangles QUE s'ils s'accordent : deux
+    # triangles symétriques qui divergent signalent une mire mal prise.
+    tri = quad_diag.get("triangles") or {}
+    tri_scale = tri.get("scale_mm_per_px")
+    tri_ok = bool(tri_scale) and (tri.get("n_sides") == 1
+                                  or tri.get("sides_agree") is True)
+    if tri_ok:
+        scale = tri_scale
+    elif quad_diag["scale_consistent"] and quad_diag["scale_mm_per_px"]:
+        # pas de triangle exploitable : médiane des étalons quand elle concorde
         scale = quad_diag["scale_mm_per_px"]
     else:
         scale = clip.scale_from_span(clip.FACIAL_SPACING_EXTREME_MM, total_px) \

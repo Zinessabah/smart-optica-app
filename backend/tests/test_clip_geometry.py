@@ -375,6 +375,62 @@ def test_stl_v22_conserve_la_metrologie_laterale():
         assert all(abs(m["x"] - 76.75) <= 0.05 for m in lat)
 
 
+# ── Les DEUX triangles faciaux (idée Driss) ─────────────────────────────────
+
+def test_deux_triangles_faciaux_donnent_la_meme_echelle():
+    """Le clip porte deux triangles symétriques : centre+extrême+haute, par côté.
+
+    Chacun a les mêmes trois côtés (50,000 / 33,1059 / 24,4131 mm), donc la même
+    forme. Le côté le plus long porte l'échelle ; les rapports l'identifient sans
+    supposer d'échelle.
+    """
+    S = 4.0
+    pts = {m["role"]: (m["x"] * S + 1000, -m["z"] * S + 800) for m in cg.FACIAL_MARKERS}
+
+    tri = cg.facial_triangles_scale(pts)
+    assert tri["n_sides"] == 2 and tri["sides"] == ["droite", "gauche"]
+    assert tri["scale_mm_per_px"] == pytest.approx(1.0 / S)
+    assert tri["disagreement"] == pytest.approx(0.0, abs=1e-9)
+    assert tri["sides_agree"] is True
+
+    for side in ("droite", "gauche"):
+        t = tri["by_side"][side]
+        assert t["shape_ok"] is True
+        assert t["longest_mm"] == pytest.approx(50.0)     # centre ↔ extrême
+        # les trois côtés sont ceux du clip, dérivés — pas recopiés
+        cotes = sorted(cg.facial_triangle_sides_mm(side).values())
+        assert cotes == pytest.approx(sorted([50.0, math.hypot(30, 14), math.hypot(20, 14)]))
+
+
+def test_l_echelle_des_triangles_ignore_la_mire_haute():
+    """⚠️ LA propriété qui justifie tout : déplacer une mire haute ne change RIEN.
+
+    L'échelle était la médiane d'étalons dont trois dépendaient de la mire haute,
+    et ils l'emportaient sur les deux de la barre (mesuré : 3,6 % d'écart). Avec
+    les triangles, le côté le plus long joint le centre à l'extrême — deux mires
+    de barre — et la mire haute ne participe plus à l'échelle.
+    """
+    S = 4.0
+    pts = {m["role"]: (m["x"] * S + 1000, -m["z"] * S + 800) for m in cg.FACIAL_MARKERS}
+    reference = cg.facial_triangles_scale(pts)["by_side"]["droite"]["scale_mm_per_px"]
+
+    for deplacement in (10, 40, 120):          # px : 2,5 / 10 / 30 mm
+        faux = dict(pts)
+        x, y = faux[cg.FACIAL_RAISED_ROLE]
+        faux[cg.FACIAL_RAISED_ROLE] = (x + deplacement, y)
+        echelle = cg.facial_triangles_scale(faux)["by_side"]["droite"]["scale_mm_per_px"]
+        assert echelle == pytest.approx(reference, abs=1e-12), \
+            "la mire haute ne doit pas entrer dans l'échelle du triangle"
+
+    # … mais elle casse bien la FORME, et l'accord entre les deux côtés
+    faux = dict(pts)
+    faux[cg.FACIAL_RAISED_ROLE] = (pts[cg.FACIAL_RAISED_ROLE][0] + 120,
+                                   pts[cg.FACIAL_RAISED_ROLE][1])
+    tri = cg.facial_triangles_scale(faux)
+    assert tri["by_side"]["droite"]["shape_ok"] is False
+    assert tri["n_sides"] == 1 or tri["sides_agree"] is False
+
+
 @besoin_stl
 def test_stl_motif_damier(mesure):
     mo = mesure["motif"]

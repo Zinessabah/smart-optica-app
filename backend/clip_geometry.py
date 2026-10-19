@@ -377,6 +377,7 @@ def facial_quad_check(points_px: Dict[str, Tuple[float, float]],
     est = facial_scale_estimates(points_px)
     roll = facial_roll_by_ref(points_px)
     sym = facial_raised_symmetry(points_px)
+    tri = facial_triangles_scale(points_px)
 
 
     scale = None
@@ -387,6 +388,18 @@ def facial_quad_check(points_px: Dict[str, Tuple[float, float]],
         if med > 0:
             scale = med
             spread = (vals[-1] - vals[0]) / med
+
+    # ── L'échelle par les DEUX TRIANGLES faciaux (idée Driss) ────────────────
+    # Dès qu'un triangle est identifié par sa FORME, c'est lui qui porte
+    # l'échelle : son côté le plus long joint le centre à l'extrême — deux mires
+    # de barre — donc la mire haute n'entre plus dans l'échelle. C'est ce qui
+    # supprime la dépendance mesurée à 3,6 %.
+    # La médiane des étalons reste exposée (`scale_median_spans`) pour comparaison
+    # et pour les cas où aucun triangle n'est identifiable (clip à une seule mire
+    # haute, mire haute masquée).
+    scale_median_spans = scale
+    if tri["scale_mm_per_px"]:
+        scale = tri["scale_mm_per_px"]
 
     # ── Résidus en MILLIMÈTRES, contre l'échelle médiane ────────────────────
     # Chaque écartement est comparé à sa valeur sur le clip, en mm. Uniforme :
@@ -444,6 +457,9 @@ def facial_quad_check(points_px: Dict[str, Tuple[float, float]],
         "raised_symmetric": (sym["dissymetrie_max"] <= symmetry_tol) if sym else None,
         "n_raised": len([r for r in (FACIAL_RAISED_ROLE, FACIAL_RAISED_MIRROR_ROLE)
                          if r in points_px]),
+        # ── Les deux triangles faciaux ──────────────────────────────────────
+        "triangles": tri,
+        "scale_median_spans": scale_median_spans,
         # ── Résidus en mm : le critère qui porte l'acceptation ──────────────
         "span_residual_mm": residus_mm,
         "max_span_residual_mm": max_residu_mm,
@@ -477,6 +493,104 @@ def facial_points_from_markers(markers: List[Dict]) -> Dict[str, Tuple[float, fl
     if len(markers) >= 5:
         roles = roles + (FACIAL_RAISED_MIRROR_ROLE,)
     return {role: (float(m["x"]), float(m["y"])) for role, m in zip(roles, markers)}
+
+
+# ── Les DEUX triangles faciaux : l'échelle par la FORME (idée Driss) ─────────
+# Le clip porte de quoi former DEUX triangles symétriques, un par côté :
+#     droite : centre (0 ; 3) · droite (+50 ; 3) · haute droite (+30 ; 17)
+#     gauche : centre (0 ; 3) · gauche (−50 ; 3) · haute gauche (−30 ; 17)
+# Chacun a les mêmes trois côtés — 50,000 / 33,1059 / 24,4131 mm — donc la même
+# forme. C'est le principe du triangle LATÉRAL transposé en vue de face : le côté
+# le plus long porte l'échelle, la FORME identifie le triangle sans supposer
+# d'échelle.
+#
+# ⚠️ Ce que cela corrige, mesuré : l'échelle était la MÉDIANE de 5 à 9 étalons,
+#    dont TROIS dépendaient de la mire haute et bougeaient ensemble — ils
+#    l'emportaient sur les deux de la barre, et l'échelle variait de 3,6 % entre
+#    deux variantes de détection (0,1032 contre 0,0995 mm/px). Ici le côté le
+#    plus long d'un triangle facial joint le CENTRE et l'EXTRÊME : deux mires de
+#    barre, et la mire haute n'entre plus dans l'échelle du tout.
+# ⚠️ Et les deux triangles doivent donner LA MÊME échelle — un contrôle croisé
+#    que le clip à une seule mire haute ne pouvait pas offrir.
+FACIAL_TRIANGLES: Dict[str, Tuple[str, str, str]] = {
+    "droite": (FACIAL_CENTRE_ROLE, "facial_droite", FACIAL_RAISED_ROLE),
+    "gauche": (FACIAL_CENTRE_ROLE, "facial_gauche", FACIAL_RAISED_MIRROR_ROLE),
+}
+# DEUX tolerances, et elles ne jouent PAS le meme role :
+#   - la FORME identifie le triangle (a-t-on pris les bonnes mires ?). Elle est
+#     franche : sous perspective les rapports de cotes se deforment - mesure 5,26 %
+#     sur une photo juste. Elle n'a pas a juger la metrologie ;
+#   - l'ACCORD entre les deux cotes est le vrai controle croise : les deux
+#     triangles sont symetriques sur le clip, ils doivent rendre la meme echelle.
+#     C'est lui qui est serre.
+FACIAL_TRIANGLE_SHAPE_TOL = 0.12
+FACIAL_TRIANGLE_SCALE_TOL = 0.02
+
+
+def facial_triangle_sides_mm(side: str) -> Dict[str, float]:
+    """Les trois côtés d'un triangle facial, en mm — dérivés, jamais recopiés."""
+    a, b, c = FACIAL_TRIANGLES[side]
+    return {f"{a}|{b}": facial_span_mm(a, b),
+            f"{a}|{c}": facial_span_mm(a, c),
+            f"{b}|{c}": facial_span_mm(b, c)}
+
+
+def facial_triangle_scale(points_px: Dict[str, Tuple[float, float]],
+                          side: str) -> Optional[Dict]:
+    """Échelle déduite d'UN triangle facial, par sa forme.
+
+    Le côté le PLUS LONG porte l'échelle (50,000 mm : centre ↔ extrême, deux
+    mires de barre) ; les RAPPORTS des deux autres côtés à celui-là identifient
+    le triangle sans supposer d'échelle — une forme fausse signale qu'on n'a pas
+    pris les bonnes mires.
+    """
+    a, b, c = FACIAL_TRIANGLES[side]
+    if not all(r in points_px for r in (a, b, c)):
+        return None
+    mm = facial_triangle_sides_mm(side)
+    px = {f"{ra}|{rb}": _dist2(points_px[ra], points_px[rb])
+          for ra, rb in ((a, b), (a, c), (b, c))}
+    if min(px.values()) <= 0:
+        return None
+
+    nom_long = max(mm, key=lambda k: mm[k])
+    echelle = mm[nom_long] / px[nom_long]
+    ratios_mm = {n: mm[n] / mm[nom_long] for n in mm if n != nom_long}
+    ratios_px = {n: px[n] / px[nom_long] for n in mm if n != nom_long}
+    ecarts = {n: abs(ratios_px[n] - ratios_mm[n]) / ratios_mm[n] for n in ratios_mm}
+    pire = max(ecarts.values())
+    return {"side": side,
+            "scale_mm_per_px": echelle,
+            "longest": nom_long,
+            "longest_mm": mm[nom_long],
+            "ratio_by_side": ratios_px,
+            "ratio_residual": pire,
+            "shape_ok": pire <= FACIAL_TRIANGLE_SHAPE_TOL}
+
+
+def facial_triangles_scale(points_px: Dict[str, Tuple[float, float]],
+                           scale_tol: float = FACIAL_TRIANGLE_SCALE_TOL) -> Dict:
+    """Échelle MOYENNE des deux triangles faciaux, et leur accord.
+
+    Les deux triangles étant symétriques sur le clip, ils doivent rendre la même
+    échelle : leur écart est un contrôle croisé direct. La moyenne divise le bruit
+    de pixel par racine de deux quand les deux côtés sont exploitables.
+    """
+    par_cote = {s: facial_triangle_scale(points_px, s) for s in FACIAL_TRIANGLES}
+    valides = {s: t for s, t in par_cote.items() if t and t["shape_ok"]}
+
+    out: Dict = {"by_side": par_cote, "n_sides": len(valides),
+                 "scale_mm_per_px": None, "disagreement": None,
+                 "sides_agree": None, "sides": sorted(valides)}
+    if valides:
+        out["scale_mm_per_px"] = (sum(t["scale_mm_per_px"] for t in valides.values())
+                                  / len(valides))
+    if len(valides) == 2:
+        v = sorted(t["scale_mm_per_px"] for t in valides.values())
+        out["disagreement"] = (v[1] - v[0]) / ((v[0] + v[1]) / 2) if v[0] + v[1] else None
+        out["sides_agree"] = (out["disagreement"] is not None
+                              and out["disagreement"] <= scale_tol)
+    return out
 
 
 def facial_raised_symmetry(points_px: Dict[str, Tuple[float, float]]) -> Dict[str, float]:
