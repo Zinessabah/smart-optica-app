@@ -296,6 +296,16 @@ FACIAL_PEAK_MIN_RATIO = 0.7
 # plafond, 15 pics produisent 455 combinaisons et l'analyse d'une photo iPad montait
 # à 35,6 s — sans jamais changer le résultat.
 FACIAL_MAX_TRIPLET_TRIALS = 12
+# Tolérance sur la position HORIZONTALE de la mire haute, en fraction de
+# l'écartement adjacent (50 mm). ⚠️ Elle valait 15 % — soit ±7,5 mm — et c'était
+# trop : un pic décalé de 7 mm passait la porte, puis les rapports invariants le
+# rejetaient (29,6 % d'incohérence mesurés sur photo réelle), et l'on retombait à
+# 3 mires SANS roll alors qu'un damier parfaitement valide était là.
+# La position x de la mire haute est EXACTE sur le clip (0,6 × l'écartement
+# adjacent) : l'erreur attendue vient du pixel et de la perspective, soit moins
+# d'1 mm pour 14 mm de dénivelé à 500 mm de distance. 6 % = ±3 mm laisse la marge
+# nécessaire sans ouvrir la porte aux faux pics.
+FACIAL_RAISED_X_TOL_FRAC = 0.06
 
 
 def _facial_quadrant_offsets(known_scale: Optional[float] = None) -> list:
@@ -574,7 +584,14 @@ def _best_facial_quadruplet(peaks: list, gray: np.ndarray, integral: np.ndarray,
         # retenait un pic SANS AUCUN MOTIF DAMIER (contraste mesuré : nul).
         x_centre = a["x"] + d1
         frac = clip.FACIAL_RAISED_X_FROM_CENTRE_MM / clip.FACIAL_SPACING_ADJACENT_MM
-        tol_x = max(8, int(0.15 * d1))  # ±15 % de l'écart adjacent
+        # ⚠️ DEUX toléranceS, et c'est voulu :
+        #   • CHERCHER large — le bon pic doit faire partie des candidats, et c'est
+        #     cette fenêtre qui décide quel offset d'échelle gagne la passe. La
+        #     resserrer changeait ce choix et faisait échouer l'affinage de hauteur ;
+        #   • ACCEPTER serré — un pic voisin, à 7 mm du vrai, ne doit pas passer.
+        #     C'est l'acceptation qui porte la rigueur, pas la recherche.
+        tol_x = max(8, int(0.15 * d1))
+        tol_ok = max(6, int(FACIAL_RAISED_X_TOL_FRAC * d1))
 
         # ── La 4ᵉ mire : position attendue, puis position MESURÉE ────────────
         # y attendu = clip_y − 14 mm convertis. Mais `clip_y` n'est qu'une
@@ -606,7 +623,7 @@ def _best_facial_quadruplet(peaks: list, gray: np.ndarray, integral: np.ndarray,
             for cand in cands[:3]:
                 r = _refine_marker_2d(gray, cand["x"], y_4e,
                                    0.6 * dy_raised, quadrant_offset, w, h)
-                if r and abs(r["x"] - x_att) <= tol_x \
+                if r and abs(r["x"] - x_att) <= tol_ok \
                         and (cote not in trouvees or r["score"] > trouvees[cote]["score"]):
                     trouvees[cote] = r
 
@@ -1003,8 +1020,19 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
     # prise pour une autre, donc que les points ne sont pas ceux du clip.
     # `raised_symmetric` vaut None sur un clip à une seule mire haute — absence
     # de contrôle n'est pas échec du contrôle.
-    quad_ok = (quad_diag["n_points"] >= 4 and quad_diag["ratios_consistent"]
-               and quad_diag["ratio_spread"] <= FACIAL_QUAD_REJECT_TOL
+    #
+    # ⚠️ ACCEPTATION : deux critères INDÉPENDANTS, et il suffit que l'un passe.
+    #   • les rapports d'écartements — exacts sous vue frontale orthographique,
+    #     faux dès que la photo est prise de biais (mesuré : 6,67 % de dispersion
+    #     sur une détection pourtant juste, donc un rejet à tort) ;
+    #   • les résidus en MILLIMÈTRES — uniformes, donc justes aussi quand la photo
+    #     est prise de biais (c'est ce critère qui porte l'acceptation réelle).
+    # Exiger les deux reviendrait à refuser toute photo de biais ; n'en garder
+    # qu'un affaiblirait le contrôle. Ils se complètent.
+    geo_ok = (quad_diag.get("spans_consistent") is True
+              or (quad_diag["ratios_consistent"]
+                  and quad_diag["ratio_spread"] <= FACIAL_QUAD_REJECT_TOL))
+    quad_ok = (quad_diag["n_points"] >= 4 and geo_ok
                and quad_diag.get("raised_symmetric") is not False)
     if not quad_ok:
         # DÉGRADATION GRACIEUSE, jamais l'échec — et surtout PAS `_fallback_hough`.

@@ -49,7 +49,7 @@ ci-dessous, appliquée par le détecteur latéral (`lateral_checker.py`).
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import math
 
@@ -284,6 +284,18 @@ FACIAL_ROLL_TOL_DEG = 3.0        # accord exigé entre les 2 références de rol
 # distances au centre (33,1059 mm chacune). Volontairement plus large que les 2 %
 # des étalons : on écarte la mire prise pour une autre, pas le bruit de pixel.
 FACIAL_SYMMETRY_TOL = 0.05
+# ── Validation des écartements en MILLIMÈTRES (et non en relatif) ───────────
+# ⚠️ Les rapports d'écartements ne sont invariants que sous une vue FRONTALE
+# ORTHOGRAPHIQUE. Sur une vraie photo prise de biais — le cas NORMAL — ils
+# dérivent, et un seuil relatif de 2 % rejette alors une détection juste.
+# Mesuré sur une photo réelle du clip : 6,67 % de dispersion, dont 4,65 % pour le
+# SEUL écartement le plus court (24,4 mm), causés par 1 mm d'erreur de point.
+# Un écart relatif punit donc les petits écartements hors de toute proportion.
+# On juge à la place chaque écartement en MILLIMÈTRES du clip, contre l'échelle
+# médiane : le critère est uniforme, et il a un sens physique direct.
+# 2,0 mm : au-delà, c'est un point qui n'est pas celui du clip (la détection
+# mesure 1 mm sur photo réelle, et la plus courte portée est de 24,4 mm).
+FACIAL_SPAN_TOL_MM = 2.0
 
 
 def _dist2(a: Tuple[float, float], b: Tuple[float, float]) -> float:
@@ -338,7 +350,8 @@ def facial_roll_by_ref(points_px: Dict[str, Tuple[float, float]]) -> Dict[str, f
 def facial_quad_check(points_px: Dict[str, Tuple[float, float]],
                       scale_tol: float = FACIAL_SCALE_TOL,
                       roll_tol_deg: float = FACIAL_ROLL_TOL_DEG,
-                      symmetry_tol: float = FACIAL_SYMMETRY_TOL) -> Dict:
+                      symmetry_tol: float = FACIAL_SYMMETRY_TOL,
+                      span_tol_mm: float = FACIAL_SPAN_TOL_MM) -> Dict:
     """Diagnostic complet du quadrilatère facial : échelle, cohérence, roll.
 
     Trois apports, tous fondés sur la géométrie mesurée du clip :
@@ -365,6 +378,7 @@ def facial_quad_check(points_px: Dict[str, Tuple[float, float]],
     roll = facial_roll_by_ref(points_px)
     sym = facial_raised_symmetry(points_px)
 
+
     scale = None
     spread = None
     if len(est) >= 2:
@@ -373,6 +387,20 @@ def facial_quad_check(points_px: Dict[str, Tuple[float, float]],
         if med > 0:
             scale = med
             spread = (vals[-1] - vals[0]) / med
+
+    # ── Résidus en MILLIMÈTRES, contre l'échelle médiane ────────────────────
+    # Chaque écartement est comparé à sa valeur sur le clip, en mm. Uniforme :
+    # le plus court (24,4 mm) n'est pas davantage puni que le plus long (100 mm).
+    residus_mm: Dict[str, float] = {}
+    max_residu_mm = None
+    if scale:
+        for nom, (ra, rb) in _FACIAL_PAIRES.items():
+            if ra in points_px and rb in points_px:
+                span_px = _dist2(points_px[ra], points_px[rb])
+                if span_px > 0:
+                    residus_mm[nom] = abs(span_px * scale - FACIAL_QUAD_SPANS_MM[nom])
+        if residus_mm:
+            max_residu_mm = max(residus_mm.values())
 
     # Rapports normalisés : chaque écartement mesuré / théorique, puis divisé par
     # le plus grand. Tous valent 1,0 pour un quadruplet correct, quelle que soit
@@ -416,6 +444,11 @@ def facial_quad_check(points_px: Dict[str, Tuple[float, float]],
         "raised_symmetric": (sym["dissymetrie_max"] <= symmetry_tol) if sym else None,
         "n_raised": len([r for r in (FACIAL_RAISED_ROLE, FACIAL_RAISED_MIRROR_ROLE)
                          if r in points_px]),
+        # ── Résidus en mm : le critère qui porte l'acceptation ──────────────
+        "span_residual_mm": residus_mm,
+        "max_span_residual_mm": max_residu_mm,
+        "spans_consistent": (max_residu_mm is not None
+                             and max_residu_mm <= span_tol_mm),
     }
 
 
@@ -574,6 +607,15 @@ def scale_from_span(known_spacing_mm: float, span_px: float) -> float:
     return known_spacing_mm / span_px
 
 
+# ── Homographie du plan facial (NON VALIDÉE, NON BRANCHÉE) ──────────────────
+# ⚠️ ÉTAT RÉEL, mesuré : `homographie_4_points` + `focale_et_residu_rigidite`
+# lèvent « correspondances dégénérées » sur une projection AFFINE — cas d'un plan
+# rigide parfaitement valide — car la DLT à 4 points est singulière pour des
+# données affines. Sur une vraie photo, l'homographie passe mais la rigidité ne
+# trouve AUCUNE focale (résidu 100 %), y compris quand la détection est juste.
+# Ce chemin n'est donc PAS utilisé pour l'acceptation : l'app juge les écarts en
+# millimètres (`FACIAL_SPAN_TOL_MM`). Ne pas rebrancher sans l'avoir corrigé et
+# vérifié sur un cas analytique à focale connue.
 # ── Homographie du plan facial : valider la géométrie EN PERSPECTIVE ─────────
 # Les 4 mires faciales sont COPLANAIRES (y = −0,75) et leurs positions dans ce plan
 # sont connues. Quatre correspondances plan ↔ image déterminent donc une homographie
