@@ -822,6 +822,79 @@ def detect_calibration_markers(image: np.ndarray,
                                     known_scale, inverse_rot_mat)
 
 
+def detect_facial_par_pose(gray: np.ndarray) -> Optional[dict]:
+    """Détection faciale par corrélation 2D puis POSE — indépendante de l'angle.
+
+    Le chemin historique (`_scan_facial_strip`) balaie UNE ligne horizontale à
+    une hauteur donnée : il suppose une photo droite, à peu près de face et à la
+    bonne échelle. Mesuré : sur une même photo, deux cadrages donnaient deux
+    triplets différents. Et la tolérance de hauteur rejette les mires hautes dès
+    que la vue est inclinée — mesuré 582 px au lieu de 659, soit cos → 28°.
+
+    Ici on cherche en 2D (pyramide, gabarit corrélé sur échelles et angles),
+    puis on résout la POSE sur les cinq points 3D connus du clip. L'inclinaison
+    n'est plus tolérée : elle est modélisée. L'échelle est la profondeur de la
+    mire centrale divisée par la focale, donc indépendante de la calibration de
+    l'appareil (mesuré : 2,6 % d'erreur de focale, 0,009 % d'erreur d'échelle).
+
+    Returns:
+        Le même contrat que `detect_facial_quadruplet`, ou `None` si les cinq
+        mires ne sont pas établies avec certitude. Ne devine jamais : c'est le
+        contraire du repli dégradé qui rendait trois pics arbitraires.
+    """
+    try:
+        import facial_2d
+    except Exception as exc:                      # dépendance indisponible
+        log.info("Calibration : chemin 2D indisponible (%s)", exc)
+        return None
+    try:
+        affines = facial_2d.detecter_et_affiner(gray)
+        if len(affines) < 5:
+            log.info("Calibration : chemin 2D → %d mire(s) cohérente(s), il en faut 5",
+                     len(affines))
+            return None
+        pose = facial_2d.poser_et_identifier(affines, image_width=gray.shape[1])
+    except Exception as exc:                      # ne jamais casser la mesure
+        log.warning("Calibration : chemin 2D en échec (%s) → chemin historique", exc)
+        return None
+    if pose is None:
+        log.info("Calibration : chemin 2D → aucune pose plausible, on ne conclut pas")
+        return None
+
+    # Ordre du contrat historique : gauche, centre, droite, puis les hautes
+    roles = pose["roles"]
+    ordre = [clip.FACIAL_CENTRE_ROLE.replace("centre", "gauche"),
+             clip.FACIAL_CENTRE_ROLE, "facial_droite",
+             clip.FACIAL_RAISED_ROLE, clip.FACIAL_RAISED_MIRROR_ROLE]
+    markers = [{"x": float(roles[r]["x"]), "y": float(roles[r]["y"])} for r in ordre]
+
+    # quadrant : la taille de carreau qui a servi à détecter, en pleine résolution
+    qo = int(round(float(np.median([m["qo_px"] for m in affines]))))
+    quad_check = clip.facial_quad_check(
+        clip.facial_points_from_markers(markers))
+    # `quad_valid` est renseigné par le chemin historique au terme de ses
+    # contrôles ; ici l'évidence est plus directe : la pose a déjà retenu cette
+    # affectation parce qu'elle reprojette à moins de RMS_MAX_PX, et une
+    # affectation fausse reprojette à plusieurs dizaines de pixels. On exige en
+    # plus que les contrôles de forme du clip ne disent pas explicitement non.
+    quad_check["quad_valid"] = bool(
+        pose["rms_px"] <= facial_2d.RMS_MAX_PX
+        and quad_check.get("n_points", 0) >= 4
+        and quad_check.get("scale_consistent") is not False
+        and quad_check.get("ratios_consistent") is not False)
+    orientation = _orientation_prise_de_vue(gray, markers, qo,
+                                            gray.shape[1], gray.shape[0])
+    return {
+        "markers": markers,
+        "scale_mm_per_px": pose["scale_mm_per_px"],
+        "facial_quad_check": quad_check,
+        "image_mirrored": orientation == clip.ORIENTATION_MIROIR,
+        "orientation_prise_de_vue": orientation,
+        "methode": "pose_2d",
+        "pose": pose,
+    }
+
+
 def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: int,
                              known_scale: Optional[float] = None,
                              inverse_rot_mat: Optional[np.ndarray] = None) -> dict:
@@ -839,6 +912,14 @@ def detect_facial_quadruplet(gray: np.ndarray, clip_y_base: int, x0: int, x1: in
     Retourne le même contrat que `detect_calibration_markers`.
     """
     h, w = gray.shape[:2]
+
+    # ── Chemin 2D + pose, d'abord ────────────────────────────────────────────
+    # Indépendant de l'orientation de prise de vue et de l'échelle supposée.
+    # S'il n'établit pas les CINQ mires avec certitude, il rend None et le
+    # chemin historique prend le relais, inchangé.
+    par_pose = detect_facial_par_pose(gray)
+    if par_pose is not None:
+        return par_pose
 
     integral = cv2.integral(gray)
     meilleur = None

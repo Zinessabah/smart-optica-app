@@ -64,23 +64,43 @@ QO_RATIO_TOL = 1.25
 ANGLE_TOL_DEG = 25.0
 
 
-def _pics_locaux(res: np.ndarray, n: int, min_corr: float) -> List[Tuple[float, int, int]]:
-    """Les `n` meilleurs maxima locaux d'une carte de corrélation.
+def _pics_locaux(res: np.ndarray, n: int, min_corr: float,
+                 rayon: int = 1) -> List[Tuple[float, int, int]]:
+    """Les `n` meilleurs pics d'une carte de corrélation, après suppression
+    des non-maxima dans un rayon.
 
-    Un maximum local = plus grand que ses 8 voisins. Sans ce filtre, les `n`
-    meilleurs points d'un même damier seraient tous sur le même pic.
+    Un simple « plus grand que ses 8 voisins » NE SUFFIT PAS : le maximum d'une
+    mire est un plateau, et chacun de ses pixels est un maximum local. Mesuré :
+    à 0° d'inclinaison le détecteur ne trouvait que 4 mires sur 5, parce qu'une
+    seule mire occupait les 3 places disponibles par balayage ; à 30° les
+    plateaux se resserraient et les 5 passaient. Le symptôme était donc
+    entièrement dépendant de l'inclinaison, alors que la cause n'a rien à voir
+    avec elle.
+
+    `rayon` doit valoir au moins la taille du gabarit pour que deux pics
+    distants de moins d'un demi-carreau soient reconnus comme UNE mire.
     """
-    if res.size == 0:
+    if res.size == 0 or rayon < 1:
         return []
-    noyau = np.ones((3, 3), np.uint8)
+    taille = 2 * rayon + 1
+    noyau = np.ones((taille, taille), np.uint8)
     dilate = cv2.dilate(res, noyau)
     masque = (res >= dilate - 1e-9) & (res >= min_corr)
     ys, xs = np.nonzero(masque)
     if len(ys) == 0:
         return []
     vals = res[ys, xs]
-    ordre = np.argsort(-vals)[:n]
-    return [(float(vals[i]), int(xs[i]), int(ys[i])) for i in ordre]
+    # à égalité (plateau), on garde UN point : le plus proche du centre du
+    # plateau, pas un bord arbitraire
+    ordre = np.argsort(-vals)
+    pris: List[Tuple[int, int]] = []
+    for i in ordre:
+        x, y = int(xs[i]), int(ys[i])
+        if all(abs(x - px) > rayon or abs(y - py) > rayon for px, py in pris):
+            pris.append((x, y))
+        if len(pris) == n:
+            break
+    return [(float(res[y, x]), x, y) for x, y in pris]
 
 
 def detect_markers_2d(
@@ -89,9 +109,9 @@ def detect_markers_2d(
     div: int = 3,
     qo_min: int = 4,
     qo_max: int = 22,
-    qo_step: int = 2,
+    qo_step: int = 1,
     angle_step: int = 10,
-    pics_par_balayage: int = 3,
+    pics_par_balayage: int = 8,
     corr_min: float = CORR_MIN,
 ) -> List[Dict]:
     """Toutes les mires à damier plausibles de l'image, sans hypothèse de cadrage.
@@ -102,7 +122,12 @@ def detect_markers_2d(
         qo_min, qo_max, qo_step: bornes du demi-écartement des quadrants, en px
             de l'image RÉDUITE. Élargir coûte linéairement en temps.
         angle_step: pas du balayage d'orientation.
-        pics_par_balayage: pics retenus par couple (échelle, angle).
+        pics_par_balayage: pics retenus par couple (échelle, angle). Doit être
+            au moins égal au nombre de mires à trouver : le clip facial en a
+            CINQ. Mesuré — avec 3, le détecteur ne trouvait que 4 mires sur 5
+            à 0° d'inclinaison et 5 sur 5 à 30°, parce qu'à 0° les cinq mires
+            partagent la même échelle et se disputaient trois places. Le
+            symptôme dépendait de l'inclinaison, la cause non.
         corr_min: corrélation minimale.
 
     Returns:
@@ -125,7 +150,10 @@ def detect_markers_2d(
             if gh >= petite.shape[0] or gw >= petite.shape[1]:
                 continue
             res = cv2.matchTemplate(petite, gabarit, cv2.TM_CCOEFF_NORMED)
-            for corr, px, py in _pics_locaux(res, pics_par_balayage, corr_min):
+            # rayon de suppression = le demi-carreau : deux damiers du clip sont
+            # distants de plusieurs demi-carreaux, un plateau n'en fait qu'un
+            for corr, px, py in _pics_locaux(res, pics_par_balayage, corr_min,
+                                             rayon=max(1, qo)):
                 # le pic de matchTemplate désigne le coin haut-gauche du gabarit :
                 # le centre de la mire est au milieu du gabarit.
                 cx = (px + _centre(gw)) * div
