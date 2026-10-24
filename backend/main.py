@@ -663,7 +663,22 @@ def _best_facial_quadruplet(peaks: list, gray: np.ndarray, integral: np.ndarray,
                  + (p5["score"] if p5 else 0.0)) \
                 - equi * 200.0 - abs(dy_mesure - dy_raised) * 5.0
         if score > info["score"]:
-            meilleur = [a, b, c, p4] + ([p5] if p5 else [])
+            # ⚠️ La hauteur des 3 mires de la barre doit être MESURÉE, pas reprise de
+            # la position de RECHERCHE. `a`, `b` et `c` viennent du balayage 1D et
+            # portent `y = clip_y` — une bande posée au niveau des sourcils, pas le
+            # centre des damiers. Les publier telles quelles faisait entrer une
+            # erreur systématique dans TOUS les écartements qui joignent la mire
+            # haute (mesuré sur une image dont le centre est connu : y = 697 au lieu
+            # de 700). Avec une pointe à 14 mm l'erreur restait sous les seuils ;
+            # à 32 mm elle pèse 2,3 % sur le côté qui la joint, et le quadruplet
+            # était rejeté. On affine donc le y des trois, comme celui de la pointe.
+            demi_rangee = max(quadrant_offset, int(FACIAL_ROW_PLAGE_FRAC * dy_raised))
+            rangee = []
+            for p in (a, b, c):
+                r = _refine_marker_2d(gray, p["x"], clip_y, demi_rangee,
+                                      quadrant_offset, w, h)
+                rangee.append({**p, "y": r["y"]} if r else p)
+            meilleur = rangee + [p4] + ([p5] if p5 else [])
             info = {"score": score, "equi": equi, "span_px": span_px,
                     "scale": scale_prov, "dy_raised_px": dy_mesure,
                     "quadrant_offset": quadrant_offset, "clip_y": clip_y,
