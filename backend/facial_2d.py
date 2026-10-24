@@ -45,6 +45,23 @@ import numpy as np
 import clip_geometry as clip
 import lateral_checker as lc
 
+# Le balayage grossier n'a PAS besoin d'être précis : `affiner_mire` reprend
+# l'échelle (±3) et l'angle (±12°) autour de chaque mire retenue. Mesuré sur
+# une image 4032x3024 avec le clip incliné à 28°, cinq mires :
+#
+#     qo_step 1, angle 10° : 51,4 s   ├  5/5 mires, pose rms 0,123 px
+#     qo_step 2, angle 10° : 28,6 s   ├  5/5 mires, pose rms 0,123 px
+#     qo_step 2, angle 15° : 20,4 s   ├  5/5 mires, pose rms 0,123 px
+#     qo_step 2, angle 20° : 15,2 s   ├  5/5 mires, pose rms 0,123 px
+#     qo_step 3, angle 20° : 11,3 s   ├  5/5 mires, pose rms 0,123 px  <- RETENU
+#
+# Le résultat est IDENTIQUE à 4,5x moins de temps. Payer la finesse du balayage
+# était donc un gaspillage pur : l'affinage la rend de toute façon.
+#
+# Le coût restant est `matchTemplate` lui-même (84 ms par corrélation sur
+# 1344x1008 avec un gabarit de 55 px). Le levier suivant n'est pas un réglage
+# mais un changement de méthode : un premier passage très grossier pour
+# localiser la zone, puis un passage fin sur un RECADNAGE autour du clip.
 # Corrélation minimale pour retenir un pic. Mesuré : vraies mires 0,64–0,73,
 # bruit 0,49–0,56 sur la photo de référence ; 0,58 sépare les deux populations.
 #
@@ -109,8 +126,8 @@ def detect_markers_2d(
     div: int = 3,
     qo_min: int = 4,
     qo_max: int = 22,
-    qo_step: int = 1,
-    angle_step: int = 10,
+    qo_step: int = 3,
+    angle_step: int = 20,
     pics_par_balayage: int = 8,
     corr_min: float = CORR_MIN,
 ) -> List[Dict]:
