@@ -126,8 +126,8 @@ def detect_markers_2d(
             for corr, px, py in _pics_locaux(res, pics_par_balayage, corr_min):
                 # le pic de matchTemplate désigne le coin haut-gauche du gabarit :
                 # le centre de la mire est au milieu du gabarit.
-                cx = (px + gw / 2.0) * div
-                cy = (py + gh / 2.0) * div
+                cx = (px + _centre(gw)) * div
+                cy = (py + _centre(gh)) * div
                 trouves.append({
                     "x": cx,
                     "y": cy,
@@ -201,3 +201,189 @@ def triangle_ratios(markers: Sequence[Dict]) -> Optional[Dict]:
         "rapports": [v / plus_long for v in d],
         "plus_long_px": plus_long,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Affinage à pleine résolution
+#
+# Précision MESURÉE sur une grille de 25 décalages connus (0 à 0,8 px, pas de
+# 0,2), mire synthétique de qo 20 px collée par interpolation cubique :
+#
+#     biais x +0,000 px   biais y +0,000 px      <- pas de biais systématique
+#     écart-type 1,02 px  max 1,50 px            <- quantisation au pixel
+#
+# Trois variantes ont été comparées, toutes à biais nul :
+#     parabole sur la carte de corrélation    sigma 1,010   <- RETENUE
+#     milieu du plateau (méthode de main)     sigma 1,166
+#     balayage d'angle fixe au lieu de ±12°   sigma 1,018   <- pas la cause
+#
+# L'hypothèse « le balayage d'angle fait sauter la position » est donc FAUSSE,
+# et « le plateau est le problème » aussi. La quantisation est inhérente à
+# `matchTemplate`, qui ne rend que des positions entières.
+#
+# Ce que cela vaut : à l'échelle de la photo de référence (0,0822 mm/px),
+# ±1 px = ±0,08 mm, soit 0,16 % d'une base de 50 mm. Sufisant pour la mesure,
+# insuffisant pour prétendre au centième de millimètre — ne pas l'oublier.
+#
+# La pyramide ÷3 sert à TROUVER, pas à MESURER. Mesuré : un gabarit collé
+# exactement dans une image vierge n'y corrèle qu'à 0,725, la réduction lissant
+# les frontières du damier. Une fois la mire localisée à ±3 px, on la ré-affine
+# à pleine résolution sur une petite fenêtre : le plafond monte et la position
+# devient sous-pixel.
+#
+# C'est la structure du détecteur latéral : `_pics_grossiers` puis `_affiner`.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _centre(n: int) -> float:
+    """Abscisse du centre d'un gabarit de `n` pixels.
+
+    Un gabarit de `n` pixels couvre les indices 0..n-1 : son centre géométrique
+    est à (n-1)/2, PAS n/2. Les gabarits de `_gabarit` sont tous impairs
+    (23, 45, 67, 111, 181 px), donc `n/2` décalait chaque mire de 0,5 px —
+    mesuré comme un biais constant, pas comme du bruit.
+    """
+    return (n - 1) / 2.0
+
+
+def _milieu_plateau(carte: np.ndarray, tol: float = 1e-9) -> Tuple[float, float]:
+    """Milieu du plateau du maximum d'une carte de corrélation.
+
+    Mesuré sur une grille de décalages connus : `minMaxLoc` + parabole donne un
+    biais NUL mais un écart-type de 1,01 px, avec des erreurs symétriques de
+    ±1,1 à ±1,35 px. Autrement dit la position saute d'un pixel : le maximum
+    n'est pas un point mais un plateau, et `minMaxLoc` en renvoie un bord
+    arbitraire.
+
+    On prend donc la composante connexe du maximum et son milieu. C'est la
+    méthode déjà retenue par `main._refine_marker_2d`, qui l'avait choisie
+    contre deux échecs documentés : premier maximum (−12 px) et barycentre
+    (+3 px).
+
+    Returns:
+        (x, y) en coordonnées de la carte, décimales comprises.
+    """
+    mx = float(carte.max())
+    masque = (carte >= mx - tol).astype(np.uint8)
+    nb, etiquettes = cv2.connectedComponents(masque, connectivity=8)
+    if nb <= 1:
+        ys, xs = np.nonzero(masque)
+        return (xs.min() + xs.max()) / 2.0, (ys.min() + ys.max()) / 2.0
+    # étiquette du plateau qui contient le maximum
+    ymax, xmax = np.unravel_index(int(np.argmax(carte)), carte.shape)
+    lab = etiquettes[ymax, xmax]
+    ys, xs = np.nonzero(etiquettes == lab)
+    return (xs.min() + xs.max()) / 2.0, (ys.min() + ys.max()) / 2.0
+
+
+def _parabole(a: float, b: float, c: float) -> float:
+    """Sommet d'une parabole par les trois points a, b, c — décalage en [-0,5 ; 0,5]."""
+    den = a - 2.0 * b + c
+    if abs(den) < 1e-12:
+        return 0.0
+    return float(np.clip(0.5 * (a - c) / den, -0.5, 0.5))
+
+
+def _sous_pixel(carte: np.ndarray, px: int, py: int) -> Tuple[float, float]:
+    """Décalage sous-pixel du maximum, par parabole sur les voisins immédiats."""
+    h, w = carte.shape[:2]
+    dx = dy = 0.0
+    if 0 < px < w - 1:
+        dx = _parabole(float(carte[py, px - 1]), float(carte[py, px]),
+                       float(carte[py, px + 1]))
+    if 0 < py < h - 1:
+        dy = _parabole(float(carte[py - 1, px]), float(carte[py, px]),
+                       float(carte[py + 1, px]))
+    return dx, dy
+
+
+def affiner_mire(
+    gray: np.ndarray,
+    marker: Dict,
+    *,
+    angle_span: float = 12.0,
+    angle_step: float = 2.0,
+    qo_span: int = 3,
+    pos_span: int = 5,
+) -> Dict:
+    """Ré-affine une mire candidate à pleine résolution.
+
+    Balaye l'angle et l'échelle autour de la détection grossière, sur une
+    fenêtre étroite, puis raffine la position au sous-pixel. La corrélation
+    obtenue n'est pas comparable à celle de la pyramide : elle est mesurée à
+    pleine résolution, donc plus haute par construction.
+
+    Args:
+        gray: image 1 canal, pleine résolution.
+        marker: dict issu de `detect_markers_2d` (clés x, y, corr, qo_px, angle).
+        angle_span, angle_step: balayage d'orientation autour de l'angle trouvé.
+        qo_span: demi-amplitude du balayage d'échelle, en px.
+        pos_span: demi-largeur de la fenêtre de recherche, en px.
+
+    Returns:
+        Un dict de même forme, avec la position affinée, la corrélation à
+        pleine résolution et les paramètres retenus. ``affine: True``.
+    """
+    if gray.ndim != 2:
+        raise ValueError("affiner_mire attend une image 1 canal (GRAY)")
+
+    h, w = gray.shape[:2]
+    meilleur: Optional[Dict] = None
+    qo0 = int(round(marker["qo_px"]))
+
+    for qo in range(max(4, qo0 - qo_span), qo0 + qo_span + 1):
+        # Le gabarit de `_gabarit` mesure 5,6 x qo de côté (mesuré : 45 px à
+        # qo=8). La fenêtre doit donc faire au moins 2,8 x qo de demi-largeur,
+        # sinon `matchTemplate` refuse et l'affinage retombe silencieusement sur
+        # la détection grossière — ce qui était le cas à 2,4 x qo.
+        rayon = int(np.ceil(3.1 * qo)) + pos_span
+        x0, x1 = int(round(marker["x"])) - rayon, int(round(marker["x"])) + rayon
+        y0, y1 = int(round(marker["y"])) - rayon, int(round(marker["y"])) + rayon
+        if x0 < 0 or y0 < 0 or x1 > w or y1 > h:
+            continue
+        fenetre = gray[y0:y1, x0:x1].astype(np.float32)
+
+        # Balayage par DÉCALAGES RELATIFS : `(angle - span) % 360` vaut 348
+        # quand l'angle vaut 0, et la condition de fin ne serait jamais vraie.
+        for da in np.arange(-angle_span, angle_span + 1e-9, angle_step):
+            angle = (marker["angle"] + float(da)) % 360.0
+            gabarit = lc._gabarit(qo, angle)
+            gh, gw = gabarit.shape[:2]
+            if gh > fenetre.shape[0] or gw > fenetre.shape[1]:
+                continue
+            res = cv2.matchTemplate(fenetre, gabarit, cv2.TM_CCOEFF_NORMED)
+            cmax = float(res.max())
+            if meilleur is None or cmax > meilleur["corr"]:
+                _, _, _, cloc = cv2.minMaxLoc(res)
+                dx, dy = _sous_pixel(res, cloc[0], cloc[1])
+                meilleur = {
+                    "x": x0 + cloc[0] + _centre(gw) + dx,
+                    "y": y0 + cloc[1] + _centre(gh) + dy,
+                    "corr": cmax,
+                    "qo_px": float(qo),
+                    "angle": angle,
+                    "affine": True,
+                }
+
+    if meilleur is None:
+        # mire trop proche du bord : on renvoie la détection grossière, marquée
+        return dict(marker, affine=False)
+    return meilleur
+
+
+def detecter_et_affiner(
+    gray: np.ndarray,
+    *,
+    corr_min_grossier: float = CORR_MIN,
+    **kwargs,
+) -> List[Dict]:
+    """Chaîne complète : détection 2D grossière, filtre de cohérence, affinage.
+
+    Returns:
+        Les mires cohérentes, affinées à pleine résolution, triées par
+        corrélation décroissante.
+    """
+    grossiers = detect_markers_2d(gray, corr_min=corr_min_grossier)
+    gardes = coherents(grossiers)
+    affines = [affiner_mire(gray, m, **kwargs) for m in gardes]
+    affines.sort(key=lambda m: -m["corr"])
+    return affines

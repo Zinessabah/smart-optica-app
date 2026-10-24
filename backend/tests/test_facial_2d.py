@@ -97,3 +97,68 @@ def test_photo_reelle_trois_mires_coherentes():
     # le bruit mesuré (qo 12 et 18 px, angles 30° et 230°) doit être écarté
     for g in gardes:
         assert 24 <= g["qo_px"] <= 45, f"échelle incohérente retenue : {g}"
+
+
+# ── affinage à pleine résolution ────────────────────────────────────────────
+
+def _mire_sous_pixel(qo=20, angle=0, centre=(400.35, 300.68), taille=(600, 800)):
+    """Mire collée à une position FRACTIONNAIRE, sans interpolation du gabarit."""
+    img = np.full(taille, 128.0, np.float32)
+    g = lc._gabarit(qo, angle)
+    gh, gw = g.shape[:2]
+    x, y = centre
+    # centre d'un gabarit de taille impaire : (n-1)/2, comme dans le module
+    x0, y0 = int(round(x - (gw - 1) / 2)), int(round(y - (gh - 1) / 2))
+    img[y0:y0 + gh, x0:x0 + gw] = g
+    dx, dy = x - (x0 + (gw - 1) / 2), y - (y0 + (gh - 1) / 2)
+    M = np.float32([[1, 0, dx], [0, 1, dy]])
+    out = cv2.warpAffine(img, M, (taille[1], taille[0]),
+                         flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+    return out.astype(np.uint8)
+
+
+def test_affinage_remonte_la_correlation():
+    """Le plafond de 0,725 est celui de la pyramide, pas celui de la détection."""
+    img = _image_avec_mire(qo=20, angle=0, centre=(400, 300))
+    grossier = facial_2d.detect_markers_2d(img, qo_min=4, qo_max=12, qo_step=2,
+                                           angle_step=15)
+    assert grossier
+    g0 = grossier[0]
+    fin = facial_2d.affiner_mire(img, g0)
+    assert fin["affine"] is True
+    assert fin["corr"] > g0["corr"], f"{fin['corr']} <= {g0['corr']}"
+    assert fin["corr"] > 0.95, f"corr affinée = {fin['corr']}"
+
+
+def test_affinage_position_sous_pixel():
+    vrai = (400.35, 300.68)
+    img = _mire_sous_pixel(qo=20, centre=vrai)
+    grossier = facial_2d.detect_markers_2d(img, qo_min=4, qo_max=12, qo_step=2,
+                                           angle_step=15)
+    assert grossier
+    fin = facial_2d.affiner_mire(img, grossier[0])
+    # tolérance MESURÉE : biais nul, écart-type 1,02 px, max observé 1,50 px
+    # sur une grille de décalages connus. Voir l'en-tête de la section
+    # « Affinage à pleine résolution » dans facial_2d.py.
+    assert abs(fin["x"] - vrai[0]) <= 1.5, f"x = {fin['x']}"
+    assert abs(fin["y"] - vrai[1]) <= 1.5, f"y = {fin['y']}"
+    assert fin["affine"] is True
+
+
+def test_affinage_d_un_angle_decale():
+    img = _image_avec_mire(qo=20, angle=7, centre=(300, 250))
+    grossier = facial_2d.detect_markers_2d(img, qo_min=4, qo_max=12, qo_step=2,
+                                           angle_step=15)
+    assert grossier
+    fin = facial_2d.affiner_mire(img, grossier[0])
+    assert fin["corr"] > 0.95
+    assert abs(fin["x"] - 300) <= 1.0 and abs(fin["y"] - 250) <= 1.0
+
+
+def test_affinage_bord_d_image_ne_plante_pas():
+    # mire annoncée près du bord : la fenêtre sort de l'image, l'affinage doit
+    # rendre la détection grossière marquée `affine: False`, pas lever
+    img = np.full((200, 200), 128, np.uint8)
+    m = {"x": 30.0, "y": 30.0, "corr": 0.6, "qo_px": 20.0, "angle": 0.0}
+    out = facial_2d.affiner_mire(img, m)
+    assert "affine" in out and isinstance(out["corr"], float)
