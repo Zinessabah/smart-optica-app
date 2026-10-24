@@ -41,6 +41,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+import clip_geometry as clip
 import lateral_checker as lc
 
 # Corrélation minimale pour retenir un pic. Mesuré : vraies mires 0,64–0,73,
@@ -387,3 +388,129 @@ def detecter_et_affiner(
     affines = [affiner_mire(gray, m, **kwargs) for m in gardes]
     affines.sort(key=lambda m: -m["corr"])
     return affines
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Appariement des mires détectées aux rôles du clip
+#
+# Équivalent facial de `lateral_checker.select_metrological_pair`. Le latéral
+# identifie ses mires par la FORME d'un triangle isocèle, sans connaître
+# l'échelle ; ici il y a mieux — le clip v23.5 porte DEUX triangles qui
+# PARTAGENT la mire centrale :
+#
+#     droite : centre · (+50,00 ; 3,000) · (+25,00 ; 34,922)
+#     gauche : centre · (−50,00 ; 3,000) · (−25,00 ; 34,922)
+#
+# Six contraintes au lieu de trois, et un contrôle croisé : les deux triangles
+# sont symétriques, ils doivent rendre la MÊME échelle (2 %).
+#
+# Le point qui rend la méthode sûre : trois points alignés dans l'espace le
+# restent EXACTEMENT sur l'image, quelle que soit la perspective. La barre se
+# reconnaît donc sans supposer ni échelle ni pose, avec une tolérance serrée.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Tolérance de colinéarité des trois mires de barre, en fraction du span.
+# Justification : la colinéarité est exacte en projection, seule l'erreur de
+# mesure s'y ajoute. Mesuré sur les trois mires d'une photo réelle : 0,3 %.
+BARRE_COLINEARITE_TOL = 0.015
+
+# Cohérence de taille de carreau entre mires d'un même cliché (une photo n'a
+# qu'une échelle) — même rôle que `_qo_coherent` côté latéral.
+QO_COHERENCE_TOL_PAIR = 0.10
+
+
+def _qo_coherent(markers: Sequence[Dict],
+                 tol: float = QO_COHERENCE_TOL_PAIR) -> bool:
+    """Toutes les mires ont-elles la même taille de carreau à `tol` près ?"""
+    qos = [float(m["qo_px"]) for m in markers]
+    if not qos or min(qos) <= 0:
+        return False
+    return (max(qos) - min(qos)) / max(qos) <= tol
+
+
+def _colineaire(a: Dict, b: Dict, c: Dict, tol: float = BARRE_COLINEARITE_TOL) -> bool:
+    """`b` est-il sur le segment ac, à `tol` près (fraction de |ac|) ?"""
+    ax, ay = a["x"], a["y"]
+    cx, cy = c["x"], c["y"]
+    longueur = float(np.hypot(cx - ax, cy - ay))
+    if longueur <= 0:
+        return False
+    # distance perpendiculaire de b à la droite ac
+    dist = abs((cx - ax) * (b["y"] - ay) - (cy - ay) * (b["x"] - ax)) / longueur
+    if dist / longueur > tol:
+        return False
+    # b doit être ENTRE a et c
+    t = ((b["x"] - ax) * (cx - ax) + (b["y"] - ay) * (cy - ay)) / (longueur ** 2)
+    return tol <= t <= 1.0 - tol or 0.0 < t < 1.0
+
+
+def identifier_mires(cands: Sequence[Dict]) -> Optional[Dict]:
+    """Apparie les mires détectées aux rôles du clip facial, par la géométrie.
+
+    Énumère les affectations plausibles, garde celles qui satisfont les deux
+    triangles mesurés, et rend la meilleure au sens du résidu de forme.
+
+    Args:
+        cands: mires issues de `detect_markers_2d` (clés x, y, qo_px, corr).
+
+    Returns:
+        ``{"roles", "points", "scale_mm_per_px", "triangles", "residual",
+        "sides"}`` ou ``None`` si aucune affectation ne tient. Ne devine JAMAIS :
+        mieux vaut échouer que rendre trois pics arbitraires — c'est le défaut
+        du repli dégradé de l'ancien détecteur.
+    """
+    from itertools import permutations
+
+    if len(cands) < 3:
+        return None
+    if not _qo_coherent(cands):
+        return None
+
+    role_c = clip.FACIAL_CENTRE_ROLE
+    role_d = "facial_droite"
+    role_g = "facial_gauche"
+    role_pd = clip.FACIAL_RAISED_ROLE
+    role_pg = clip.FACIAL_RAISED_MIRROR_ROLE
+
+    meilleur: Optional[Dict] = None
+    n = len(cands)
+    for tri in permutations(range(n), 3):
+        ic, i_g, i_d = tri
+        # les trois mires de barre sont alignées, la centrale ENTRE les extrêmes
+        if not _colineaire(cands[i_g], cands[ic], cands[i_d]):
+            continue
+        # les autres candidats, s'il y en a, deviennent les pointes
+        reste = [i for i in range(n) if i not in tri]
+        appariements = ([reste[:2]] if len(reste) >= 2 else [None])
+        for pointes in appariements:
+            pts = {role_c: (cands[ic]["x"], cands[ic]["y"]),
+                   role_g: (cands[i_g]["x"], cands[i_g]["y"]),
+                   role_d: (cands[i_d]["x"], cands[i_d]["y"])}
+            if pointes is None:
+                # un seul triangle exploitable : celui dont on a la pointe
+                continue
+            for ipd, ipg in (pointes, list(reversed(pointes))):
+                essai = dict(pts)
+                essai[role_pd] = (cands[ipd]["x"], cands[ipd]["y"])
+                essai[role_pg] = (cands[ipg]["x"], cands[ipg]["y"])
+                res = clip.facial_triangles_scale(essai)
+                if not res["n_sides"]:
+                    continue
+                # la forme doit tenir sur CHAQUE triangle disponible
+                tous_bons = all(t["shape_ok"] for t in res["by_side"].values() if t)
+                if not tous_bons:
+                    continue
+                if res["n_sides"] == 2 and not res["sides_agree"]:
+                    continue
+                residu = max(t["ratio_residual"] for t in res["by_side"].values() if t)
+                if meilleur is None or residu < meilleur["residual"]:
+                    meilleur = {
+                        "roles": {role_c: ic, role_g: i_g, role_d: i_d,
+                                  role_pd: ipd, role_pg: ipg},
+                        "points": essai,
+                        "scale_mm_per_px": res["scale_mm_per_px"],
+                        "triangles": res,
+                        "residual": residu,
+                        "sides": res["sides"],
+                    }
+    return meilleur

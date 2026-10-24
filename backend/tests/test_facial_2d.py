@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 import pytest
 
+import clip_geometry as clip
 import facial_2d
 import lateral_checker as lc
 
@@ -162,3 +163,91 @@ def test_affinage_bord_d_image_ne_plante_pas():
     m = {"x": 30.0, "y": 30.0, "corr": 0.6, "qo_px": 20.0, "angle": 0.0}
     out = facial_2d.affiner_mire(img, m)
     assert "affine" in out and isinstance(out["corr"], float)
+
+
+# ── appariement aux rôles du clip (v23.5 : deux triangles partageant le centre) ──
+
+# cotes MESURÉES sur le STL du v23.5 imprimé, pas lues dans une doc
+def mires_du_clip():
+    """Les mires faciales DU MODÈLE, en (x, z) — aucune cote recopiée.
+
+    Coder la v22 ou la v23.5 en dur ici ferait échouer ces tests à chaque
+    changement de géométrie, pour une raison qui n'a rien à voir avec
+    l'appariement. On interroge `clip_geometry`, source unique.
+    """
+    return {m["role"]: (float(m["x"]), float(m["z"])) for m in clip.FACIAL_MARKERS}
+
+
+def _cinq_mires_projetees(scale_mm_per_px=0.05, perspective=0.0, angle_deg=0.0):
+    """Les 5 mires du clip projetées, avec une perspective contrôlée."""
+    mires = mires_du_clip()
+    noms = list(mires)
+    pts = np.array([[mires[n][0] / scale_mm_per_px + 900.0,
+                     mires[n][1] / scale_mm_per_px + 500.0] for n in noms],
+                   dtype=np.float32)
+    if perspective:
+        # homographie qui étire un côté : raccourcissement perspectif réaliste
+        src = np.array([[0, 0], [1800, 0], [1800, 1000], [0, 1000]], np.float32)
+        d = perspective
+        dst = np.array([[0, 0], [1800 * (1 - d), 40], [1800, 1000], [0, 1000]], np.float32)
+        H = cv2.getPerspectiveTransform(src, dst)
+        pts = cv2.perspectiveTransform(pts.reshape(-1, 1, 2), H).reshape(-1, 2)
+    if angle_deg:
+        M = cv2.getRotationMatrix2D((900, 500), angle_deg, 1.0)
+        pts = cv2.transform(pts.reshape(-1, 1, 2), M).reshape(-1, 2)
+    return [{"x": float(p[0]), "y": float(p[1]), "corr": 0.7, "qo_px": 25.0,
+             "angle": 0.0, "role_vrai": n} for p, n in zip(pts, noms)]
+
+
+def test_appariement_sans_perspective_retrouve_les_roles():
+    cands = _cinq_mires_projetees(scale_mm_per_px=0.05)
+    res = facial_2d.identifier_mires(cands)
+    assert res is not None, "aucun appariement"
+    assert res["residual"] < 0.02, f"résidu {res['residual']}"
+    assert res["scale_mm_per_px"] == pytest.approx(0.05, rel=0.02)
+    # Les rôles rendus doivent correspondre aux vrais. Le clip est symétrique :
+    # échanger gauche et droite (et les deux pointes) donne un appariement tout
+    # aussi valable, et la même échelle. On accepte donc les deux.
+    miroir = {"facial_centre": "facial_centre", "facial_droite": "facial_gauche",
+              "facial_gauche": "facial_droite", "facial_haute": "facial_haute_gauche",
+              "facial_haute_gauche": "facial_haute"}
+    identite = {r: r for r in mires_du_clip()}
+    rendus = {r: cands[i]["role_vrai"] for r, i in res["roles"].items()}
+    attendu_miroir = {r: miroir[v] for r, v in identite.items()}
+    assert rendus in (identite, attendu_miroir), rendus
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "LIMITE MESURÉE : l'appariement par la forme échoue dès 5 % de "
+    "raccourcissement perspectif (balayé 0,05 à 0,40 : échec partout, seul 0 % "
+    "passe). Les rapports de côtés sont indépendants de l'ÉCHELLE mais PAS de la "
+    "PERSPECTIVE. Conséquence d'architecture : il faut POSER pour identifier, "
+    "pas identifier puis poser. Ce test devra être retourné en test de succès "
+    "quand l'appariement sera résolu par la pose (étape 3)."))
+def test_appariement_sous_perspective_ECHOUE_mesure():
+    cands = _cinq_mires_projetees(scale_mm_per_px=0.05, perspective=0.10)
+    res = facial_2d.identifier_mires(cands)
+    assert res is not None, "la perspective fait échouer l'appariement"
+    assert res["n_sides"] if "n_sides" in res else True
+
+
+def test_appariement_avec_rotation():
+    cands = _cinq_mires_projetees(scale_mm_per_px=0.05, angle_deg=23.0)
+    res = facial_2d.identifier_mires(cands)
+    assert res is not None
+    assert res["scale_mm_per_px"] == pytest.approx(0.05, rel=0.02)
+
+
+def test_appariement_refuse_une_geometrie_etrangere():
+    # cinq points au hasard : aucun ne doit être promu en clip
+    rng = np.random.default_rng(7)
+    cands = [{"x": float(x), "y": float(y), "corr": 0.7, "qo_px": 25.0, "angle": 0.0}
+             for x, y in rng.uniform(0, 2000, size=(5, 2))]
+    assert facial_2d.identifier_mires(cands) is None
+
+
+def test_appariement_refuse_des_echelles_incoherentes():
+    cands = _cinq_mires_projetees()
+    for i, m in enumerate(cands):
+        m["qo_px"] = 25.0 if i < 4 else 60.0     # une mire à une autre échelle
+    assert facial_2d.identifier_mires(cands) is None
