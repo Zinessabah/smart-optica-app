@@ -36,6 +36,7 @@ laissait croire un premier test mal positionné.
 """
 from __future__ import annotations
 
+from itertools import permutations
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
@@ -513,4 +514,121 @@ def identifier_mires(cands: Sequence[Dict]) -> Optional[Dict]:
                         "residual": residu,
                         "sides": res["sides"],
                     }
+    return meilleur
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pose : POSER POUR IDENTIFIER
+#
+# L'appariement par la forme seule échoue dès 5 % de raccourcissement perspectif
+# (mesuré : échec de 0,05 à 0,40). Les rapports de côtés sont indépendants de
+# l'ÉCHELLE mais pas de la PERSPECTIVE. Il faut donc inverser l'ordre : estimer
+# la pose et retenir l'affectation qui la rend plausible.
+#
+# Le problème est PLAN : les cinq mires du clip sont toutes à y = −0,75 dans le
+# modèle (mesuré). C'est un PnP plan, donc `SOLVEPNP_IPPE` — mieux conditionné
+# qu'un PnP général, et un seul minimum au lieu de deux.
+#
+# L'échelle métrologique est la profondeur de la mire CENTRALE divisée par la
+# focale : à cette profondeur, un pixel vaut Z/f millimètres. On la prend à la
+# mire centrale et non à une moyenne, parce que le plan du clip est incliné :
+# le facteur mm/px varie sur l'image, et c'est précisément ce que la pose
+# modélise au lieu de le tolérer.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Erreur de reprojection tolérée, en pixels. Mesuré sur pose synthétique exacte
+# (pose connue, projection par cv2.projectPoints, aucune perturbation) : voir
+# les tests — la valeur retenue laisse passer le bruit de mesure sans laisser
+# passer une mauvaise affectation, qui reprojette à plusieurs dizaines de pixels.
+RMS_MAX_PX = 2.0
+
+
+def _modele_3d() -> Tuple[List[str], np.ndarray]:
+    """Les cinq mires faciales du modèle, dans un ordre stable, en (x, y, z)."""
+    noms = [clip.FACIAL_CENTRE_ROLE, "facial_gauche", "facial_droite",
+            clip.FACIAL_RAISED_ROLE, clip.FACIAL_RAISED_MIRROR_ROLE]
+    obj = np.array([clip.facial_plan_pos(n) for n in noms], dtype=np.float64)
+    # facial_plan_pos rend (x, z) : le plan du clip est y = cste, on remet la
+    # coordonnée manquante pour travailler en 3D complète.
+    ys = [float(m["y"]) for m in clip.FACIAL_MARKERS]
+    obj = np.column_stack([obj[:, 0], np.full(len(noms), float(np.mean(ys))), obj[:, 1]])
+    return noms, obj
+
+
+def _rms_reprojection(obj, img_pts, K, rvec, tvec) -> float:
+    proj, _ = cv2.projectPoints(obj, rvec, tvec, K, None)
+    d = proj.reshape(-1, 2) - img_pts
+    return float(np.sqrt(np.mean(np.sum(d * d, axis=1))))
+
+
+def poser_et_identifier(
+    cands: Sequence[Dict],
+    image_width: int,
+    *,
+    f_frac_min: float = 0.6,
+    f_frac_max: float = 3.0,
+    f_frac_step: float = 0.08,
+    rms_max: float = RMS_MAX_PX,
+) -> Optional[Dict]:
+    """Identifie les mires PAR LA POSE, puis en déduit l'échelle.
+
+    Énumère les affectations candidats → rôles, filtre celles dont la barre est
+    colinéaire (propriété projective exacte, donc gratuite), résout la pose à
+    focale balayée, et retient l'affectation qui reprojette le mieux.
+
+    Args:
+        cands: mires détectées (clés x, y).
+        image_width: largeur de l'image, pour borner le balayage de focale.
+        f_frac_min, f_frac_max, f_frac_step: bornes de la focale, en fractions
+            de la largeur d'image (un téléphone tombe entre 0,8 et 1,4).
+        rms_max: erreur de reprojection au-delà de laquelle on refuse.
+
+    Returns:
+        ``{"roles", "points", "rms_px", "focal_px", "scale_mm_per_px", "pose"}``
+        ou ``None`` — jamais une affectation plausible mais fausse.
+    """
+    if len(cands) < 5:
+        return None
+
+    noms, obj = _modele_3d()
+    # rôles rangés dans l'ordre du modèle
+    roles = list(noms)
+    meilleur: Optional[Dict] = None
+
+    for perm in permutations(range(len(cands)), 5):
+        affect = {roles[k]: cands[perm[k]] for k in range(5)}
+        # pré-filtre : la barre est colinéaire en projection, exactement
+        if not _colineaire(affect["facial_gauche"], affect[clip.FACIAL_CENTRE_ROLE],
+                           affect["facial_droite"]):
+            continue
+        img_pts = np.array([[affect[r]["x"], affect[r]["y"]] for r in roles],
+                           dtype=np.float64)
+        for f in np.arange(f_frac_min, f_frac_max + 1e-9, f_frac_step) * image_width:
+            K = np.array([[f, 0, image_width / 2.0], [0, f, image_width * 0.4], [0, 0, 1]],
+                         dtype=np.float64)
+            try:
+                ok, rvec, tvec = cv2.solvePnP(obj, img_pts, K, None,
+                                              flags=cv2.SOLVEPNP_IPPE)
+            except cv2.error:
+                continue
+            if not ok:
+                continue
+            rms = _rms_reprojection(obj, img_pts, K, rvec, tvec)
+            if meilleur is None or rms < meilleur["rms_px"]:
+                # profondeur de la mire centrale : c'est là que mm/px a un sens
+                i_centre = roles.index(clip.FACIAL_CENTRE_ROLE)
+                R, _ = cv2.Rodrigues(rvec)
+                prof = float((R @ obj[i_centre] + tvec.reshape(3))[2])
+                meilleur = {
+                    "roles": affect,
+                    "points": {r: (affect[r]["x"], affect[r]["y"]) for r in roles},
+                    "rms_px": rms,
+                    "focal_px": float(f),
+                    "scale_mm_per_px": (prof / float(f)) if prof > 0 else None,
+                    "pose": {"rvec": rvec.reshape(3).tolist(),
+                             "tvec": tvec.reshape(3).tolist(),
+                             "profondeur_centre_mm": prof},
+                }
+    if meilleur is None or meilleur["rms_px"] > rms_max:
+        return None
     return meilleur

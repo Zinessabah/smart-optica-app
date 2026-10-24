@@ -251,3 +251,73 @@ def test_appariement_refuse_des_echelles_incoherentes():
     for i, m in enumerate(cands):
         m["qo_px"] = 25.0 if i < 4 else 60.0     # une mire à une autre échelle
     assert facial_2d.identifier_mires(cands) is None
+
+
+# ── pose : POSER POUR IDENTIFIER ─────────────────────────────────────────────
+#
+# L'appariement par la forme seule échoue dès 5 % de raccourcissement (mesuré).
+# La pose, elle, doit tenir à forte inclinaison. C'est le test qui compte.
+
+def _projection_exacte(tilt_deg, dist_mm, f_px, yaw_deg=8.0, roll_deg=-12.0,
+                       largeur=4032, hauteur=3024):
+    """Projette les 5 mires du modèle par une pose CONNUE, sans aucun bruit."""
+    noms, obj = facial_2d._modele_3d()
+    K = np.array([[f_px, 0, largeur / 2], [0, f_px, hauteur / 2], [0, 0, 1]], float)
+    rvec = np.array([np.radians(tilt_deg), np.radians(yaw_deg), np.radians(roll_deg)])
+    tvec = np.array([-15.0, 20.0, dist_mm])
+    proj, _ = cv2.projectPoints(obj, rvec, tvec, K, None)
+    R, _ = cv2.Rodrigues(rvec)
+    prof_vraie = float((R @ obj[0] + tvec)[2])
+    return noms, obj, proj.reshape(-1, 2), prof_vraie / f_px, largeur
+
+
+MIROIR_FACIAL = {"facial_centre": "facial_centre",
+                 "facial_gauche": "facial_droite",
+                 "facial_droite": "facial_gauche",
+                 "facial_haute": "facial_haute_gauche",
+                 "facial_haute_gauche": "facial_haute"}
+
+
+def _roles_justes_ou_miroir(res, cands, noms):
+    """L'affectation trouvée est-elle la bonne, au miroir près (clip symétrique) ?"""
+    trouve = {role: cands.index(c) for role, c in res["roles"].items()}
+    verite = {noms[i]: i for i in range(len(noms))}
+    return trouve == verite or trouve == {r: verite[MIROIR_FACIAL[r]] for r in verite}
+
+
+@pytest.mark.parametrize("tilt", [0.0, 15.0, 25.0, 35.0])
+def test_pose_identifie_a_toute_inclinaison(tilt):
+    noms, obj, proj, echelle_vraie, largeur = _projection_exacte(tilt, 700.0, 4800.0)
+    candidats = list(range(5))
+    cands = [{"x": float(proj[i][0]), "y": float(proj[i][1]), "corr": 0.7,
+              "qo_px": 20.0, "angle": 0.0} for i in candidats]
+    res = facial_2d.poser_et_identifier(cands, image_width=largeur)
+    assert res is not None, f"aucune pose à {tilt}°"
+    assert res["rms_px"] < 0.5, f"rms {res['rms_px']}"
+    # l'échelle est la grandeur métrologique : mesurée à 0,03 % sur pose exacte
+    assert res["scale_mm_per_px"] == pytest.approx(echelle_vraie, rel=0.005)
+    assert _roles_justes_ou_miroir(res, cands, noms), res["roles"]
+
+
+def test_pose_identifie_meme_a_courte_distance():
+    noms, obj, proj, echelle_vraie, largeur = _projection_exacte(35.0, 450.0, 4800.0)
+    cands = [{"x": float(p[0]), "y": float(p[1]), "corr": 0.7,
+              "qo_px": 20.0, "angle": 0.0} for p in proj]
+    res = facial_2d.poser_et_identifier(cands, image_width=largeur)
+    assert res is not None
+    assert res["scale_mm_per_px"] == pytest.approx(echelle_vraie, rel=0.005)
+
+
+def test_pose_refuse_un_point_aberrant():
+    noms, obj, proj, _, largeur = _projection_exacte(20.0, 700.0, 4800.0)
+    cands = [{"x": float(p[0]), "y": float(p[1]), "corr": 0.7,
+              "qo_px": 20.0, "angle": 0.0} for p in proj]
+    cands[3]["x"] += 60.0            # une mire déplacée de 60 px
+    res = facial_2d.poser_et_identifier(cands, image_width=largeur)
+    assert res is None or res["rms_px"] > 1.0
+
+
+def test_pose_refuse_moins_de_cinq_mires():
+    cands = [{"x": float(i * 100), "y": 500.0, "corr": 0.7,
+              "qo_px": 20.0, "angle": 0.0} for i in range(4)]
+    assert facial_2d.poser_et_identifier(cands, image_width=4032) is None
