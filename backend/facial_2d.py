@@ -71,7 +71,12 @@ import lateral_checker as lc
 # réduction de résolution lisse les frontières du damier. Un affinage à pleine
 # résolution relèvera ce plafond ; d'ici là, comparer une corrélation à 1,0
 # n'a pas de sens.
-CORR_MIN = 0.58
+# 0,50 et non 0,58 : le seuil n'est plus un substitut de validation, c'est la
+# POSE qui valide (reprojection <= RMS_MAX_PX, une affectation fausse reprojette
+# a des dizaines de pixels). Mesure sur photo reelle : a 0,58 la cinquieme mire
+# manquait (corr 0,562) et le chemin rendait None ; a 0,50 on obtient les cinq
+# vraies plus un candidat parasite que la pose elimine seule.
+CORR_MIN = 0.50
 
 # Tolérance de cohérence d'échelle entre mires d'un même clip (rapport des qo).
 QO_RATIO_TOL = 1.25
@@ -611,7 +616,12 @@ def poser_et_identifier(
     image_width: int,
     *,
     f_frac_min: float = 0.6,
-    f_frac_max: float = 3.0,
+    # Un téléphone courant est entre 0,8 et 1,4 x la largeur. Mais la focale et
+    # la profondeur se compensent : borner trop bas fait SATURER le balayage sur
+    # la borne, et l'échelle se dégrade. Mesuré sur photo réelle : à 3,0 x, la
+    # focale sortait à 12096 px (la borne exactement) et l'échelle sur le span
+    # donnait 2,3 % d'écart ; le minimum est donc au-delà.
+    f_frac_max: float = 6.0,
     f_frac_step: float = 0.08,
     rms_max: float = RMS_MAX_PX,
 ) -> Optional[Dict]:

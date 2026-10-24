@@ -877,11 +877,14 @@ def detect_facial_par_pose(gray: np.ndarray) -> Optional[dict]:
     # affectation parce qu'elle reprojette à moins de RMS_MAX_PX, et une
     # affectation fausse reprojette à plusieurs dizaines de pixels. On exige en
     # plus que les contrôles de forme du clip ne disent pas explicitement non.
+    # Le critère est la POSE, pas les contrôles d'étalons du chemin 1D :
+    # `scale_consistent` et `ratios_consistent` ont été calibrés pour ce
+    # chemin-là et rendent False sur une détection 2D pourtant juste (mesuré sur
+    # photo réelle : rms 0,551 px, étalon à 0,14 %, et les deux drapeaux à
+    # False). Une affectation fausse reprojette à des dizaines de pixels.
     quad_check["quad_valid"] = bool(
         pose["rms_px"] <= facial_2d.RMS_MAX_PX
-        and quad_check.get("n_points", 0) >= 4
-        and quad_check.get("scale_consistent") is not False
-        and quad_check.get("ratios_consistent") is not False)
+        and quad_check.get("n_points", 0) >= 5)
     orientation = _orientation_prise_de_vue(gray, markers, qo,
                                             gray.shape[1], gray.shape[0])
     return {
