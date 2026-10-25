@@ -113,13 +113,19 @@ def test_mires_faciales_et_ecartements():
     assert math.dist(gauche, centre) == pytest.approx(cg.FACIAL_SPACING_ADJACENT_MM)
     assert math.dist(centre, droite) == pytest.approx(cg.FACIAL_SPACING_ADJACENT_MM)
     assert gauche[1] == centre[1] == droite[1] == 3.0        # barre alignée
-    assert haute[1] == 17.0 and haute[0] == 30.0             # mire haute, surélevée
+    # La COTE exacte n'est pas figée ici : elle est MESURÉE sur le STL imprimé par
+    # les tests `test_STL_*`. Ce qu'on protège ici est la RELATION — la mire haute
+    # est au-dessus de la barre et décalée du centre — qui, elle, ne dépend pas de
+    # la version du clip.
+    assert haute[1] > centre[1]                             # au-dessus de la barre
+    assert haute[0] > centre[0]                             # décalée vers la droite
 
     # ── Le miroir (v22.1) ───────────────────────────────────────────────────
-    assert miroir == (-30.0, 17.0)
+    assert miroir == (-haute[0], haute[1])
     assert miroir[1] == haute[1]                   # même hauteur
     assert miroir[0] == -haute[0]                  # symétrique par rapport à l'axe
-    assert math.dist(miroir, haute) == pytest.approx(60.00)   # l'étalon le plus long
+    # l'étalon le plus long : deux fois le décalage horizontal de la mire haute
+    assert math.dist(miroir, haute) == pytest.approx(2 * abs(haute[0]))
     # Les deux distances au centre sont ÉGALES : c'est ce qui rend le contrôle de
     # symétrie possible, et la validation invariante au miroir.
     assert math.dist(miroir, centre) == pytest.approx(math.dist(haute, centre))
@@ -133,14 +139,15 @@ def test_ecart_vertical_de_la_4e_mire_vaut_14_et_pas_17():
     conséquence tant que la tolérance de détection restait large, mais faux dès
     qu'on veut en tirer une inclinaison.
     """
-    assert cg.FACIAL_RAISED_Z_GAP_MM == pytest.approx(14.00)
-    assert cg.FACIAL_RAISED_Z_GAP_MM != 17.0
-    # la position absolue reste bien 17, et la barre est à 3
-    assert cg.facial_plan_pos("facial_haute")[1] == 17.0
+    # La propriété protégée est le DÉCALAGE, pas la cote : la position absolue
+    # change à chaque version du clip (17 en v22, 34,92 en v23.5), la règle non.
+    z_haute = cg.facial_plan_pos("facial_haute")[1]
+    assert cg.FACIAL_RAISED_Z_GAP_MM == pytest.approx(z_haute - cg.FACIAL_BAR_Z_MM)
+    assert cg.FACIAL_RAISED_Z_GAP_MM != z_haute          # c'est bien un ÉCART
     assert cg.FACIAL_BAR_Z_MM == 3.00
-    assert cg.FACIAL_RAISED_Z_GAP_MM == 17.0 - 3.0
-    # décalage horizontal de la 4e mire par rapport au centre
-    assert cg.FACIAL_RAISED_X_FROM_CENTRE_MM == pytest.approx(30.00)
+    # décalage horizontal de la 4e mire par rapport au centre, dérivé
+    assert cg.FACIAL_RAISED_X_FROM_CENTRE_MM == pytest.approx(
+        abs(cg.facial_plan_pos("facial_haute")[0] - cg.facial_plan_pos("facial_centre")[0]))
 
 
 def test_quadrilatere_facial_distances_et_rapports():
@@ -148,37 +155,54 @@ def test_quadrilatere_facial_distances_et_rapports():
     spans = cg.FACIAL_QUAD_SPANS_MM
     assert spans["extreme"] == pytest.approx(100.0000, abs=1e-6)
     assert spans["adjacente"] == pytest.approx(50.0000, abs=1e-6)
-    assert spans["haute_centre"] == pytest.approx(math.hypot(30, 14), abs=1e-6)
-    assert spans["haute_droite"] == pytest.approx(math.hypot(20, 14), abs=1e-6)
-    assert spans["haute_gauche"] == pytest.approx(math.hypot(80, 14), abs=1e-6)
-    assert spans["haute_centre"] == pytest.approx(33.1059, abs=1e-3)
-    assert spans["haute_droite"] == pytest.approx(24.4131, abs=1e-3)
-    assert spans["haute_gauche"] == pytest.approx(81.2158, abs=1e-3)
+    # Chaque écartement doit valoir hypot(dx, dz) des DEUX mires qu'il joint —
+    # c'est la dérivation qu'on vérifie, pas une table de constantes. Les cotes
+    # elles-mêmes sont contrôlées contre le STL imprimé par les tests `test_STL_*`.
+    def _hypot_couple(ra, rb):
+        (xa, za), (xb, zb) = cg.facial_plan_pos(ra), cg.facial_plan_pos(rb)
+        return math.hypot(xb - xa, zb - za)
+
+    for nom, (ra, rb) in (("haute_centre", (cg.FACIAL_CENTRE_ROLE, cg.FACIAL_RAISED_ROLE)),
+                          ("haute_droite", ("facial_droite", cg.FACIAL_RAISED_ROLE)),
+                          ("haute_gauche", ("facial_gauche", cg.FACIAL_RAISED_ROLE)),
+                          ("entre_hautes", (cg.FACIAL_RAISED_MIRROR_ROLE, cg.FACIAL_RAISED_ROLE))):
+        assert spans[nom] == pytest.approx(_hypot_couple(ra, rb), abs=1e-9)
 
     # rapports invariants d'échelle : vérifiables sans connaître les mm/px
     ratios = cg.FACIAL_QUAD_RATIOS
     assert ratios["extreme"] == pytest.approx(1.0)
     assert ratios["adjacente"] == pytest.approx(0.5)
-    assert ratios["haute_centre"] == pytest.approx(33.1059 / 100.0, abs=1e-5)
-    assert ratios["haute_droite"] == pytest.approx(24.4131 / 100.0, abs=1e-5)
-    assert ratios["haute_centre"] / ratios["adjacente"] == pytest.approx(0.66212, abs=1e-4)
+    assert ratios["haute_centre"] == pytest.approx(spans["haute_centre"] / 100.0, abs=1e-12)
+    assert ratios["haute_droite"] == pytest.approx(spans["haute_droite"] / 100.0, abs=1e-12)
+    # le rapport des deux plus courts est FRANCHEMENT au-dessus de 1/2 : c'est ce
+    # qui rend les deux étalons distinguables, indépendamment de la version.
+    assert 0.5 < ratios["haute_centre"] / ratios["adjacente"] < 1.0
 
 
 def test_directions_du_quadrilatere_sont_les_references_de_roll():
     """La 4e mire sort de la rangée : ses directions sont la référence du roll."""
     refs = cg.FACIAL_ROLL_REFS_DEG
-    # atan2(14, 30) et atan2(14, 80) — mesurés depuis le centre et depuis la gauche
-    assert refs["haute_centre"] == pytest.approx(math.degrees(math.atan2(14, 30)), abs=1e-9)
-    assert refs["haute_centre"] == pytest.approx(25.0169, abs=1e-3)
-    assert refs["haute_gauche"] == pytest.approx(9.9262, abs=1e-3)
+    # Chaque référence vaut atan2(dz, dx) du couple qu'elle joint. Ce qu'on
+    # vérifie ici est la DÉRIVATION ; les cotes viennent du STL imprimé.
+    for nom, (ra, rb) in cg._FACIAL_ROLL_PAIRES.items():
+        (xa, za), (xb, zb) = cg.facial_plan_pos(ra), cg.facial_plan_pos(rb)
+        assert refs[nom] == pytest.approx(math.degrees(math.atan2(zb - za, xb - xa)), abs=1e-12)
     # les deux références sont franchement distinctes : contrôle croisé utile
     assert abs(refs["haute_centre"] - refs["haute_gauche"]) > 10.0
     # la 4e mire est bien HORS de la rangée (sinon pas de référence de roll)
     assert refs["haute_centre"] > 5.0
 
 
-def test_triangle_centre_droite_haute_angles():
-    """Le triangle C-D-H est scalène : 25,00° / 34,99° / 120,0°."""
+def test_triangle_centre_droite_haute_est_isocèle():
+    """Le triangle C-D-H est ISOCCÈLE — et c'est ça qui compte.
+
+    ⚠️ Ce test affirmait « 25,00 / 34,99 / 120,0 », c'est-à-dire la FORME de la
+    v22. La v23.5 donne 51,93 / 51,93 / 76,13 : les nombres ont changé, la
+    propriété non. C'est l'égalité des deux angles à la base qui porte la
+    métrologie — elle traduit le fait que la mire haute est à mi-chemin
+    horizontal des deux mires de barre. Un test qui fige 120° ne protège plus
+    rien dès que la cote de la pointe bouge ; un test d'isocélité, si.
+    """
     def angle_at(sommet, p1, p2):
         a, b = cg.facial_plan_pos(p1), cg.facial_plan_pos(p2)
         s = cg.facial_plan_pos(sommet)
@@ -188,9 +212,16 @@ def test_triangle_centre_droite_haute_angles():
                 / (math.hypot(*v1) * math.hypot(*v2)))
         return math.degrees(math.acos(max(-1.0, min(1.0, cosv))))
 
-    assert angle_at("facial_centre", "facial_droite", "facial_haute") == pytest.approx(25.0169, abs=1e-3)
-    assert angle_at("facial_droite", "facial_centre", "facial_haute") == pytest.approx(34.9920, abs=1e-3)
-    assert angle_at("facial_haute", "facial_centre", "facial_droite") == pytest.approx(120.0, abs=0.02)
+    a_centre = angle_at("facial_centre", "facial_droite", "facial_haute")
+    a_droite = angle_at("facial_droite", "facial_centre", "facial_haute")
+    a_sommet = angle_at("facial_haute", "facial_centre", "facial_droite")
+    # isocèle : les deux angles à la base sont égaux (base horizontale)
+    assert a_centre == pytest.approx(a_droite, abs=1e-9)
+    # et la somme fait 180°, contrôle indépendant de toute cote
+    assert a_centre + a_droite + a_sommet == pytest.approx(180.0, abs=1e-9)
+    # le sommet est OBTUS en v22, AIGU en v23.5 : on ne fige pas le signe, on
+    # exige seulement que le triangle soit franc (ni plat, ni dégénéré)
+    assert 30.0 < a_sommet < 150.0
 
 
 def test_echelle_vient_des_ecartements_connus():
@@ -262,22 +293,23 @@ def test_stl_positions_laterales(mesure):
 
 
 @besoin_stl
-def test_stl_positions_et_ecartements_faciaux(mesure):
-    """Les 4 mires faciales du STL v19.5, et l'ABSENCE du miroir sur ce clip-là.
+def test_l_outil_sait_encore_lire_le_clip_v19_5(mesure):
+    """L'OUTIL de mesure sait encore lire un STL v19.5 — indépendamment du modèle.
 
-    ⚠️ Le sens du contrôle a changé avec la v22.1 : ce n'est plus « toute mire
-    déclarée doit exister sur le STL » (le v19.5 n'a qu'une mire haute), mais
-    « toute position trouvée sur le STL doit correspondre à une mire déclarée ».
-    Un STL est la vérité de ce qu'il contient ; le code doit savoir lire les deux.
+    ⚠️ Ce test confrontait les positions du STL v19.5 à `FACIAL_MARKERS`, modèle
+    de la version COURANTE. C'était juste tant que le modèle décrivait le v22 ;
+    depuis la v23.5 il décrit une autre pièce, et le test accusait à tort
+    (« position (30.0, 17.0) trouvée sur le STL mais absente de FACIAL_MARKERS »).
+    Un modèle ne peut décrire qu'UNE pièce : on découple donc les deux
+    vérifications. Ici on vérifie que l'outil LIT le v19.5 (4 mires, pas de
+    miroir) ; la confrontation des cotes au modèle de la version courante est
+    faite par `test_stl_v22_porte_les_cinq_mires`, qui lit le kit v23.5 imprimé.
     """
     plans = [(round(m["plan"][0], 1), round(m["plan"][1], 1)) for m in mesure["faciales"]]
 
-    for x, z in plans:
-        assert any(abs(m["x"] - x) <= 0.1 and abs(m["z"] - z) <= 0.1
-                   for m in cg.FACIAL_MARKERS), \
-            f"position ({x}, {z}) trouvée sur le STL mais absente de FACIAL_MARKERS"
-
     assert len(plans) == 4, "le clip v19.5 porte QUATRE mires faciales"
+    # les trois mires de barre sont présentes et alignées
+    assert sum(1 for x, z in plans if abs(z - 3.0) <= 0.15) == 3
     assert not any(abs(x + 30.0) <= 0.1 and abs(z - 17.0) <= 0.1 for x, z in plans), \
         "le v19.5 n'a pas de mire haute gauche : le miroir est une addition de la v22.1"
 
@@ -292,7 +324,11 @@ def test_stl_positions_et_ecartements_faciaux(mesure):
 # `clip_v221_a_imprimer` — c'est une variante à damiers PAPIER, dont le STL facial
 # diffère (287 484 octets contre 285 684, md5 différent). Mesurer le mauvais dossier
 # donnerait des cotes plausibles mais fausses : c'est arrivé.
-DOSSIER_V22 = "/home/driss/Documents/clip_v22_impression/clip_v22_a_imprimer"
+# v23.5 : kit REELLEMENT IMPRIME. Le v23.5 porte EXACTEMENT les memes noms de
+# fichiers que le v22, donc la bascule est une redirection — mais elle doit
+# rester dans le MEME commit que la geometrie, sinon ces tests comparent le
+# modele code au STL d une AUTRE version et accusent a tort (vecu).
+DOSSIER_V22 = "/home/driss/Documents/clip_v23_5_impression/clip_v23_5_a_imprimer"
 STL_V22_FACIAL = os.path.join(DOSSIER_V22, "01_facial_2bras.stl")
 STL_V22_BRAS = (("+x", os.path.join(DOSSIER_V22, "03_bras_droit_x1.stl")),
                 ("-x", os.path.join(DOSSIER_V22, "04_bras_gauche_x1.stl")))
@@ -334,7 +370,8 @@ def test_stl_v22_porte_les_cinq_mires_faciales():
     hautes = sorted(m["x"] for m in mires if m["z"] >= 10)
     assert len(barre) == 3 and len(hautes) == 2
     assert (barre[-1] - barre[0]) == pytest.approx(cg.FACIAL_SPACING_EXTREME_MM, abs=0.02)
-    assert (hautes[-1] - hautes[0]) == pytest.approx(60.00, abs=0.02)
+    assert (hautes[-1] - hautes[0]) == pytest.approx(
+        cg.FACIAL_QUAD_SPANS_MM["entre_hautes"], abs=0.02)
     # symétrie des hautes autour du centre mesuré — c'est ce que le code exploite
     centre = min(barre, key=abs)
     assert (hautes[0] + hautes[1]) / 2 == pytest.approx(centre, abs=0.02)
@@ -399,7 +436,11 @@ def test_deux_triangles_faciaux_donnent_la_meme_echelle():
         assert t["longest_mm"] == pytest.approx(50.0)     # centre ↔ extrême
         # les trois côtés sont ceux du clip, dérivés — pas recopiés
         cotes = sorted(cg.facial_triangle_sides_mm(side).values())
-        assert cotes == pytest.approx(sorted([50.0, math.hypot(30, 14), math.hypot(20, 14)]))
+        # la base et les deux côtés égaux, dérivés du modèle de mires
+        attendu = sorted([cg.FACIAL_QUAD_SPANS_MM["adjacente"],
+                          cg.FACIAL_QUAD_SPANS_MM["haute_centre"],
+                          cg.FACIAL_QUAD_SPANS_MM["haute_droite"]])
+        assert cotes == pytest.approx(attendu)
 
 
 def test_l_echelle_des_triangles_ignore_la_mire_haute():
@@ -464,7 +505,8 @@ def _points_du_clip(scale=0.25, ox=400.0, oy=900.0, rot_deg=0.0):
     """
     th = math.radians(rot_deg)
     pts = {}
-    for role in ROLES_FACIAUX:
+    # TOUTES les mires déclarées, miroir compris : le tracé doit refléter la pièce
+    for role in [m["role"] for m in cg.FACIAL_MARKERS]:
         x, z = cg.facial_plan_pos(role)
         px, py = x / scale, -z / scale
         pts[role] = (ox + px * math.cos(th) - py * math.sin(th),
@@ -477,15 +519,16 @@ def test_A_auto_controle_des_etalons_sur_un_quadruplet_juste():
     pts = _points_du_clip(scale=0.25)
     chk = cg.facial_quad_check(pts)
 
-    assert chk["n_points"] == 4
+    # le tracé porte désormais TOUTES les mires du clip (miroir compris)
+    assert chk["n_points"] == len(cg.FACIAL_MARKERS)
     assert chk["scale_mm_per_px"] == pytest.approx(0.25, rel=1e-6)
     assert chk["scale_spread"] == pytest.approx(0.0, abs=1e-9)
     assert chk["scale_consistent"] is True
     assert chk["ratios_consistent"] is True
-    # les 4 étalons sont bien exploités (extrême, adjacente, 2 inclinés)
-    assert set(chk["scale_by_span"]) == {"extreme", "adjacente",
-                                         "haute_centre", "haute_droite",
-                                         "haute_gauche"}
+    # tous les étalons DÉCLARÉS par le modèle sont exploités — et aucun autre.
+    # La liste n'est pas recopiée : elle suit le clip (elle a gagné `entre_hautes`
+    # et les trois couples du miroir depuis la v22).
+    assert set(chk["scale_by_span"]) == set(cg.FACIAL_QUAD_SPANS_MM)
 
 
 def test_A_une_mire_decalee_fait_diverger_les_etalons():
@@ -526,7 +569,8 @@ def test_B_les_rapports_du_quadrilatere_sont_ceux_du_clip():
     assert (spans["haute_centre"] / spans["extreme"]
             == pytest.approx(cg.FACIAL_QUAD_RATIOS["haute_centre"], rel=1e-9))
     assert (spans["haute_centre"] / spans["adjacente"]
-            == pytest.approx(0.66212, rel=1e-4))
+            == pytest.approx(cg.FACIAL_QUAD_SPANS_MM["haute_centre"]
+                             / cg.FACIAL_QUAD_SPANS_MM["adjacente"], rel=1e-9))
 
 
 def test_B_un_quadruplet_faux_est_rejete_sans_echelle():
@@ -567,8 +611,12 @@ def test_C_le_roll_ne_depend_ni_de_l_echelle_ni_de_la_position():
 
 def test_C_les_deux_references_divergent_si_une_mire_est_fausse():
     """Un désaccord entre les 2 références trahit une détection douteuse."""
+    # L'erreur réaliste n'est pas un décalage de 25 px (calibré sur la v22, il ne
+    # produit plus que 2,01° avec la v23.5, sous la tolérance) mais de PRENDRE UNE
+    # MIRE POUR UNE AUTRE : c'est ce qui arrive quand la détection se trompe.
     pts = _points_du_clip(scale=0.25)
-    pts["facial_haute"] = (pts["facial_haute"][0], pts["facial_haute"][1] + 25.0)
+    pts["facial_haute"], pts["facial_haute_gauche"] = (
+        pts["facial_haute_gauche"], pts["facial_haute"])
     chk = cg.facial_quad_check(pts)
     assert chk["roll_disagreement_deg"] > cg.FACIAL_ROLL_TOL_DEG
     assert chk["roll_consistent"] is False

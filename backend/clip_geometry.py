@@ -146,7 +146,7 @@ FACIAL_SPACING_ADJACENT_MM = 50.00    # centre ↔ extrême
 # clip_v22_a_imprimer` (11 INSERTS : 5 faciaux + 6 latéraux), plan facial
 # y = 0,000 — avec `tools/mesure_clip_v22_1.py` :
 #   barre  : x = −50,000 / 0,000 / +50,000 à z = 3,000 — EXACT sur les trois
-#   hautes : x = ±30,000 à z = 16,921 (alésage) / 16,912 (collier), soit 0,08 mm
+#   hautes : x = ±25,000 à z = 34,922 (v23.5, mesuré sur le STL imprimé), soit 0,08 mm
 #            sous les 17,000 du SCAD (`stem_top_z`). On GARDE 17,000 : 0,08 mm est
 #            inférieur à la résolution d'une impression FDM (couche de 0,20 mm).
 #            Si l'écart était réel, il déplacerait le roll de 0,17° et les étalons
@@ -167,8 +167,16 @@ FACIAL_MARKERS: Tuple[Dict, ...] = (
     {"role": "facial_gauche", "x": -50.00, "y": -0.75, "z": 3.00},
     {"role": "facial_centre", "x": 0.00, "y": -0.75, "z": 3.00},
     {"role": "facial_droite", "x": 50.00, "y": -0.75, "z": 3.00},
-    {"role": "facial_haute", "x": 30.00, "y": -0.75, "z": 17.00},   # 5e mire, hors de la barre
-    {"role": "facial_haute_gauche", "x": -30.00, "y": -0.75, "z": 17.00},  # son MIROIR (v22)
+    # ── v23.5 : cotes MESUREES sur le STL du clip REELLEMENT IMPRIME ──
+    # `clip_v23_5_impression/clip_v23_5_a_imprimer` — les pointes sortent a
+    # +-25,000 (SCAD : facial_slots +-25) et z = 34,922 (SCAD : stem_top_z 35,000 ;
+    # l'ecart de 0,08 mm est la levre de la pointe, sous la couche de 0,20 mm).
+    # Les deux triangles faciaux font alors 50,0000 / 40,5464 / 40,5464, hauteur
+    # 31,9220, angles 51,933 / 51,933 / 76,133, rapport 1,233154 — a 0,15 % du
+    # rapport lateral (1,231288), ce qui est le但不 de la conception : les deux
+    # detections partagent la meme geometrie.
+    {"role": "facial_haute", "x": 25.00, "y": -0.75, "z": 34.92},   # pointe, hors de la barre
+    {"role": "facial_haute_gauche", "x": -25.00, "y": -0.75, "z": 34.92},  # son MIROIR
 )
 
 # ── Quadrilatère facial : tout ce qui suit est DÉRIVÉ des positions ci-dessus ─

@@ -40,15 +40,23 @@ def quadrant_px(scale=SCALE):
     return int(round(clip.PATTERN_QUADRANT_MM / scale))
 
 
-def _damiers_4_mires(scale=SCALE, dy_mm=None, x4_frac=0.6):
+def _damiers_4_mires(scale=SCALE, dy_mm=None, x4_frac=None):
     """Les 4 mires faciales : −50 / 0 / +50 (rangée) + la surélevée.
 
-    `dy_mm` = écart vertical de la 4ᵉ mire (défaut : la valeur du clip, 14,00 mm).
-    `x4_frac` = position horizontale de la 4ᵉ mire, en fraction de l'écartement
-    adjacent (30/50 = 0,6 dans le clip).
+    `dy_mm` = écart vertical de la 4ᵉ mire. `x4_frac` = position horizontale de la
+    4ᵉ mire, en fraction de l'écartement adjacent.
+
+    ⚠️ Les deux valent `None` par défaut et se DÉRIVENT du modèle, parce qu'ils ont
+    changé de valeur avec le clip : la v22 plaçait la 4ᵉ mire à 30/50 = 0,6 et
+    +14,00 mm, la v23.5 à 25/50 = 0,5 et +31,92 mm. Figés, ils faisaient dessiner
+    au test une pièce que le modèle ne décrit plus — 16 tests rouges d'un coup.
 
     Retourne (image niveaux de gris, [x des 3 mires de la rangée], (x, y) de la 4ᵉ).
     """
+    if x4_frac is None:
+        x4_frac = (abs(clip.facial_plan_pos("facial_haute")[0]
+                       - clip.facial_plan_pos("facial_centre")[0])
+                   / clip.FACIAL_SPACING_ADJACENT_MM)
     if dy_mm is None:
         dy_mm = clip.FACIAL_RAISED_Z_GAP_MM
     img = np.full((H, W), 150, np.uint8)
@@ -125,8 +133,9 @@ def test_le_14_mm_vient_de_la_geometrie_du_clip():
     assert clip.FACIAL_RAISED_Z_GAP_MM == (clip.facial_plan_pos("facial_haute")[1]
                                            - clip.FACIAL_BAR_Z_MM)
     # « 17 » reste la POSITION absolue, et ne doit jamais servir de décalage
-    assert clip.facial_plan_pos("facial_haute")[1] == 17.0
-    assert clip.FACIAL_RAISED_Z_GAP_MM != 17.0
+    z_haute = clip.facial_plan_pos("facial_haute")[1]
+    assert clip.FACIAL_RAISED_Z_GAP_MM != z_haute        # c'est un ÉCART, pas une cote
+    assert clip.FACIAL_RAISED_Z_GAP_MM == pytest.approx(z_haute - clip.FACIAL_BAR_Z_MM)
     assert clip.FACIAL_RAISED_X_FROM_CENTRE_MM == pytest.approx(30.00)
 
 
