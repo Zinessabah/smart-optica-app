@@ -79,7 +79,12 @@ import lateral_checker as lc
 CORR_MIN = 0.50
 
 # Tolérance de cohérence d'échelle entre mires d'un même clip (rapport des qo).
-QO_RATIO_TOL = 1.25
+# 1,60 et non 1,25 : la taille apparente d'une mire varie LEGITIMEMENT avec la
+# profondeur des qu'on voit le clip de biais. Mesure sur photo reelle : cinq
+# mires a qo 39, 39, 39, 39 et 30 -> rapport 1,30, rejete a 1,25. Le bruit, lui,
+# est a qo 12 contre 39, soit 3,25 : il reste ecarte. La pose tranche de toute
+# facon, et c'est elle qui doit valider, pas ce filtre.
+QO_RATIO_TOL = 1.60
 
 # Tolérance d'orientation entre mires d'un même clip : le clip est rigide, tous
 # ses damiers tournent ensemble. Mesuré : 260–270° pour les vraies mires.
@@ -602,7 +607,15 @@ def identifier_mires(cands: Sequence[Dict]) -> Optional[Dict]:
 # (pose connue, projection par cv2.projectPoints, aucune perturbation) : voir
 # les tests — la valeur retenue laisse passer le bruit de mesure sans laisser
 # passer une mauvaise affectation, qui reprojette à plusieurs dizaines de pixels.
-RMS_MAX_PX = 2.0
+# 4,0 px et non 2,0 : le rms mesure l'ecart de REPROJECTION de la pose, et le
+# comparer a un seuil absolu en pixels n'a de sens que rapporte a la taille de
+# l'objet dans l'image. Mesure sur photo reelle (clip a damiers standardises) :
+# quatre mires a 0,4 px et une cinquieme a 4,4 px sur une base de 1416 px, soit
+# 0,31 mm a 0,0698 mm/px -> rms 1,996 px, rejete de justesse par l'ancien seuil
+# de 2,0 alors que la barre tombait a 1,1 % de son etalon. Une affectation
+# FAUSSE, elle, reprojette a des dizaines de pixels (44,6 px mesure sur le
+# modele v22 applique au clip v23.5) : 4,0 px reste tres discriminant.
+RMS_MAX_PX = 4.0
 
 
 def _modele_3d() -> Tuple[List[str], np.ndarray]:

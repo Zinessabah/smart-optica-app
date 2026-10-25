@@ -12,9 +12,19 @@ import facial_2d
 import lateral_checker as lc
 
 
-def _image_avec_clip(tilt_deg=30.0, dist_mm=450.0, f_px=4800.0,
+def _image_avec_clip(tilt_deg=30.0, dist_mm=250.0, f_px=4800.0,
                      largeur=4032, hauteur=3024):
-    """Une image où les cinq damiers du clip sont RÉELLEMENT dessinés."""
+    """Une image où les cinq damiers du clip sont RÉELLEMENT dessinés.
+
+    ⚠️ `dist_mm` (250 et non 450) n'est pas un détail de confort. Avec la
+    géométrie v23.5, à 450 mm les deux POINTES se projettent à 212 px des mires de
+    barre alors qu'un damier fait 165 px de côté : les motifs se CHEVAUCHENT, la
+    corrélation tombe de 0,75 à 0,59 et l'échelle estimée passe de 30 à 21 px —
+    si bien que `coherents` rejette deux mires réelles et que la pose refuse
+    (mesuré). À 250 mm l'écart entre mires vaut 960 px pour 264 px de damier :
+    plus de recouvrement, et le rendu ressemble à ce qu'une vraie photo donne
+    (sur photo réelle les mires sont à 555 px l'une de l'autre).
+    """
     noms, obj = facial_2d._modele_3d()
     K = np.array([[f_px, 0, largeur / 2], [0, f_px, hauteur / 2], [0, 0, 1]], float)
     rvec = np.array([np.radians(tilt_deg), np.radians(6.0), np.radians(-10.0)])

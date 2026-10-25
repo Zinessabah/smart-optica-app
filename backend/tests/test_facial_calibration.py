@@ -40,15 +40,23 @@ def quadrant_px(scale=SCALE):
     return int(round(clip.PATTERN_QUADRANT_MM / scale))
 
 
-def _damiers_4_mires(scale=SCALE, dy_mm=None, x4_frac=0.6):
+def _damiers_4_mires(scale=SCALE, dy_mm=None, x4_frac=None):
     """Les 4 mires faciales : −50 / 0 / +50 (rangée) + la surélevée.
 
-    `dy_mm` = écart vertical de la 4ᵉ mire (défaut : la valeur du clip, 14,00 mm).
-    `x4_frac` = position horizontale de la 4ᵉ mire, en fraction de l'écartement
-    adjacent (30/50 = 0,6 dans le clip).
+    `dy_mm` = écart vertical de la 4ᵉ mire. `x4_frac` = position horizontale de la
+    4ᵉ mire, en fraction de l'écartement adjacent.
+
+    ⚠️ Les deux valent `None` par défaut et se DÉRIVENT du modèle, parce qu'ils ont
+    changé de valeur avec le clip : la v22 plaçait la 4ᵉ mire à 30/50 = 0,6 et
+    +14,00 mm, la v23.5 à 25/50 = 0,5 et +31,92 mm. Figés, ils faisaient dessiner
+    au test une pièce que le modèle ne décrit plus — 16 tests rouges d'un coup.
 
     Retourne (image niveaux de gris, [x des 3 mires de la rangée], (x, y) de la 4ᵉ).
     """
+    if x4_frac is None:
+        x4_frac = (abs(clip.facial_plan_pos("facial_haute")[0]
+                       - clip.facial_plan_pos("facial_centre")[0])
+                   / clip.FACIAL_SPACING_ADJACENT_MM)
     if dy_mm is None:
         dy_mm = clip.FACIAL_RAISED_Z_GAP_MM
     img = np.full((H, W), 150, np.uint8)
@@ -120,14 +128,17 @@ def test_le_span_vient_des_mires_externes():
 
 def test_le_14_mm_vient_de_la_geometrie_du_clip():
     """L'écart vertical est DÉRIVÉ des positions, jamais recopié."""
-    assert clip.FACIAL_RAISED_Z_GAP_MM == pytest.approx(14.00)
+    assert clip.FACIAL_RAISED_Z_GAP_MM == pytest.approx(
+        clip.facial_plan_pos("facial_haute")[1] - clip.FACIAL_BAR_Z_MM)
     assert clip.FACIAL_BAR_Z_MM == 3.00
     assert clip.FACIAL_RAISED_Z_GAP_MM == (clip.facial_plan_pos("facial_haute")[1]
                                            - clip.FACIAL_BAR_Z_MM)
     # « 17 » reste la POSITION absolue, et ne doit jamais servir de décalage
-    assert clip.facial_plan_pos("facial_haute")[1] == 17.0
-    assert clip.FACIAL_RAISED_Z_GAP_MM != 17.0
-    assert clip.FACIAL_RAISED_X_FROM_CENTRE_MM == pytest.approx(30.00)
+    z_haute = clip.facial_plan_pos("facial_haute")[1]
+    assert clip.FACIAL_RAISED_Z_GAP_MM != z_haute        # c'est un ÉCART, pas une cote
+    assert clip.FACIAL_RAISED_Z_GAP_MM == pytest.approx(z_haute - clip.FACIAL_BAR_Z_MM)
+    assert clip.FACIAL_RAISED_X_FROM_CENTRE_MM == pytest.approx(
+        abs(clip.facial_plan_pos("facial_haute")[0] - clip.facial_plan_pos("facial_centre")[0]))
 
 
 def test_une_4e_mire_a_17_mm_est_refusee():
@@ -201,7 +212,6 @@ def test_quadruplet_valide_est_retenu():
     # Δy : 14,00 mm au-dessus de la rangée (ÉCART, pas position absolue)
     dy = abs(quad[3]["y"] - quad[0]["y"])
     expected_dy = int(round(clip.FACIAL_RAISED_Z_GAP_MM / SCALE))
-    assert expected_dy == 56, "14,00 mm à 0,25 mm/px = 56 px"
     assert dy == pytest.approx(expected_dy, abs=carreau)
     # l'échelle se déduit des 100,00 mm connus, sans aucun IPD supposé
     span = xs[2] - xs[0]
@@ -226,9 +236,14 @@ def test_4e_mire_sur_la_rangee_refusee():
 
 
 def test_4e_mire_bien_trop_haute_refusee():
-    """Une 4e mire à 30 mm au-dessus (au lieu de 14) est refusée."""
+    """Une 4e mire au DOUBLE de la hauteur attendue est refusée.
+
+    ⚠️ Le test utilisait 30 mm « au lieu de 14 ». La valeur 30 était celle de la
+    v22 ; depuis la v23.5 l'écart attendu vaut 31,92 et 30 serait… presque juste.
+    On exprime donc l'erreur en RELATIF : le double de la hauteur du clip.
+    """
     gray, _, _, q, peaks = _bande_reelle()
-    gray_h, _, _ = _damiers_4_mires(SCALE, dy_mm=30.0)
+    gray_h, _, _ = _damiers_4_mires(SCALE, dy_mm=2.0 * clip.FACIAL_RAISED_Z_GAP_MM)
     quad, _ = _call_quad(peaks, gray_h, cv2.integral(gray_h), Y_CLIP, q, SCALE)
     assert quad == []
 
@@ -327,7 +342,11 @@ def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE, avec_4e=True, cote_4e=
     demi = int(round(clip.PATTERN_SQUARE_MM / scale))
     ecart = int(round(clip.FACIAL_SPACING_ADJACENT_MM / scale))
     xs = [300, 300 + ecart, 300 + 2 * ecart]
-    x4 = xs[1] + cote_4e * int(round(0.6 * ecart))
+    # la fraction 0,6 était la cote v22 (30/50) ; elle se dérive du modèle depuis
+    frac_x4 = (abs(clip.facial_plan_pos("facial_haute")[0]
+                   - clip.facial_plan_pos("facial_centre")[0])
+               / clip.FACIAL_SPACING_ADJACENT_MM)
+    x4 = xs[1] + cote_4e * int(round(frac_x4 * ecart))
     y4 = y_barre - int(round(dy_mm / scale))
     for px in xs:
         for (sx, sy) in ((-1, -1), (1, 1)):
@@ -339,7 +358,8 @@ def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE, avec_4e=True, cote_4e=
                 x4 + (0 if sx > 0 else -demi):x4 + (demi if sx > 0 else 0)] = 30
     if avec_5e:
         # la mire haute symétrique — exactement à la même hauteur, à l'opposé du centre
-        x5 = xs[1] - cote_4e * int(round(0.6 * ecart))
+        # meme fraction derivee que la 4e mire, de l'autre cote du centre
+        x5 = xs[1] - cote_4e * int(round(frac_x4 * ecart))
         for (sx, sy) in ((-1, -1), (1, 1)):
             img[y4 + (0 if sy > 0 else -demi):y4 + (demi if sy > 0 else 0),
                 x5 + (0 if sx > 0 else -demi):x5 + (demi if sx > 0 else 0)] = 30
@@ -467,7 +487,8 @@ def test_bout_en_bout_le_clip_est_trouve_meme_si_la_barre_est_mal_situee(decalag
     assert r["scale_mm_per_px"] == pytest.approx(SCALE, rel=0.01)
     for m in r["markers"][:3]:
         assert abs(m["y"] - y_true) <= 3, "la hauteur réelle doit être mesurée"
-    assert abs(r["markers"][3]["y"] - (y_true - int(round(14.0 / SCALE)))) <= 3
+    assert abs(r["markers"][3]["y"]
+               - (y_true - int(round(clip.FACIAL_RAISED_Z_GAP_MM / SCALE)))) <= 3
 
 
 def test_bout_en_bout_une_4e_mire_a_17_mm_est_refusee():
