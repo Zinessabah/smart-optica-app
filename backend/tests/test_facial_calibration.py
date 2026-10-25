@@ -137,7 +137,8 @@ def test_le_14_mm_vient_de_la_geometrie_du_clip():
     z_haute = clip.facial_plan_pos("facial_haute")[1]
     assert clip.FACIAL_RAISED_Z_GAP_MM != z_haute        # c'est un ÉCART, pas une cote
     assert clip.FACIAL_RAISED_Z_GAP_MM == pytest.approx(z_haute - clip.FACIAL_BAR_Z_MM)
-    assert clip.FACIAL_RAISED_X_FROM_CENTRE_MM == pytest.approx(30.00)
+    assert clip.FACIAL_RAISED_X_FROM_CENTRE_MM == pytest.approx(
+        abs(clip.facial_plan_pos("facial_haute")[0] - clip.facial_plan_pos("facial_centre")[0]))
 
 
 def test_une_4e_mire_a_17_mm_est_refusee():
@@ -341,7 +342,11 @@ def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE, avec_4e=True, cote_4e=
     demi = int(round(clip.PATTERN_SQUARE_MM / scale))
     ecart = int(round(clip.FACIAL_SPACING_ADJACENT_MM / scale))
     xs = [300, 300 + ecart, 300 + 2 * ecart]
-    x4 = xs[1] + cote_4e * int(round(0.6 * ecart))
+    # la fraction 0,6 était la cote v22 (30/50) ; elle se dérive du modèle depuis
+    frac_x4 = (abs(clip.facial_plan_pos("facial_haute")[0]
+                   - clip.facial_plan_pos("facial_centre")[0])
+               / clip.FACIAL_SPACING_ADJACENT_MM)
+    x4 = xs[1] + cote_4e * int(round(frac_x4 * ecart))
     y4 = y_barre - int(round(dy_mm / scale))
     for px in xs:
         for (sx, sy) in ((-1, -1), (1, 1)):
@@ -353,7 +358,8 @@ def _image_clip(dy_mm=None, y_barre=Y_BARRE, scale=SCALE, avec_4e=True, cote_4e=
                 x4 + (0 if sx > 0 else -demi):x4 + (demi if sx > 0 else 0)] = 30
     if avec_5e:
         # la mire haute symétrique — exactement à la même hauteur, à l'opposé du centre
-        x5 = xs[1] - cote_4e * int(round(0.6 * ecart))
+        # meme fraction derivee que la 4e mire, de l'autre cote du centre
+        x5 = xs[1] - cote_4e * int(round(frac_x4 * ecart))
         for (sx, sy) in ((-1, -1), (1, 1)):
             img[y4 + (0 if sy > 0 else -demi):y4 + (demi if sy > 0 else 0),
                 x5 + (0 if sx > 0 else -demi):x5 + (demi if sx > 0 else 0)] = 30
@@ -481,7 +487,8 @@ def test_bout_en_bout_le_clip_est_trouve_meme_si_la_barre_est_mal_situee(decalag
     assert r["scale_mm_per_px"] == pytest.approx(SCALE, rel=0.01)
     for m in r["markers"][:3]:
         assert abs(m["y"] - y_true) <= 3, "la hauteur réelle doit être mesurée"
-    assert abs(r["markers"][3]["y"] - (y_true - int(round(14.0 / SCALE)))) <= 3
+    assert abs(r["markers"][3]["y"]
+               - (y_true - int(round(clip.FACIAL_RAISED_Z_GAP_MM / SCALE)))) <= 3
 
 
 def test_bout_en_bout_une_4e_mire_a_17_mm_est_refusee():

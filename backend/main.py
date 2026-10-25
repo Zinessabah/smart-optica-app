@@ -474,6 +474,45 @@ def _refine_marker_2d(gray: np.ndarray, cx: int, y_centre: int, plage_px: int,
     return {"x": cx, "y": int(round(y_b)), "score": float(smax)}
 
 
+def _affiner_xy_mire(gray: np.ndarray, cx: int, cy: int, plage_x: int, plage_y: int,
+                     quadrant_offset: int, w: int, h: int) -> Optional[dict]:
+    """Affine le x ET le y d'une mire haute, puis mesure sa hauteur.
+
+    ⚠️ POURQUOI LE x AUSSI, alors que `_refine_marker_2d` s'y refuse pour la barre.
+    Pour les mires de la RANGÉE, déplacer le x dégrade les ÉCARTEMENTS, qui sont la
+    grandeur métrologique : mesuré 52,4 / 47,7 mm au lieu de 50 / 50. Pour la mire
+    HAUTE, le x n'entre dans aucun écartement — seule compte sa hauteur. Or le x
+    issu du balayage 1D est grossier (mesuré : 600 au lieu de 620) et un x faux
+    DÉCALE LE PROFIL du damier, donc l'ordonnée mesurée : 562 au lieu de 572, soit
+    10 px, quand l'écart vaut 128 px. Avec les 56 px de la v22 l'erreur passait
+    inaperçue ; à 128 px elle fait échouer le contrôle de hauteur et le quadruplet
+    est abandonné au profit du triplet.
+
+    On cherche donc le x qui maximise le score de damier le long de la ligne de
+    recherche, puis on affine le y à ce x avec `_refine_marker_2d`, inchangé.
+    """
+    inner_r = max(4, int(quadrant_offset * 1.11))
+    pts = []
+    for dx in range(-max(1, plage_x), max(1, plage_x) + 1):
+        x = cx + dx
+        if x < inner_r or x >= w - inner_r:
+            continue
+        sc = _check_checkerboard(gray, x, cy, inner_r)
+        if sc > 0:
+            pts.append((x, sc))
+    if not pts:
+        return None
+    # ⚠️ Milieu du PLATEAU, pas premier maximum : le score de damier reste PLAT sur
+    # toute la zone où les quatre échantillons tombent dans les mêmes carreaux — le
+    # même piège que sur l'axe y, documenté dans `_refine_marker_2d`. Prendre le
+    # premier maximum donnait 587 au lieu de 599, soit 12 px de biais systématique
+    # vers la gauche.
+    smax = max(sc for _, sc in pts)
+    plateau = [x for x, sc in pts if sc >= 0.98 * smax]
+    x_b = int(round((min(plateau) + max(plateau)) / 2))
+    return _refine_marker_2d(gray, x_b, cy, plage_y, quadrant_offset, w, h)
+
+
 def _lire_quadrants(gray: np.ndarray, cx: int, cy: int, quadrant_px: int,
                     w: int, h: int) -> Optional[Dict[str, float]]:
     """Moyennes de gris des 4 quadrants d'un damier, autour de son centre.
@@ -621,8 +660,8 @@ def _best_facial_quadruplet(peaks: list, gray: np.ndarray, integral: np.ndarray,
                      if abs(p["x"] - x_att) <= tol_x]
             # Hauteur RÉELLE (le meilleur des 3 premiers candidats en x)
             for cand in cands[:3]:
-                r = _refine_marker_2d(gray, cand["x"], y_4e,
-                                   0.6 * dy_raised, quadrant_offset, w, h)
+                r = _affiner_xy_mire(gray, cand["x"], y_4e, tol_x,
+                                     int(0.6 * dy_raised), quadrant_offset, w, h)
                 if r and abs(r["x"] - x_att) <= tol_ok \
                         and (cote not in trouvees or r["score"] > trouvees[cote]["score"]):
                     trouvees[cote] = r
