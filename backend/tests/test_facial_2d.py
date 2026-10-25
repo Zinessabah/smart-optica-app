@@ -63,9 +63,18 @@ def test_deux_echelles_ne_sont_pas_declarees_coherentes():
 
 
 def test_deux_orientations_ne_sont_pas_declarees_coherentes():
+    """Le filtre d'angle existe encore, mais il n'est PLUS actif par défaut.
+
+    Il rejetait trois mires réelles sur la photo du clip à mires modifiées
+    (corr 0,733 / 0,678 / 0,625, même échelle, orientations 100/260/280°) parce
+    que les quadrants sombres n'y sont pas tous orientés pareil. C'est la pose
+    qui valide désormais. On teste donc le filtre en le demandant explicitement.
+    """
     a = {"x": 0, "y": 0, "corr": 0.9, "qo_px": 30, "angle": 270}
     b = {"x": 0, "y": 0, "corr": 0.8, "qo_px": 30, "angle": 30}
-    assert facial_2d.coherents([a, b]) == [a]
+    assert facial_2d.coherents([a, b], angle_tol=25.0) == [a]
+    # sans filtre d'angle, les deux sont compatibles (même échelle)
+    assert len(facial_2d.coherents([a, b])) == 2
 
 
 def test_une_rotation_de_180_deg_est_compatible():

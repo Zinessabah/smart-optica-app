@@ -203,7 +203,7 @@ def detect_markers_2d(
 
 
 def coherents(markers: Sequence[Dict], *, qo_ratio_tol: float = QO_RATIO_TOL,
-              angle_tol: float = ANGLE_TOL_DEG) -> List[Dict]:
+              angle_tol: Optional[float] = None) -> List[Dict]:
     """Ne garde que les mires compatibles entre elles : même échelle, même angle.
 
     Un clip est rigide : tous ses damiers ont la même taille sur l'image et la
@@ -211,8 +211,17 @@ def coherents(markers: Sequence[Dict], *, qo_ratio_tol: float = QO_RATIO_TOL,
     sur l'échelle ou de `angle_tol` sur l'angle ne peuvent pas appartenir au
     même clip.
 
-    Mesuré sur la photo de référence : les 3 vraies mires (qo 30–36 px, 260–270°)
-    sont conservées, le bruit (qo 12 et 18 px, 30° et 230°) est écarté.
+    ⚠️ L'ORIENTATION N'EST PLUS FILTRÉE PAR DÉFAUT (`angle_tol=None`). Elle
+    l'était, et c'était juste sur l'ancienne photo : les 3 vraies mires à
+    260–270° étaient conservées, le bruit à 30°/230° écarté. Mais mesuré sur la
+    photo du clip à mires MODIFIÉES : les cinq mires sortent à la MÊME échelle
+    (qo 39) et à des orientations de 0, 0, 100, 260 et 280° — trois d'entre
+    elles, parfaitement réelles (corr 0,733 / 0,678 / 0,625), étaient rejetées.
+    Les quadrants sombres des nouveaux damiers ne sont pas tous orientés pareil.
+
+    Le principe est le même que pour `CORR_MIN` : ce filtre était un substitut de
+    validation, la POSE valide désormais. L'échelle reste filtrée — une photo n'a
+    qu'une échelle — mais pas l'orientation.
     """
     if not markers:
         return []
@@ -224,10 +233,13 @@ def coherents(markers: Sequence[Dict], *, qo_ratio_tol: float = QO_RATIO_TOL,
     return gardes
 
 
-def _compatibles(a: Dict, b: Dict, qo_ratio_tol: float, angle_tol: float) -> bool:
+def _compatibles(a: Dict, b: Dict, qo_ratio_tol: float,
+                 angle_tol: Optional[float]) -> bool:
     grand, petit = max(a["qo_px"], b["qo_px"]), min(a["qo_px"], b["qo_px"])
     if petit <= 0 or grand / petit > qo_ratio_tol:
         return False
+    if angle_tol is None:
+        return True          # orientation non filtrée : la pose tranche
     # les angles sont modulo 180° : un damier tourné de 180° est identique
     d = abs(a["angle"] - b["angle"]) % 180.0
     return min(d, 180.0 - d) <= angle_tol
