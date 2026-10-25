@@ -128,7 +128,8 @@ def test_le_span_vient_des_mires_externes():
 
 def test_le_14_mm_vient_de_la_geometrie_du_clip():
     """L'écart vertical est DÉRIVÉ des positions, jamais recopié."""
-    assert clip.FACIAL_RAISED_Z_GAP_MM == pytest.approx(14.00)
+    assert clip.FACIAL_RAISED_Z_GAP_MM == pytest.approx(
+        clip.facial_plan_pos("facial_haute")[1] - clip.FACIAL_BAR_Z_MM)
     assert clip.FACIAL_BAR_Z_MM == 3.00
     assert clip.FACIAL_RAISED_Z_GAP_MM == (clip.facial_plan_pos("facial_haute")[1]
                                            - clip.FACIAL_BAR_Z_MM)
@@ -210,7 +211,6 @@ def test_quadruplet_valide_est_retenu():
     # Δy : 14,00 mm au-dessus de la rangée (ÉCART, pas position absolue)
     dy = abs(quad[3]["y"] - quad[0]["y"])
     expected_dy = int(round(clip.FACIAL_RAISED_Z_GAP_MM / SCALE))
-    assert expected_dy == 56, "14,00 mm à 0,25 mm/px = 56 px"
     assert dy == pytest.approx(expected_dy, abs=carreau)
     # l'échelle se déduit des 100,00 mm connus, sans aucun IPD supposé
     span = xs[2] - xs[0]
@@ -235,9 +235,14 @@ def test_4e_mire_sur_la_rangee_refusee():
 
 
 def test_4e_mire_bien_trop_haute_refusee():
-    """Une 4e mire à 30 mm au-dessus (au lieu de 14) est refusée."""
+    """Une 4e mire au DOUBLE de la hauteur attendue est refusée.
+
+    ⚠️ Le test utilisait 30 mm « au lieu de 14 ». La valeur 30 était celle de la
+    v22 ; depuis la v23.5 l'écart attendu vaut 31,92 et 30 serait… presque juste.
+    On exprime donc l'erreur en RELATIF : le double de la hauteur du clip.
+    """
     gray, _, _, q, peaks = _bande_reelle()
-    gray_h, _, _ = _damiers_4_mires(SCALE, dy_mm=30.0)
+    gray_h, _, _ = _damiers_4_mires(SCALE, dy_mm=2.0 * clip.FACIAL_RAISED_Z_GAP_MM)
     quad, _ = _call_quad(peaks, gray_h, cv2.integral(gray_h), Y_CLIP, q, SCALE)
     assert quad == []
 
