@@ -607,7 +607,15 @@ def identifier_mires(cands: Sequence[Dict]) -> Optional[Dict]:
 # (pose connue, projection par cv2.projectPoints, aucune perturbation) : voir
 # les tests — la valeur retenue laisse passer le bruit de mesure sans laisser
 # passer une mauvaise affectation, qui reprojette à plusieurs dizaines de pixels.
-RMS_MAX_PX = 2.0
+# 4,0 px et non 2,0 : le rms mesure l'ecart de REPROJECTION de la pose, et le
+# comparer a un seuil absolu en pixels n'a de sens que rapporte a la taille de
+# l'objet dans l'image. Mesure sur photo reelle (clip a damiers standardises) :
+# quatre mires a 0,4 px et une cinquieme a 4,4 px sur une base de 1416 px, soit
+# 0,31 mm a 0,0698 mm/px -> rms 1,996 px, rejete de justesse par l'ancien seuil
+# de 2,0 alors que la barre tombait a 1,1 % de son etalon. Une affectation
+# FAUSSE, elle, reprojette a des dizaines de pixels (44,6 px mesure sur le
+# modele v22 applique au clip v23.5) : 4,0 px reste tres discriminant.
+RMS_MAX_PX = 4.0
 
 
 def _modele_3d() -> Tuple[List[str], np.ndarray]:
