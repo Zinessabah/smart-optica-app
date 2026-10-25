@@ -79,7 +79,12 @@ import lateral_checker as lc
 CORR_MIN = 0.50
 
 # Tolérance de cohérence d'échelle entre mires d'un même clip (rapport des qo).
-QO_RATIO_TOL = 1.25
+# 1,60 et non 1,25 : la taille apparente d'une mire varie LEGITIMEMENT avec la
+# profondeur des qu'on voit le clip de biais. Mesure sur photo reelle : cinq
+# mires a qo 39, 39, 39, 39 et 30 -> rapport 1,30, rejete a 1,25. Le bruit, lui,
+# est a qo 12 contre 39, soit 3,25 : il reste ecarte. La pose tranche de toute
+# facon, et c'est elle qui doit valider, pas ce filtre.
+QO_RATIO_TOL = 1.60
 
 # Tolérance d'orientation entre mires d'un même clip : le clip est rigide, tous
 # ses damiers tournent ensemble. Mesuré : 260–270° pour les vraies mires.
