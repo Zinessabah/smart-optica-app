@@ -14,7 +14,13 @@ export async function analyzeCalibration(imageBlob) {
   }, LONG_TIMEOUT_MS)
 
   if (!res.ok) {
-    throw new Error(`API calibration error: ${res.status}`)
+    // ⚠️ Le code HTTP est porté sur l'ERREUR, pas seulement noyé dans le message :
+    // l'appelant doit pouvoir distinguer « le serveur a échoué » (500) de
+    // « la détection n'a rien trouvé » — deux situations opposées pour
+    // l'opticien, qui doit recadrer dans un cas et patienter dans l'autre.
+    const err = new Error(`API calibration error: ${res.status}`)
+    err.status = res.status
+    throw err
   }
 
   return res.json()

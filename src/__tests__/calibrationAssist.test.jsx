@@ -12,11 +12,13 @@ import CalibrationOverlay from '../CalibrationOverlay'
 
 configure({ asyncUtilTimeout: 3000 })
 
-// L'analyse serveur échoue → c'est le cas « détection infructueuse », qui doit
-// activer le pointage assisté d'office.
-vi.mock('../services/api', () => ({
-  analyzeCalibration: vi.fn(async () => { throw new Error('indisponible') }),
-}))
+// L'analyse serveur échoue → le pointage assisté doit s'activer d'office.
+// ⚠️ Le mock est CONTROLABLE, parce que « l'analyse échoue » recouvre trois
+// situations que l'écran doit distinguer depuis peu : serveur en erreur
+// (HTTP), serveur injoignable, et réponse valide mais détection insuffisante.
+// Un mock figé ne pouvait en exercer qu'une.
+vi.mock('../services/api', () => ({ analyzeCalibration: vi.fn() }))
+import { analyzeCalibration } from '../services/api'
 
 const CW = 520, CH = 693
 
@@ -33,6 +35,10 @@ function stubImageLoad() {
 
 describe('CalibrationOverlay — pointage assisté', () => {
   beforeEach(() => {
+    // Par défaut : serveur injoignable — une erreur SANS `status`, ce qui est
+    // exactement la signature d'un échec réseau.
+    analyzeCalibration.mockReset()
+    analyzeCalibration.mockRejectedValue(new Error('indisponible'))
     stubImageLoad()
     Element.prototype.getBoundingClientRect = function () {
       return { x: 0, y: 0, left: 0, top: 0, right: CW, bottom: CH, width: CW, height: CH, toJSON() {} }
@@ -62,8 +68,11 @@ describe('CalibrationOverlay — pointage assisté', () => {
   it('un contact VISE : loupe ouverte, aucun repère posé', async () => {
     const { container, stage } = await mount()
     await waitFor(() => expect(container.querySelector('button[data-tool="assist"]').dataset.assist).toBe('1'))
-    // L'indicateur doit DIRE l'échec, pas rester muet
-    expect(container.querySelector('[data-detect="method"]').textContent).toMatch(/infructueuse/)
+    // L'indicateur doit DIRE l'échec, pas rester muet. Et il doit dire LEQUEL :
+    // le mock lève une erreur sans code HTTP, donc un échec réseau — annoncer
+    // « détection infructueuse » enverrait l'opticien recadrer sa photo pour un
+    // problème de connexion.
+    expect(container.querySelector('[data-detect="method"]').textContent).toMatch(/injoignable/)
 
     fireEvent.pointerDown(stage, { clientX: 200, clientY: 300 })
     expect(container.querySelector('[data-loupe]')).toBeTruthy()

@@ -161,7 +161,21 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
         if (!cancelAutoRef.current) {
           setAutoDetecting(false)
           setAutoFailed(true)
-          setDebugInfo({ error: 'API indisponible — vérifiez la connexion au serveur' })
+          // ⚠️ TROIS ÉCHECS DIFFÉRENTS, TROIS MESSAGES DIFFÉRENTS.
+          // Avant, tout tombait sur « API indisponible », puis l'écran affichait
+          // « Détection infructueuse ». Un HTTP 500 (le serveur a planté pendant
+          // l'analyse) était donc présenté comme une détection ratée, et
+          // l'opticien recadrait sa photo au lieu de réessayer. Ce défaut a coûté
+          // plusieurs heures de diagnostic : la panne était visible dans les
+          // journaux, jamais à l'écran.
+          //   status    : le serveur a répondu, en erreur — réessayer
+          //   network   : pas de réponse du tout — vérifier la connexion
+          //   (rien)    : réponse valide mais détection insuffisante — pointer
+          setDebugInfo(e.status
+            ? { errorKind: 'http', httpStatus: e.status,
+                error: `Le serveur n'a pas pu analyser cette photo (HTTP ${e.status})` }
+            : { errorKind: 'network',
+                error: 'Serveur injoignable — vérifiez la connexion' })
         }
         return
       }
@@ -175,7 +189,14 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
   const detectLabel = autoDetecting
     ? { text: 'Analyse des mires…', color: 'var(--color-text-muted)' }
     : autoFailed
-      ? { text: 'Détection infructueuse — placez les 3 repères avec la loupe', color: 'var(--color-red)' }
+      ? (debugInfo?.errorKind === 'http'
+          ? { text: `Serveur en erreur (${debugInfo.httpStatus}) — réessayez, ou pointez à la loupe`,
+              color: 'var(--color-red)' }
+          : debugInfo?.errorKind === 'network'
+            ? { text: 'Serveur injoignable — vérifiez la connexion',
+                color: 'var(--color-red)' }
+            : { text: 'Détection infructueuse — placez les 3 repères avec la loupe',
+                color: 'var(--color-red)' })
       : manuallyAdjustedRef.current
         ? { text: 'Repères placés manuellement', color: 'var(--color-text-muted)' }
         : debugInfo?.backendConfidence != null
