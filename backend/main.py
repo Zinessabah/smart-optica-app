@@ -784,7 +784,21 @@ def detect_calibration_markers(image: np.ndarray,
     h, w = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    # ── 0. MediaPipe → détection du visage ──
+    # ── 0. DÉTECTION PAR POSE, AVANT TOUTE CHOSE, ET SANS VISAGE ──
+    # ⚠️ L'ORDRE ÉTAIT FAUX, et ça se voyait dans l'app : le détecteur par pose
+    # n'était tenté qu'APRÈS MediaPipe. Or les cinq damiers sont sur le CLIP, pas
+    # sur le visage — et l'opticien photographie souvent le clip seul, sur un fond
+    # neutre, sans visage dans le cadre. Dans ce cas MediaPipe échoue, le code
+    # partait dans `_fallback_hough`, et l'app affichait TROIS marqueurs au lieu
+    # de cinq (mesuré sur une photo réelle : espacements 950 et 1268 px, donc
+    # incohérents — une calibration fausse, silencieusement).
+    # La pose est indépendante du visage : elle doit passer en premier.
+    par_pose = detect_facial_par_pose(gray)
+    if par_pose is not None:
+        log.info("Calibration : cinq mires trouvées par POSE (sans visage requis)")
+        return par_pose
+
+    # ── 0 bis. MediaPipe → détection du visage (seulement pour GUIDER le repli 1D) ──
     rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
     face_result = landmarker.detect(mp_img)   # fonction sync : déjà dans le threadpool
