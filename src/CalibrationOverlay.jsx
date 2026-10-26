@@ -7,6 +7,14 @@ import PrecisionLoupe from './components/PrecisionLoupe'
 
 export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onRetake, initialPoints }) {
   const [points, setPoints] = useState([])
+  // Mires détectées HORS de la rangée de calibrage : les deux mires hautes du
+  // clip (v22.1 et v23.5). Elles ne servent PAS au calibrage — l'échelle se
+  // déduit de l'écartement des trois mires de rangée — mais le backend les voit
+  // et les mesure. Les taire faisait croire à une détection partielle : l'écran
+  // affichait 3 repères quand le détecteur en avait trouvé 5. On les DESSINE,
+  // sans les rendre manipulables, pour que l'écran dise la vérité de la mesure
+  // sans changer le geste de l'opticien.
+  const [infoMarkers, setInfoMarkers] = useState([])
   const [imageSize, setImageSize] = useState(null)
   const [debugInfo, setDebugInfo] = useState(null)
   const [markerSpacing, setMarkerSpacing] = useState(50)
@@ -105,6 +113,7 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
         if (cancelAutoRef.current) return
         if (detected.length >= 3) {
           setPoints(detected.slice(0, 3))
+          setInfoMarkers(detected.slice(3))
           setAutoDetecting(false)
           const scaleInfo = {
             scalePxToMm: apiResult.scale_mm_per_px,
@@ -334,7 +343,8 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
         <div className="flex items-center gap-2">
           {allPlaced ? (
             <span className="text-xs" style={{ color: 'var(--color-green)' }}>
-              ✓ 3 repères placés
+              ✓ {points.length} repères placés{infoMarkers.length > 0
+                ? ` · ${points.length + infoMarkers.length} mires vues` : ''}
             </span>
           ) : autoDetecting ? (
             <span className="text-xs" style={{ color: 'var(--color-gold)' }}>
@@ -465,6 +475,43 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
                   </div>
                 )
               })}
+
+              {/* Mires HORS RANGÉE — dessinées, non manipulables.
+                  Le trait pointillé les relie entre elles : c'est la base du
+                  triangle facial, il rend visible que le clip a bien été vu
+                  dans son ensemble et pas seulement sur sa barre. */}
+              {infoMarkers.length > 0 && (
+                <>
+                  {infoMarkers.length === 2 && (
+                    <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 4 }}>
+                      <line x1={`${(infoMarkers[0].x / imageSize.width) * 100}%`}
+                        y1={`${(infoMarkers[0].y / imageSize.height) * 100}%`}
+                        x2={`${(infoMarkers[1].x / imageSize.width) * 100}%`}
+                        y2={`${(infoMarkers[1].y / imageSize.height) * 100}%`}
+                        stroke="rgba(94, 234, 212, 0.55)" strokeWidth="1.1" strokeDasharray="2 4" />
+                    </svg>
+                  )}
+                  {infoMarkers.map((p, i) => (
+                    <div key={`info-${i}`}
+                      data-info-marker="1"
+                      className="absolute transform -translate-x-1/2 -translate-y-1/2"
+                      style={{ left: `${(p.x / imageSize.width) * 100}%`,
+                               top: `${(p.y / imageSize.height) * 100}%`,
+                               zIndex: 18, pointerEvents: 'none' }}>
+                      <svg width="18" height="18" viewBox="0 0 18 18" className="mx-auto block"
+                        style={{ filter: 'drop-shadow(0 0 3px rgba(0,0,0,0.6))' }}>
+                        <circle cx="9" cy="9" r="6.5" fill="none" stroke="#5eead4" strokeWidth="1.6" />
+                        <circle cx="9" cy="9" r="1.8" fill="#5eead4" />
+                      </svg>
+                      <div className="text-[9px] text-center font-semibold tracking-wide"
+                        style={{ color: '#5eead4', whiteSpace: 'nowrap',
+                                 textShadow: '0 1px 2px rgba(0,0,0,0.9)' }}>
+                        Haute
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
 
               {/* Connection lines */}
               {points.length >= 2 && (
