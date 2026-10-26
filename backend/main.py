@@ -940,9 +940,39 @@ def detect_facial_par_pose(gray: np.ndarray) -> Optional[dict]:
         and quad_check.get("n_points", 0) >= 5)
     orientation = _orientation_prise_de_vue(gray, markers, qo,
                                             gray.shape[1], gray.shape[0])
+    # ⚠️ LE CONTRAT DE RÉPONSE DOIT ÊTRE COMPLET ICI AUSSI.
+    # Ce chemin rendait sept clés, sans `spacing_px`, `detection_confidence` ni
+    # `face_used`. Comme `/api/analyze-calibration` les lit en `result["..."]`,
+    # chaque détection RÉUSSIE par pose levait `KeyError: 'spacing_px'` → HTTP 500
+    # → le front basculait en pointage manuel, et l'utilisateur posait trois
+    # points à la main en croyant à un échec de détection. Le bug était invisible
+    # tant que la pose n'était pas atteinte (aucun visage → repli Hough).
+    _g = roles[ordre[0]]
+    _c = roles[ordre[1]]
+    _d = roles[ordre[2]]
+    spacing_px = float(
+        np.hypot(_c["x"] - _g["x"], _c["y"] - _g["y"])
+        + np.hypot(_d["x"] - _c["x"], _d["y"] - _c["y"])) / 2.0
     return {
         "markers": markers,
         "scale_mm_per_px": pose["scale_mm_per_px"],
+        # Écartement adjacent moyen des mires de rangée : c'est l'ÉTALON du
+        # calibrage, la grandeur que le front affiche et utilise.
+        "spacing_px": round(spacing_px, 1),
+        # Confiance fondée sur la REPROJECTION RAPPORTÉE À LA BASE, pas sur une
+        # somme de scores, et surtout pas rapportée à RMS_MAX_PX : ce dernier est
+        # un seuil de REJET, donc une pose juste mais proche du seuil recevait une
+        # confiance quasi nulle (mesuré : 0,063 pour rms 3,75 sur une base de
+        # 710 px, alors que la calibration était bonne). Une erreur de
+        # reprojection ne veut rien dire en pixels absolus ; rapportée à la taille
+        # de l'objet, elle vaut 0,53 % ici. On annonce une confiance nulle à
+        # 2 % de la base, ce qui laisse une plage utile.
+        "detection_confidence": round(max(0.0, min(1.0,
+            1.0 - (pose["rms_px"] / max(1.0, spacing_px)) / 0.02)), 3),
+        # La pose ne dépend PAS du visage : c'est tout son intérêt.
+        "face_used": False,
+        "width": int(gray.shape[1]),
+        "height": int(gray.shape[0]),
         "facial_quad_check": quad_check,
         "image_mirrored": orientation == clip.ORIENTATION_MIROIR,
         "orientation_prise_de_vue": orientation,
@@ -1556,9 +1586,12 @@ async def analyze_calibration(file: UploadFile = File(...)):
         width=w, height=h,
         markers=result["markers"],
         scale_mm_per_px=result["scale_mm_per_px"],
-        spacing_px=result["spacing_px"],
-        detection_confidence=result["detection_confidence"],
-        face_used=result["face_used"],
+        # ⚠️ `.get` et non `[...]` : un champ absent d'un chemin de détection ne
+        # doit pas faire tomber la REQUÊTE entière (HTTP 500, front en pointage
+        # manuel). Les valeurs par défaut sont celles du modèle de réponse.
+        spacing_px=result.get("spacing_px") or 0.0,
+        detection_confidence=result.get("detection_confidence") or 0.0,
+        face_used=bool(result.get("face_used", False)),
         facial_quad_check=result.get("facial_quad_check"),
         image_mirrored=result.get("image_mirrored", False),
         orientation_prise_de_vue=result.get("orientation_prise_de_vue"),
