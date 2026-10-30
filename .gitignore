@@ -50,3 +50,6 @@ strong-class-query.md
 
 # venvs sauvegardes lors d une reparation (python-venv-broken-recovery)
 venv*/
+
+# maquettes et fichiers de travail locaux
+scratch/
