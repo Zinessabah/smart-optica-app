@@ -225,15 +225,31 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
 
   // Réticule du repère — SOURCE UNIQUE, partagée avec la loupe (qui le grossit du même
   // facteur que l'image). La loupe dessinait sa propre croix, différente du repère.
-  const reticleNode = (dragging) => (
-    <svg width="22" height="22" viewBox="0 0 22 22" className="mx-auto block"
-      style={{ filter: 'drop-shadow(0 0 4px rgba(0,0,0,0.5))' }}>
-      <circle cx="11" cy="11" r="9" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
-      <line x1="2" y1="11" x2="20" y2="11" stroke={dragging ? '#ff2dd0' : 'rgba(255,255,255,0.6)'} strokeWidth="1.5" />
-      <line x1="11" y1="2" x2="11" y2="20" stroke={dragging ? '#ff2dd0' : 'rgba(255,255,255,0.6)'} strokeWidth="1.5" />
-      <circle cx="11" cy="11" r={dragging ? 3 : 2} fill={dragging ? '#ff2dd0' : 'rgba(255,255,255,0.8)'} />
-    </svg>
-  )
+  const reticleNode = (dragging) => {
+    // UN SEUL ACCENT. L'écran portait trois couleurs concurrentes — or, magenta
+    // (#ff2dd0) et cyan (#5eead4) — et l'œil ne savait plus ce qui mesure, ce qui
+    // informe et ce qui attend un geste. Désormais tout ce qui est MESURÉ est or.
+    // La distinction « manipulable / simplement vu » passe par la FORME : anneau
+    // plein + croix pour les trois repères, anneau pointillé pour les mires hautes.
+    //
+    // La croix est volontairement À TROU CENTRAL : une croix pleine masque le
+    // damier qu'on vise, alors qu'on demande de poser le repère au centre d'un
+    // motif de 2,5 mm.
+    const c = dragging ? 'var(--color-gold-light)' : 'var(--color-gold)'
+    return (
+      <svg width="24" height="24" viewBox="0 0 24 24" className="mx-auto block"
+        style={{ filter: 'drop-shadow(0 0 4px rgba(0,0,0,0.55))' }}>
+        <circle cx="12" cy="12" r="9.5" fill="none" stroke={c} strokeWidth={dragging ? 2 : 1.7} />
+        <g stroke={c} strokeWidth="1.5" strokeLinecap="round">
+          <line x1="12" y1="2.6" x2="12" y2="6.6" />
+          <line x1="12" y1="17.4" x2="12" y2="21.4" />
+          <line x1="2.6" y1="12" x2="6.6" y2="12" />
+          <line x1="17.4" y1="12" x2="21.4" y2="12" />
+        </g>
+        <circle cx="12" cy="12" r={dragging ? 1.9 : 1.6} fill={c} />
+      </svg>
+    )
+  }
 
   // Pose effective d'un repère de calibrage (3 au maximum).
   const addPoint = (pt) => {
@@ -359,25 +375,13 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
 
   return (
     <div className="rounded-2xl border overflow-hidden animate-fade-in" style={{ background: 'var(--color-card)', borderColor: 'var(--color-border)' }}>
-      {/* Toolbar */}
-      <div className="px-4 py-3 flex items-center justify-between border-b" style={{ borderColor: 'var(--color-border)' }}>
-        <div className="flex items-center gap-2">
-          {allPlaced ? (
-            <span className="text-xs" style={{ color: 'var(--color-green)' }}>
-              ✓ {points.length} repères placés{infoMarkers.length > 0
-                ? ` · ${points.length + infoMarkers.length} mires vues` : ''}
-            </span>
-          ) : autoDetecting ? (
-            <span className="text-xs" style={{ color: 'var(--color-gold)' }}>
-              Analyse…
-            </span>
-          ) : (
-            <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
-              ① Gauche · ② Centre · ③ Droite
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
+      {/* Barre d'actions SEULE. L'état était ici ET dans la ligne de détection
+          ci-dessous : deux fois la même information, dont une seule était
+          actionnable. L'état vit désormais dans la ligne de détection, qui porte
+          déjà `data-detect="method"` et dit la vérité de la mesure (y compris
+          les échecs) ; cette barre ne contient plus que des gestes. */}
+      <div className="px-4 py-2.5 flex items-center justify-end gap-3 border-b" style={{ borderColor: 'var(--color-border)' }}>
+        <div className="flex items-center gap-3">
           {onRetake && (
             <button onClick={onRetake} className="flex items-center gap-1 text-xs transition-all hover:opacity-80" style={{ color: 'var(--color-red)' }}>
               <Camera size={12} /> Reprendre
@@ -411,14 +415,28 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
       )}
       {/* Vérité de la détection — même règle que les contrôles objectifs : un état non
             encore connu s'annonce « analyse… », jamais « ok ». */}
-        <div data-detect="method" className="px-4 py-2.5 flex items-center gap-2"
+        <div data-detect="method" className="px-4 py-2.5 flex items-center justify-between gap-3"
           style={{
             background: autoFailed ? 'var(--color-red-bg)' : 'transparent',
-            borderBottom: autoFailed ? '1px solid var(--color-border)' : '1px solid transparent',
+            borderBottom: '1px solid var(--color-border)',
           }}>
-          {autoFailed && <AlertTriangle size={14} style={{ color: 'var(--color-red)' }} />}
-          {autoDetecting && <Loader2 size={12} className="animate-spin" style={{ color: 'var(--color-text-muted)' }} />}
-          <p className="text-xs" style={{ color: detectLabel.color }}>{detectLabel.text}</p>
+          <div className="flex items-center gap-2 min-w-0">
+            {autoFailed
+              ? <AlertTriangle size={13} style={{ color: 'var(--color-red)' }} />
+              : autoDetecting
+                ? <Loader2 size={12} className="animate-spin" style={{ color: 'var(--color-gold)' }} />
+                : allPlaced
+                  ? <span style={{ width: 6, height: 6, borderRadius: '50%',
+                      background: 'var(--color-green)', display: 'inline-block', flexShrink: 0 }} />
+                  : <span style={{ width: 6, height: 6, borderRadius: '50%',
+                      background: 'var(--color-text-dim)', display: 'inline-block', flexShrink: 0 }} />}
+            <p className="text-xs truncate" style={{ color: detectLabel.color }}>{detectLabel.text}</p>
+          </div>
+          <span className="text-[11px] shrink-0" style={{ color: 'var(--color-text-muted)' }}>
+            {allPlaced
+              ? `${points.length} repères à vérifier`
+              : autoDetecting ? '' : '① Gauche · ② Centre · ③ Droite'}
+          </span>
         </div>
 
       {/* Image + markers */}
@@ -487,9 +505,10 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
                       style={{
                         position: 'absolute', left: 0, top: 14,
                         transform: 'translateX(-50%)', whiteSpace: 'nowrap',
-                        color: isDragging ? '#ff2dd0' : 'rgba(255,255,255,0.8)',
+                        color: isDragging ? 'var(--color-gold-light)' : 'var(--color-gold)',
+                        opacity: isDragging ? 1 : 0.82,
                         background: 'rgba(10, 10, 12, 0.6)',
-                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                        border: '1px solid rgba(201, 160, 90, 0.22)',
                       }}>
                       {['Gauche','Centre','Droite'][i]}
                     </div>
@@ -509,7 +528,8 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
                         y1={`${(infoMarkers[0].y / imageSize.height) * 100}%`}
                         x2={`${(infoMarkers[1].x / imageSize.width) * 100}%`}
                         y2={`${(infoMarkers[1].y / imageSize.height) * 100}%`}
-                        stroke="rgba(94, 234, 212, 0.55)" strokeWidth="1.1" strokeDasharray="2 4" />
+                        stroke="var(--color-gold)" strokeOpacity="0.4" strokeWidth="1"
+                        strokeDasharray="2 4" />
                     </svg>
                   )}
                   {infoMarkers.map((p, i) => (
@@ -519,15 +539,19 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
                       style={{ left: `${(p.x / imageSize.width) * 100}%`,
                                top: `${(p.y / imageSize.height) * 100}%`,
                                zIndex: 18, pointerEvents: 'none' }}>
-                      <svg width="18" height="18" viewBox="0 0 18 18" className="mx-auto block"
+                      {/* MÊME COULEUR, FORME DIFFÉRENTE : anneau POINTILLÉ, plus fin,
+                          sans croix. Une mire haute est VUE, elle n'est pas manipulable —
+                          la forme le dit sans introduire une troisième couleur. */}
+                      <svg width="20" height="20" viewBox="0 0 20 20" className="mx-auto block"
                         style={{ filter: 'drop-shadow(0 0 3px rgba(0,0,0,0.6))' }}>
-                        <circle cx="9" cy="9" r="6.5" fill="none" stroke="#5eead4" strokeWidth="1.6" />
-                        <circle cx="9" cy="9" r="1.8" fill="#5eead4" />
+                        <circle cx="10" cy="10" r="7" fill="none" stroke="var(--color-gold)"
+                          strokeWidth="1.4" strokeDasharray="3 2.6" strokeOpacity="0.72" />
+                        <circle cx="10" cy="10" r="1.5" fill="var(--color-gold)" fillOpacity="0.72" />
                       </svg>
-                      <div className="text-[9px] text-center font-semibold tracking-wide"
-                        style={{ color: '#5eead4', whiteSpace: 'nowrap',
+                      <div className="text-[9px] text-center font-medium tracking-wide"
+                        style={{ color: 'var(--color-gold)', opacity: 0.62, whiteSpace: 'nowrap',
                                  textShadow: '0 1px 2px rgba(0,0,0,0.9)' }}>
-                        Haute
+                        haute
                       </div>
                     </div>
                   ))}
@@ -541,7 +565,8 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
                     y1={`${(points[0].y / imageSize.height) * 100}%`}
                     x2={`${(points[1].x / imageSize.width) * 100}%`}
                     y2={`${(points[1].y / imageSize.height) * 100}%`}
-                    stroke="rgba(255, 255, 255, 0.7)" strokeWidth="1.2" strokeDasharray="3 3" />
+                    stroke="var(--color-gold)" strokeOpacity="0.45" strokeWidth="1"
+                    strokeDasharray="2 4" />
                   {points.length === 3 && (
                     <line x1={`${(points[1].x / imageSize.width) * 100}%`}
                       y1={`${(points[1].y / imageSize.height) * 100}%`}
@@ -568,11 +593,11 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
                     style={{ left: `${leftPct}%`, top: `${topPct}%`, zIndex: 20 }}>
                     <svg width="22" height="22" viewBox="0 0 22 22" className="mx-auto block"
                       style={{ filter: 'drop-shadow(0 0 4px rgba(0,0,0,0.5))' }}>
-                      <circle cx="11" cy="11" r="9" fill="none" stroke="#ff2dd0" strokeWidth="2" />
-                      <circle cx="11" cy="11" r="2.5" fill="#ff2dd0" />
+                      <circle cx="11" cy="11" r="9" fill="none" stroke="var(--color-gold)" strokeWidth="2" />
+                      <circle cx="11" cy="11" r="2.5" fill="var(--color-gold)" />
                     </svg>
                     <div className="text-[10px] text-center mt-1 font-bold px-1 rounded-sm"
-                      style={{ color: '#ff2dd0', background: 'rgba(10,10,12,0.6)' }}>
+                      style={{ color: 'var(--color-gold)', background: 'rgba(10,10,12,0.6)' }}>
                       {i === 0 ? 'Pt 1' : 'Pt 2'}
                     </div>
                   </div>
@@ -584,7 +609,8 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
                     y1={`${(noClipPoints[0].y / imageSize.height) * 100}%`}
                     x2={`${(noClipPoints[1].x / imageSize.width) * 100}%`}
                     y2={`${(noClipPoints[1].y / imageSize.height) * 100}%`}
-                    stroke="rgba(255,45,208,0.8)" strokeWidth="1.4" strokeDasharray="4 3" />
+                    stroke="var(--color-gold)" strokeOpacity="0.55" strokeWidth="1.2"
+                    strokeDasharray="4 3" />
                 </svg>
               )}
             </div>
@@ -605,6 +631,32 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
 
       </div>
 
+      {/* BANDE DE MESURES — les grandeurs vivantes se LISENT au lieu d'être
+          devinées dans une puce de pied de page. Le libellé est au-dessus de la
+          valeur, en petites capitales : trois colonnes de largeur égale, chiffres
+          tabulaires pour qu'ils ne dansent pas d'un rendu à l'autre. */}
+      {allPlaced && debugInfo && !autoFailed && (
+        <div className="flex border-t" style={{ borderColor: 'var(--color-border)' }}>
+          <div className="flex-1 px-3 py-2 text-center" style={{ borderRight: '1px solid var(--color-border)' }}>
+            <div className="text-[8px] tracking-[0.12em] uppercase" style={{ color: 'var(--color-text-dim)' }}>écart</div>
+            <div className="text-xs font-semibold mt-0.5" style={{ color: 'var(--color-gold)' }}>{markerSpacing},0 mm</div>
+          </div>
+          <div className="flex-1 px-3 py-2 text-center" style={{ borderRight: '1px solid var(--color-border)' }}>
+            <div className="text-[8px] tracking-[0.12em] uppercase" style={{ color: 'var(--color-text-dim)' }}>échelle</div>
+            <div className="text-xs font-semibold mt-0.5" style={{ color: 'var(--color-text)' }}>
+              {debugInfo.scalePxToMm ? debugInfo.scalePxToMm.toFixed(4) : '—'}
+            </div>
+          </div>
+          <div className="flex-1 px-3 py-2 text-center">
+            <div className="text-[8px] tracking-[0.12em] uppercase" style={{ color: 'var(--color-text-dim)' }}>roulis</div>
+            <div className="text-xs font-semibold mt-0.5"
+              style={{ color: Math.abs(debugInfo.clipRollDeg ?? 0) > 2 ? 'var(--color-red)' : 'var(--color-text)' }}>
+              {debugInfo.clipRollDeg != null ? `${debugInfo.clipRollDeg.toFixed(1)}°` : '—'}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Spacing + reset + debug */}
       <div className="px-4 py-2 flex justify-between items-center border-t" style={{ borderColor: 'var(--color-border)' }}>
         <div className="flex items-center gap-3">
@@ -617,16 +669,7 @@ export default function CalibrationOverlay({ imageUrl, onCalibrated, onSkip, onR
             style={{ color: noClipMode ? 'var(--color-red)' : 'var(--color-text-muted)' }}>
             <Ruler size={12} /> Pas de clip
           </button>
-          {debugInfo && allPlaced && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded font-mono" style={{
-              background: debugInfo.headRotation > 10 ? 'var(--color-red-bg)' : 'var(--color-green-bg)',
-              color: debugInfo.headRotation > 10 ? 'var(--color-red)' : 'var(--color-green)',
-              border: '1px solid',
-              borderColor: debugInfo.headRotation > 10 ? 'var(--color-red)' : 'var(--color-green)',
-            }}>
-              {Math.round(debugInfo.scalePxToMm * 1000) / 1000} mm/px
-            </span>
-          )}
+          {/* La valeur mm/px a migré dans la bande de mesures ci-dessus. */}
         </div>
         {points.length > 0 && (
           <button onClick={resetPoints} className="flex items-center gap-1 text-xs transition-all hover:opacity-80" style={{ color: 'var(--color-gold)' }}>

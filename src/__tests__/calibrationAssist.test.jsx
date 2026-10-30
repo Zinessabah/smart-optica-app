@@ -144,9 +144,15 @@ describe('CalibrationOverlay — pointage assisté', () => {
     fireEvent.pointerDown(stage, { clientX: 200, clientY: 300 })
     const svg = container.querySelector('[data-loupe] [data-reticle] svg')
     expect(svg).toBeTruthy()
-    // Le repère de cet écran : cercle r=9 + croix (deux lignes)
-    expect(svg.querySelector('circle').getAttribute('r')).toBe('9')
-    expect(svg.querySelectorAll('line').length).toBe(2)
+    // Le repère de CET écran : anneau or + croix à trou central (quatre branches).
+    // Ce qui est protégé ici est l'IDENTITÉ du dessin — la loupe ne doit pas
+    // afficher un autre réticule que celui posé sur la photo — et non une
+    // géométrie figée : les valeurs suivent le dessin, elles ne le définissent pas.
+    // L'accent or est verrouillé au passage : c'est lui qui a remplacé les trois
+    // couleurs concurrentes (or/magenta/cyan) de l'ancien écran.
+    expect(svg.querySelector('circle').getAttribute('r')).toBe('9.5')
+    expect(svg.querySelector('circle').getAttribute('stroke')).toBe('var(--color-gold)')
+    expect(svg.querySelectorAll('line').length).toBe(4)
   })
 
   it('la loupe reste AU-DESSUS du doigt, jamais sous la main', async () => {
