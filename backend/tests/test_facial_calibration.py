@@ -387,38 +387,54 @@ def test_l_orientation_de_prise_de_vue_est_lue_sur_le_damier():
     photo natif produit un selfie miroir, et un fichier peut venir d'ailleurs. Se
     tromper inverse l'œil droit et l'œil gauche sur une mesure monoculaire.
     """
-    r_normale = _detecte()
+    # ⚠️ CINQ MIRES : le clip v23.5 en porte cinq. Ces tests décrivaient la
+    # topologie à quatre mires de la v19.5 ; sur une image à quatre, le chemin 1D
+    # ne rend que les trois mires de rangée et l'assertion « 4 marqueurs » tombe.
+    # La détection n'est pas en cause (mesuré : 5/5 sur les deux chemins, miroir
+    # compris) — c'est l'image de test qui ne correspond plus au clip imprimé.
+    r_normale = _detecte(avec_5e=True)
     assert r_normale["orientation_prise_de_vue"] == clip.ORIENTATION_NORMALE
     assert r_normale["image_mirrored"] is False
     assert r_normale["scale_mm_per_px"] == pytest.approx(SCALE, rel=0.01)
 
-    r_miroir = _detecte(miroir=True)
+    r_miroir = _detecte(miroir=True, avec_5e=True)
     assert r_miroir["orientation_prise_de_vue"] == clip.ORIENTATION_MIROIR
     assert r_miroir["image_mirrored"] is True
     # le retournement ne doit PAS empêcher la mesure : même échelle, même géométrie
     assert r_miroir["scale_mm_per_px"] == pytest.approx(SCALE, rel=0.01)
-    assert len(r_miroir["markers"]) == 4
+    assert len(r_miroir["markers"]) == 5
     assert r_miroir["facial_quad_check"]["quad_valid"] is True
 
 
 def test_bout_en_bout_une_photo_en_miroir_est_acceptee():
-    """4ᵉ mire à GAUCHE du centre = photo en MIROIR (selfie iOS) — doit être acceptée.
+    """Une mire HAUTE décalée du côté inattendu doit être trouvée quand même.
 
     Constaté sur les vraies photos du clip v19.5 : les quadrants sombres du damier y
-    sont en NE+SO alors que le clip les a en NO+SE, donc l'image est retournée, et la
-    4ᵉ mire — qui est à +30 mm du centre sur le clip — apparaît à GAUCHE. Sa position
-    en x n'a aucune importance métrologique (seuls comptent les écartements et la
-    hauteur) : le détecteur doit donc simplement la trouver. Sans ce traitement il
-    cherchait du mauvais côté, retenait un pic SANS AUCUN motif damier (contraste
-    mesuré : nul) et rejetait un clip parfaitement valide.
+    sont en NE+SO alors que le clip les a en NO+SE, donc l'image était retournée, et
+    la 4ᵉ mire — alors unique, à +30 mm du centre — apparaissait à GAUCHE. Sa
+    position en x n'a aucune importance métrologique (seuls comptent les écartements
+    et la hauteur) : le détecteur doit donc simplement la trouver. Sans ce
+    traitement il cherchait du mauvais côté, retenait un pic SANS AUCUN motif damier
+    (contraste mesuré : nul) et rejetait un clip parfaitement valide.
+
+    Depuis la v23.5 le clip porte DEUX mires hautes (±25 mm) : le cas est celui
+    d'une mire haute décalée, et l'orientation miroir se lit désormais sur la
+    signature des quadrants, pas sur le côté de la mire. Vérifié : l'orientation
+    est bien rendue « miroir » sur une image retournée (autre test).
     """
-    _, _, (x4, y4) = _image_clip(cote_4e=-1)
-    r = _detecte(cote_4e=-1)
+    _, _, (x4, y4) = _image_clip(cote_4e=-1, avec_5e=True)
+    r = _detecte(cote_4e=-1, avec_5e=True)
 
     assert r["scale_mm_per_px"] == pytest.approx(SCALE, rel=0.01)
-    assert len(r["markers"]) == 4
-    mx = [m["x"] for m in r["markers"]]
-    assert abs(mx[3] - x4) <= 3, f"4e mire : {mx[3]} vs {x4}"
+    assert len(r["markers"]) == 5
+    # ⚠️ NE PAS indexer par position : avec cinq mires, les deux mires HAUTES
+    # occupent les indices 3 et 4 (tri par x), donc `markers[3]` n'est pas « la
+    # 4ᵉ mire » mais la haute de droite. Ce test déplaçait la mire haute du côté
+    # inattendu pour vérifier qu'elle est trouvée malgré tout — la propriété porte
+    # sur SA PRÉSENCE à l'abscisse attendue, pas sur son rang.
+    hautes = [m["x"] for m in r["markers"][3:]]
+    ecart = min(abs(x - x4) for x in hautes)
+    assert ecart <= 3, f"aucune mire haute à x={x4} (hautes trouvées : {hautes})"
     q = r["facial_quad_check"]
     assert q["quad_valid"] is True
     # le roll est rendu dans le repère de l'IMAGE (signe rétabli après réflexion)
@@ -481,9 +497,9 @@ def test_bout_en_bout_le_clip_est_trouve_meme_si_la_barre_est_mal_situee(decalag
     justes — c'est ce qui autorise à se fier au niveau des sourcils.
     """
     y_true = Y_BARRE + decalage
-    r = main.detect_facial_quadruplet(_image_clip(y_barre=y_true)[0],
+    r = main.detect_facial_quadruplet(_image_clip(y_barre=y_true, avec_5e=True)[0],
                                       Y_BARRE, 100, 1100, SCALE)
-    assert len(r["markers"]) == 4
+    assert len(r["markers"]) == 5
     assert r["scale_mm_per_px"] == pytest.approx(SCALE, rel=0.01)
     for m in r["markers"][:3]:
         assert abs(m["y"] - y_true) <= 3, "la hauteur réelle doit être mesurée"
@@ -634,10 +650,14 @@ def test_bout_en_bout_cinq_mires_rendent_cinq_points():
     assert d["raised_symmetric"] is True
     assert d["raised_symmetry"]["dissymetrie_max"] < clip.FACIAL_SYMMETRY_TOL
 
-    # L'étalon de 60 mm est présent et exploité.
+    # L'étalon entre les deux mires hautes est présent et exploité.
+    # ⚠️ Le diviseur était figé à 60,0 px — l'écartement des mires hautes de la
+    # v19.5 (4ᵉ mire à +30 mm). En v23.5 les deux hautes sont à ±25 mm, soit
+    # 50 mm, donc (50 / SCALE) px. L'échelle déduite de cet écartement doit
+    # retrouver l'échelle vraie : c'est la propriété, et elle se dérive du
+    # modèle. Mesuré : 0,25 pour SCALE = 0,25 — le code avait raison.
     assert "entre_hautes" in d["scale_by_span"]
-    assert d["scale_by_span"]["entre_hautes"] == pytest.approx(
-        clip.FACIAL_QUAD_SPANS_MM["entre_hautes"] / (60.0 / SCALE), rel=0.03)
+    assert d["scale_by_span"]["entre_hautes"] == pytest.approx(SCALE, rel=0.03)
 
     # L'échelle reste juste, et la médiane porte maintenant sur 9 étalons au lieu de 5.
     assert r["scale_mm_per_px"] == pytest.approx(SCALE, rel=0.01)
