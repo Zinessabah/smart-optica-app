@@ -64,7 +64,7 @@ export default function PhotoPicker({ onCapture, onCancel, initialMode, kind = '
       // Contrôle qualité (flou / exposition) avant acceptation
       const verdict = await analyzeDataUrlQuality(dataUrl)
       if (verdict !== 'good') {
-        setError(photoQualityMessage(verdict).replace(/[✅🌫🌑☀️]/g, '').trim() + '. Choisissez une autre photo.')
+        setError(photoQualityMessage(verdict).replace(/[✅🌫🌑☀]\uFE0F?/gu, '').trim() + '. Choisissez une autre photo.')
         return
       }
       onCapture(dataUrl)

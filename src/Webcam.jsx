@@ -139,7 +139,7 @@ export default function Webcam({ onCapture, onCancel }) {
     // 'none' / 'checking' / null = pas de visage détecté → on laisse capturer
     // (sinon l'utilisateur resterait bloqué si la détection échoue).
     if (faceStatus === 'too_far' || faceStatus === 'too_close' || faceStatus === 'too_offset') {
-      setError(framingGuideMessage(faceStatus).replace(/[✅📏🙂🎯🎭]/g, '').trim() + '. Ajustez et réessayez.')
+      setError(framingGuideMessage(faceStatus).replace(/[✅📏🙂🎯🎭]/gu, '').trim() + '. Ajustez et réessayez.')
       return
     }
     const video = videoRef.current
@@ -161,7 +161,7 @@ export default function Webcam({ onCapture, onCancel }) {
         ...scoreExposure(gray),
       })
       if (verdict !== 'good') {
-        setError(photoQualityMessage(verdict).replace(/[✅🌫🌑☀️]/g, '').trim() + '. Réessayez.')
+        setError(photoQualityMessage(verdict).replace(/[✅🌫🌑☀]\uFE0F?/gu, '').trim() + '. Réessayez.')
         return
       }
     } catch { /* analyse non-bloquante si canvas refusé */ }

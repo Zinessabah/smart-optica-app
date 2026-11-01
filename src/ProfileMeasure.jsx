@@ -477,7 +477,7 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
     })()
 
     return () => { alive = false; clearTimeout(timer) }
-  }, [imageUrl, imageSize])
+  }, [imageUrl, imageSize, markersFromSeed])
 
   // ── Vertex auto-placé quand l'angle est fait ──
   useEffect(() => {
@@ -656,7 +656,7 @@ export default function ProfileMeasure({ imageUrl, onCapture, onSkip, onBack }) 
       setVertexLine(defaultVertexPts())
       setVertexNeedsCompute(true)
     }
-  }, [toolOn, verifyLine.length, anglePts.length, vertexLine.length, defaultVerifyPts, defaultAnglePts, defaultVertexPts])
+  }, [toolOn, verifyLine.length, anglePts.length, vertexLine.length, defaultVerifyPts, defaultAnglePts, defaultVertexPts, seed, markersFromSeed])
 
   // ── Clic sur l'image : pose un point pour le 1er outil ACTIF encore incomplet ──
   const handleImageClick = useCallback((e) => {
