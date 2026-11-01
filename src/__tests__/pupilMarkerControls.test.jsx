@@ -274,6 +274,25 @@ describe('PupilMarker — barre de commandes', () => {
     expect(container.querySelector('[data-loupe]')).toBeNull()
   })
 
+  it('le tableau de mesures s’affiche puis se masque via le bouton Tableau', async () => {
+    const { container, tap } = await mount()
+    await tap('[data-markerid="left"]', 120, 150)
+    await tap('[data-markerid="right"]', 280, 150)
+
+    const bouton = container.querySelector('button[data-tool="live-panel"]')
+    expect(bouton).toBeTruthy()
+    expect(bouton.getAttribute('aria-pressed')).toBe('true')
+    await waitFor(() => expect(container.querySelector('[data-live-panel]')).toBeTruthy())
+
+    fireEvent.click(bouton)
+    await waitFor(() => expect(container.querySelector('[data-live-panel]')).toBeNull())
+    expect(bouton.getAttribute('aria-pressed')).toBe('false')
+
+    fireEvent.click(bouton)
+    await waitFor(() => expect(container.querySelector('[data-live-panel]')).toBeTruthy())
+    expect(bouton.getAttribute('aria-pressed')).toBe('true')
+  })
+
   it('tout posé, le pointage assisté déplace le repère le plus proche', async () => {
     const { container, chip, tap } = await mount()
     await tap('[data-markerid="bridge"]', 200, 430)

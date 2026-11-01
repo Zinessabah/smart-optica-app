@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { ChevronLeft, RotateCcw, ZoomIn, Camera, Check, Loader2, AlertTriangle } from 'lucide-react'
+import { ChevronLeft, RotateCcw, ZoomIn, Camera, Check, Loader2, AlertTriangle, Table2 } from 'lucide-react'
 import BoxingRect from './BoxingRect'
 import PrecisionLoupe from './components/PrecisionLoupe'
 import MeasureRuler from './components/MeasureRuler'
@@ -35,6 +35,8 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
   const containerRef = useRef(null)
   const cancelAutoFaceRef = useRef(false)
   const [rulerVisible, setRulerVisible] = useState(false)
+  // Panneau live (DP / DPD / DPG…) : affiché par défaut, masquable pour dégager l'image.
+  const [livePanelVisible, setLivePanelVisible] = useState(true)
   // Analyse de netteté de la photo (une seule fois par image) — contrôle objectif
   const [imageGray, setImageGray] = useState(null)
 
@@ -888,6 +890,17 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
           }}>
           <ZoomIn size={12} /> Pointage assisté
         </button>
+        <button onClick={() => setLivePanelVisible(v => !v)} data-tool="live-panel"
+          aria-pressed={livePanelVisible}
+          className="px-3 py-2 rounded-xl text-xs font-medium transition-all flex items-center gap-1"
+          style={{
+            background: livePanelVisible ? 'rgba(201,160,90,0.18)' : 'var(--color-card, #1a1a20)',
+            color: livePanelVisible ? 'var(--color-gold)' : 'var(--color-text)',
+            border: `1px solid ${livePanelVisible ? 'var(--color-gold)' : 'var(--color-border)'}`,
+            cursor: 'pointer',
+          }}>
+          <Table2 size={12} /> Tableau{livePanelVisible ? ' ✓' : ''}
+        </button>
         <button onClick={resetAll} disabled={!hasAnyMarker} data-tool="reset"
           className="px-3 py-2 rounded-xl text-xs font-medium transition-opacity disabled:opacity-30 flex items-center gap-1"
           style={{ background: 'var(--color-red-bg)', color: 'var(--color-red)' }}>
@@ -991,8 +1004,8 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
                               )
                             })()}
 
-              {/* Panneau live — DP / DPD / DPG en temps réel */}
-              {leftEye && rightEye && (() => {
+              {/* Panneau live — DP / DPD / DPG en temps réel (masquable) */}
+              {livePanelVisible && leftEye && rightEye && (() => {
                 // Source unique : le panneau live affiche exactement les valeurs du moteur métier.
                 const formatMm = (value) => value == null ? '—' : Number(value).toFixed(1)
                 const dp = formatMm(result?.pd)
@@ -1015,6 +1028,7 @@ export default function PupilMarker({ imageUrl, calibration, onConfirm, onBack, 
                 return (
                   <div
                     ref={panelRef}
+                    data-live-panel="1"
                     onPointerDown={handlePanelPointerDown}
                     onPointerMove={handlePanelPointerMove}
                     onPointerUp={handlePanelPointerUp}
